@@ -1,0 +1,131 @@
+# Docker Compose for ResNet50_test
+# Educational Research Project - NOT for clinical use
+
+# ⚠️ DISCLAIMER: This is an EDUCATIONAL RESEARCH project.
+# It must NOT be used for clinical or medical diagnostic purposes.
+
+version: '3.8'
+
+services:
+  resnet50-test:
+    build: .
+    container_name: resnet50-test
+    volumes:
+      # Mount source code for development
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+      - ./configs:/app/configs
+      - ./docs:/app/docs
+      
+      # Mount data directories (read-only for archive)
+      - ./archive:/app/archive:ro
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+      
+      # Mount configuration files
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./pytest.ini:/app/pytest.ini
+      - ./mypy.ini:/app/mypy.ini
+      - ./.pre-commit-config.yaml:/app/.pre-commit-config.yaml
+      
+    environment:
+      - PYTHONPATH=/app/src
+      - PYTHONHASHSEED=42
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - MLFLOW_TRACKING_URI=file:///app/results/mlflow
+      - WANDB_MODE=offline
+      
+    ports:
+      - "8080:8080"  # For MLflow UI
+      - "8888:8888"  # For Jupyter notebooks
+      
+    working_dir: /app
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "scripts/check_status.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 32G
+          cpus: '8'
+        reservations:
+          memory: 16G
+          cpus: '4'
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Command
+    command: ["python", "scripts/check_status.py"]
+
+  # Jupyter notebook service
+  jupyter:
+    build: .
+    container_name: resnet50-test-jupyter
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+      - ./configs:/app/configs
+      - ./docs:/app/docs
+      - ./archive:/app/archive:ro
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app/src
+      - PYTHONHASHSEED=42
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+    ports:
+      - "8888:8888"
+    working_dir: /app
+    command: ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+    depends_on:
+      - resnet50-test
+
+  # MLflow tracking server
+  mlflow:
+    build: .
+    container_name: resnet50-test-mlflow
+    volumes:
+      - ./results:/app/results
+      - ./logs:/app/logs
+    environment:
+      - MLFLOW_TRACKING_URI=file:///app/results/mlflow
+      - MLFLOW_BACKEND_STORE_URI=file:///app/results/mlflow
+      - MLFLOW_ARTIFACTS_DESTINATION=/app/results/mlflow/artifacts
+    ports:
+      - "8080:8080"
+    working_dir: /app
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "8080", "--backend-store-uri", "file:///app/results/mlflow", "--artifacts-destination", "/app/results/mlflow/artifacts"]
+    depends_on:
+      - resnet50-test
+
+# Networks
+networks:
+  default:
+    name: resnet50-test-network
+
+# Volumes
+volumes:
+  data:
+    driver: local
+  results:
+    driver: local
+  logs:
+    driver: local

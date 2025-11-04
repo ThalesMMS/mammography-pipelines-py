@@ -1,0 +1,64 @@
+# ResNet50_test - Breast Density Exploration Project
+# Educational Research Project - NOT for clinical use
+
+# Core Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Medical Imaging
+pydicom>=2.4.0
+Pillow>=9.5.0
+nibabel>=5.1.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Dimensionality Reduction and Clustering
+umap-learn>=0.5.3
+hdbscan>=0.8.29
+plotly>=5.15.0
+
+# Experiment Tracking
+mlflow>=2.5.0
+wandb>=0.15.0
+
+# Configuration Management
+hydra-core>=1.3.0
+omegaconf>=2.3.0
+pydantic>=2.0.0
+
+# Data Processing
+tqdm>=4.65.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Testing and Quality
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+
+# Code Quality
+black>=23.7.0
+ruff>=0.0.280
+mypy>=1.5.0
+pre-commit>=3.3.0
+
+# Documentation
+sphinx>=7.1.0
+sphinx-rtd-theme>=1.3.0
+nbsphinx>=0.9.0
+
+# Utilities
+click>=8.1.0
+rich>=13.5.0
+typer>=0.9.0
+
+# Optional: GPU acceleration
+# Uncomment if using CUDA
+# torch-audio>=2.0.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+# torch-vision>=0.15.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+# torch>=2.0.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
