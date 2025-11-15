@@ -1,0 +1,12 @@
+# Default EfficientNetB0 density-training hyperparameters.
+# Projeto.py merges these values before forwarding CLI flags.
+seed: 42
+img_size: 512
+batch_size: 16
+class_weights: [1.0, 0.9, 1.1, 1.2]
+patience: 5
+warmup_epochs: 2
+use_amp: true
+notes: |
+  Ajuste estes valores para refletir o preset desejado. CLI explícito sempre
+  substitui o conteúdo carregado aqui.

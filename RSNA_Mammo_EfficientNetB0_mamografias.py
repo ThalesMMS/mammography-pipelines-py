@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RSNA_Mammo_EfficientNetB0_Density.py
+RSNA_Mammo_EfficientNetB0_Density_ABxCD.py
 ----------------------------------
-Treinamento/inferência com EfficientNetB0 para classificação de densidade mamária (4 classes),
-comparação com rótulo profissional e extração de embeddings (1280-D) a partir de DICOMs.
+Treinamento/inferência com EfficientNetB0 para classificação binária de densidade mamária:
+  - Classe 0: A/B (baixa densidade, BI-RADS 1-2)
+  - Classe 1: C/D (alta densidade, BI-RADS 3-4)
+Mapeia automaticamente labels originais (1,2,3,4) para binário (0,1) e extrai embeddings (1280-D) a partir de DICOMs.
 
 Compatível diretamente com CSV `classificacao.csv` no formato:
   AccessionNumber,Classification,ClassificationDate
@@ -21,18 +23,29 @@ Saídas em `<outdir>/results[_k]`:
 Cache reutiliza `<outdir>/cache` (compartilhado entre execuções).
 
 Uso rápido:
-  python RSNA_Mammo_EfficientNetB0_Density.py \
-    --csv classificacao.csv \
-    --dicom-root archive \
-    --epochs 8 --batch-size 16 --img-size 512 \
-    --outdir outputs/mammo_efficientnetb0_density
+    python RSNA_Mammo_EfficientNetB0_mamografias.py `
+    --csv mamografias `
+    --epochs 20 `
+    --batch-size 16 `
+    --img-size 512 `
+    --lr 1e-4 `
+    --backbone-lr 1e-5 `
+    --outdir outputs/mammo_efficientnetb0_mamografias `
+    --device auto `
+    --amp `
+    --unfreeze-last-block `
+    --class-weights auto `
+    --cache-mode auto
+
+Mapeamento de labels:
+  - 1,2 (A,B) → 0 (baixa densidade)
+  - 3,4 (C,D) → 1 (alta densidade)
 
 """
 
 from __future__ import annotations
 import os
 import sys
-import copy
 import json
 import argparse
 import time
@@ -44,7 +57,6 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Any
 
 from pathlib import Path
-from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -66,16 +78,15 @@ from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
 import pydicom
 from pydicom.pixel_data_handlers.util import apply_modality_lut
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, cohen_kappa_score, roc_auc_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, GroupShuffleSplit
 
 # Matplotlib para salvar figuras (sem janela)
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib import cm
 
 
 LOGGER = logging.getLogger("mammo_efficientnetb0_density")
@@ -407,6 +418,23 @@ def _df_from_classificacao_with_paths(df: pd.DataFrame, dicom_root: str, exclude
     return out
 
 
+def _map_to_binary_label(label_1_4: Optional[int]) -> Optional[int]:
+    """Mapeia label de densidade 4-classes (1..4) para binário (0..1).
+    
+    - 1,2 (A,B) → 0 (baixa densidade)
+    - 3,4 (C,D) → 1 (alta densidade)
+    - None → None
+    """
+    if label_1_4 is None or (isinstance(label_1_4, float) and np.isnan(label_1_4)):
+        return None
+    label_1_4 = int(label_1_4)
+    if label_1_4 in {1, 2}:
+        return 0  # A/B (baixa densidade)
+    elif label_1_4 in {3, 4}:
+        return 1  # C/D (alta densidade)
+    return None
+
+
 def _coerce_density_label(val: Any) -> Optional[int]:
     """Converte rótulos diversos para {1,2,3,4} (A,B,C,D ou 0..3/1..4).
 
@@ -453,96 +481,154 @@ def _df_from_path_csv(csv_path: str) -> pd.DataFrame:
     return df[["image_path", "professional_label", "accession"]]
 
 
-def _normalize_accession(value: Any) -> Optional[str]:
-    """Normaliza AccessionNumber como string (mantém zeros à esquerda)."""
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _normalize_path_hint(path: Any) -> Optional[str]:
-    """Normaliza caminhos vindos do Windows/Linux para comparação insensível a maiúsculas."""
-    if not isinstance(path, str) or not path.strip():
-        return None
-    sanitized = path.replace("\\", os.sep)
-    try:
-        resolved = Path(sanitized).expanduser().resolve(strict=False)
-    except Exception:
-        resolved = Path(sanitized).expanduser()
-    return str(resolved).replace("\\", "/").lower()
-
-
-@dataclass
-class Stage1EmbeddingStore:
-    """Mantém os vetores 2048-D da Etapa 1 indexados por accession e caminho bruto."""
-
-    embeddings_by_accession: Dict[str, torch.Tensor]
-    embeddings_by_path: Dict[str, torch.Tensor]
-    feature_dim: int
-
-    @classmethod
-    def from_artifacts(cls, features_path: str, metadata_path: str) -> "Stage1EmbeddingStore":
-        feats = np.load(features_path)
-        meta = pd.read_csv(metadata_path, dtype={"AccessionNumber": str})
-        if len(meta) != feats.shape[0]:
-            raise ValueError(
-                f"features.npy ({feats.shape[0]}) e metadata.csv ({len(meta)}) têm tamanhos distintos."
-            )
-        embeddings_by_accession: Dict[str, torch.Tensor] = {}
-        embeddings_by_path: Dict[str, torch.Tensor] = {}
-        for vec, (_, row) in zip(feats, meta.iterrows()):
-            tensor = torch.from_numpy(np.asarray(vec, dtype=np.float32))
-            acc = _normalize_accession(row.get("AccessionNumber"))
-            if acc:
-                embeddings_by_accession[acc] = tensor
-            path_hint = row.get("dicom_path")
-            norm_path = _normalize_path_hint(path_hint)
-            if norm_path:
-                embeddings_by_path[norm_path] = tensor
-        if not embeddings_by_accession:
-            raise ValueError("Nenhum embedding válido encontrado em metadata.csv.")
-        return cls(
-            embeddings_by_accession=embeddings_by_accession,
-            embeddings_by_path=embeddings_by_path,
-            feature_dim=feats.shape[1],
-        )
-
-    def lookup(self, sample: Dict[str, Any]) -> Optional[torch.Tensor]:
-        acc = _normalize_accession(sample.get("accession") or sample.get("AccessionNumber"))
-        if acc and acc in self.embeddings_by_accession:
-            return self.embeddings_by_accession[acc]
-        path = sample.get("image_path") or sample.get("dicom_path")
-        norm_path = _normalize_path_hint(path)
-        if norm_path and norm_path in self.embeddings_by_path:
-            return self.embeddings_by_path[norm_path]
-        return None
-
-    def has_accession(self, accession: Any) -> bool:
-        acc = _normalize_accession(accession)
-        return bool(acc and acc in self.embeddings_by_accession)
-
-    def has_path(self, path: Any) -> bool:
-        norm = _normalize_path_hint(path)
-        return bool(norm and norm in self.embeddings_by_path)
-
-    def __len__(self) -> int:
-        return len(self.embeddings_by_accession)
-
-
-def _check_embeddings_coverage(df: pd.DataFrame, store: Stage1EmbeddingStore) -> Tuple[int, int, List[str]]:
-    """Retorna (#cobertos, total, exemplos faltantes) para logs amigáveis."""
-    covered = 0
-    missing_examples: List[str] = []
-    for _, row in df.iterrows():
-        acc = row.get("accession")
-        path = row.get("image_path")
-        if store.has_accession(acc) or store.has_path(path):
-            covered += 1
+def _df_from_mamografias_txt(dataset_root: str) -> pd.DataFrame:
+    """Lê dataset mamografias a partir dos arquivos .txt em cada subpasta.
+    
+    Cada subpasta contém um arquivo featureS.txt com formato alternado:
+    nome_arquivo.png
+    classe
+    nome_arquivo.png
+    classe
+    ...
+    
+    Mapeia classes 0-3 para BI-RADS 1-4:
+    - 0 → 1 (BI-RADS 1, baixa densidade)
+    - 1 → 2 (BI-RADS 2, baixa densidade)
+    - 2 → 3 (BI-RADS 3, alta densidade)
+    - 3 → 4 (BI-RADS 4, alta densidade)
+    """
+    rows = []
+    for subfolder in sorted(os.listdir(dataset_root)):
+        if subfolder.startswith('__') or subfolder.startswith('.'):
             continue
-        if len(missing_examples) < 5:
-            missing_examples.append(str(acc or path))
-    return covered, len(df), missing_examples
+        subfolder_path = os.path.join(dataset_root, subfolder)
+        if not os.path.isdir(subfolder_path):
+            continue
+        
+        feature_path = os.path.join(subfolder_path, "featureS.txt")
+        if not os.path.exists(feature_path):
+            continue
+        
+        # Ler featureS.txt e extrair pares (nome, classe)
+        try:
+            with open(feature_path, 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+            
+            # Processar linhas alternadas: nome, classe, nome, classe...
+            for i in range(0, len(lines), 2):
+                if i + 1 >= len(lines):
+                    break
+                filename = lines[i]
+                try:
+                    class_raw = int(lines[i + 1])
+                except (ValueError, IndexError):
+                    continue
+                
+                # Mapear classe 0-3 → 1-4 (BI-RADS)
+                if class_raw in {0, 1, 2, 3}:
+                    birads_label = class_raw + 1
+                else:
+                    continue
+                
+                # Normalizar nome do arquivo: adicionar espaço antes dos parênteses se necessário
+                # featureS.txt tem "d_left_cc(10).png" mas arquivo real é "d_left_cc (10).png"
+                if '(' in filename and ' (' not in filename:
+                    filename = filename.replace('(', ' (')
+                
+                # Construir caminho completo
+                image_path = os.path.join(subfolder_path, filename)
+                if not os.path.exists(image_path):
+                    # Tentar sem normalização também (caso já esteja correto)
+                    if image_path != os.path.join(subfolder_path, lines[i]):
+                        alt_path = os.path.join(subfolder_path, lines[i])
+                        if os.path.exists(alt_path):
+                            image_path = alt_path
+                        else:
+                            continue
+                    else:
+                        continue
+                
+                rows.append({
+                    "accession": subfolder,
+                    "image_path": image_path,
+                    "professional_label": birads_label,
+                })
+        except Exception as exc:
+            LOGGER.warning("Falha ao processar %s: %s", feature_path, exc)
+            continue
+    
+    if not rows:
+        raise RuntimeError(f"Nenhuma amostra encontrada em {dataset_root}. Verifique se os arquivos featureS.txt existem nas subpastas.")
+    
+    return pd.DataFrame(rows)
+
+
+def _df_from_patches_txt(dataset_root: str) -> pd.DataFrame:
+    """Lê dataset patches_completo a partir dos arquivos .txt na raiz.
+    
+    O arquivo featureS.txt tem formato alternado:
+    nome_patch
+    classe
+    nome_patch
+    classe
+    ...
+    
+    Os nomes no arquivo não têm extensão, mas os arquivos reais têm .png.
+    Mapeia classes 0-3 para BI-RADS 1-4:
+    - 0 → 1 (BI-RADS 1, baixa densidade)
+    - 1 → 2 (BI-RADS 2, baixa densidade)
+    - 2 → 3 (BI-RADS 3, alta densidade)
+    - 3 → 4 (BI-RADS 4, alta densidade)
+    """
+    feature_path = os.path.join(dataset_root, "featureS.txt")
+    if not os.path.exists(feature_path):
+        raise FileNotFoundError(f"Arquivo featureS.txt não encontrado em {dataset_root}")
+    
+    rows = []
+    try:
+        with open(feature_path, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f.readlines() if line.strip()]
+        
+        # Processar linhas alternadas: nome, classe, nome, classe...
+        for i in range(0, len(lines), 2):
+            if i + 1 >= len(lines):
+                break
+            patch_name = lines[i]
+            try:
+                class_raw = int(lines[i + 1])
+            except (ValueError, IndexError):
+                continue
+            
+            # Mapear classe 0-3 → 1-4 (BI-RADS)
+            if class_raw in {0, 1, 2, 3}:
+                birads_label = class_raw + 1
+            else:
+                continue
+            
+            # Adicionar extensão .png se não tiver
+            if not patch_name.endswith('.png'):
+                patch_name = patch_name + '.png'
+            
+            # Construir caminho completo
+            image_path = os.path.join(dataset_root, patch_name)
+            if not os.path.exists(image_path):
+                continue
+            
+            # Derivar accession do nome do patch (ex: p_d_left_cc(10) → p_d_left_cc)
+            accession = patch_name.split('(')[0] if '(' in patch_name else patch_name.rsplit('.', 1)[0]
+            
+            rows.append({
+                "accession": accession,
+                "image_path": image_path,
+                "professional_label": birads_label,
+            })
+    except Exception as exc:
+        raise RuntimeError(f"Falha ao processar {feature_path}: {exc}")
+    
+    if not rows:
+        raise RuntimeError(f"Nenhuma amostra encontrada em {dataset_root}. Verifique se o arquivo featureS.txt está no formato correto.")
+    
+    return pd.DataFrame(rows)
 
 
 # ---------------------- Dataset/Transforms ----------------------
@@ -568,7 +654,6 @@ class MammoDensityDataset(Dataset):
         cache_mode: str = "none",
         cache_dir: Optional[str] = None,
         split_name: str = "train",
-        embedding_store: Optional[Stage1EmbeddingStore] = None,
     ):
         """Inicializa o dataset.
 
@@ -594,7 +679,6 @@ class MammoDensityDataset(Dataset):
         self.cache_mode = (cache_mode or "none").lower()
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.split_name = split_name
-        self.embedding_store = embedding_store
 
         valid_cache_modes = {"none", "memory", "disk", "tensor-disk", "tensor-memmap"}
         if self.cache_mode not in valid_cache_modes:
@@ -756,19 +840,9 @@ class MammoDensityDataset(Dataset):
         """
         if self.cache_mode == "disk":
             cache_path = self._disk_cache_index.get(path)
-            if cache_path is None and self.cache_dir is not None:
-                cache_path = str(self._cache_path_for(path))
-                self._disk_cache_index[path] = cache_path
             if cache_path and os.path.exists(cache_path):
-                try:
-                    with Image.open(cache_path) as im:
-                        return im.convert("RGB")
-                except Exception as exc:
-                    LOGGER.warning("Cache corrompido em %s (%s); reconstruindo.", cache_path, exc)
-                    try:
-                        os.remove(cache_path)
-                    except OSError as remove_exc:
-                        LOGGER.debug("Falha ao remover cache corrompido %s: %s", cache_path, remove_exc)
+                with Image.open(cache_path) as im:
+                    return im.convert("RGB")
             img = self._read_image(path)
             if cache_path and _is_dicom_path(path):
                 try:
@@ -833,7 +907,12 @@ class MammoDensityDataset(Dataset):
         return None
 
     def __getitem__(self, i: int):
-        """Retorna `(tensor_normalizado, label_0_3, metadados, embedding_tabular)`."""
+        """Retorna `(tensor_normalizado, label_binário, metadados)` e materializa o cache sob demanda quando ausente.
+        
+        Labels são mapeados de 1..4 (A,B,C,D) para 0..1 (AB,CD):
+        - 1,2 (A,B) → 0 (baixa densidade)
+        - 3,4 (C,D) → 1 (alta densidade)
+        """
         r = self.rows[i]
         base_tensor = self._get_cached_tensor(r["image_path"])
         if base_tensor is None:
@@ -844,16 +923,9 @@ class MammoDensityDataset(Dataset):
         img = self._apply_transforms(base_tensor)
         img = self._to_channels_last(img)
         y = r.get("professional_label")
-        # map 1..4 -> 0..3
-        y = None if (y is None or (isinstance(y, float) and np.isnan(y))) else int(y) - 1
-        embedding_tensor = None
-        if self.embedding_store is not None:
-            embedding_tensor = self.embedding_store.lookup(r)
-            if embedding_tensor is None:
-                raise RuntimeError(
-                    f"Embedding 2048-D não encontrado para accession={r.get('accession')} (split={self.split_name})."
-                )
-        return img, y, r, embedding_tensor
+        # map 1..4 -> 0..1 (binário: AB vs CD)
+        y = _map_to_binary_label(y)
+        return img, y, r
 
     @staticmethod
     def _convert_to_tensor(img: Image.Image) -> torch.Tensor:
@@ -896,116 +968,102 @@ class MammoDensityDataset(Dataset):
 
 
 def _collate(batch):
-    """Collate simples que mantém metadados como lista de dicts (não tensores) e empilha embeddings tabulares."""
+    """Collate simples que mantém metadados como lista de dicts (não tensores)."""
     xs = torch.stack([b[0] for b in batch], dim=0)
     xs = MammoDensityDataset._to_channels_last(xs)
     ys = [b[1] for b in batch]
     metas = [b[2] for b in batch]
-    embedding_candidates = [b[3] for b in batch]
-    stacked_embeddings = None
-    if any(e is not None for e in embedding_candidates):
-        tensors = []
-        for e in embedding_candidates:
-            if e is None:
-                raise RuntimeError("Embeddings ausentes para parte do batch; verifique a cobertura dos vetores Stage 1.")
-            tensors.append(e)
-        stacked_embeddings = torch.stack(tensors, dim=0)
-    return xs, ys, metas, stacked_embeddings
+    return xs, ys, metas
 
 
 def make_splits(df: pd.DataFrame, val_frac: float = 0.2, seed: int = 42) -> Tuple[List[int], List[int]]:
-    """Split estratificado por rótulo (1..4). Se faltar alguma classe, cai para split aleatório.
-    Para evitar vazamento por paciente, use accession como agrupador (não necessário aqui: 1 DICOM por pasta).
+    """Split estratificado por rótulo binário (0=AB, 1=CD) agrupado por accession para evitar vazamento.
+    
+    Mapeia labels originais 1..4 para binário 0..1 antes do split estratificado.
+    Agrupa por 'accession' para garantir que todas as imagens de um mesmo paciente/exame
+    fiquem no mesmo split (treino ou validação), evitando vazamento de dados.
+    Se faltar alguma classe binária, cai para split aleatório agrupado.
     """
     rng = np.random.RandomState(seed)
-    y = df["professional_label"].values
-    y = np.array([l for l in y])
+    y_orig = df["professional_label"].values
+    y_orig = np.array([l for l in y_orig])
     idx = np.arange(len(df))
-    # filtra apenas rótulos 1..4
-    mask = np.isin(y, [1,2,3,4])
-    idx_labeled = idx[mask]
-    y_labeled = y[mask]
-    if len(np.unique(y_labeled)) < 2:
-        # fallback: split simples
-        rng.shuffle(idx_labeled)
-        cut = int((1.0 - val_frac) * len(idx_labeled))
-        return idx_labeled[:cut].tolist(), idx_labeled[cut:].tolist()
-    skf = StratifiedKFold(n_splits=int(1/val_frac), shuffle=True, random_state=seed)
-    # pega apenas a primeira divisão
-    for tr, va in skf.split(idx_labeled, y_labeled):
+    # filtra apenas rótulos 1..4 e mapeia para binário
+    mask = np.isin(y_orig, [1,2,3,4])
+    idx_candidates = idx[mask]
+    y_binary_list = []
+    idx_valid = []
+    groups_list = []
+    for i, orig_label in zip(idx_candidates, y_orig[mask]):
+        binary_label = _map_to_binary_label(int(orig_label))
+        if binary_label is not None:
+            y_binary_list.append(binary_label)
+            idx_valid.append(i)
+            # Usar accession como grupo para evitar vazamento
+            groups_list.append(df.iloc[i]["accession"])
+    y_labeled_binary = np.array(y_binary_list)
+    idx_labeled = np.array(idx_valid)
+    groups = np.array(groups_list)
+    
+    if len(np.unique(y_labeled_binary)) < 2:
+        # fallback: split simples agrupado por accession
+        unique_groups = np.unique(groups)
+        rng.shuffle(unique_groups)
+        cut = int((1.0 - val_frac) * len(unique_groups))
+        train_groups = set(unique_groups[:cut])
+        train_idx = [i for i, g in enumerate(groups) if g in train_groups]
+        val_idx = [i for i, g in enumerate(groups) if g not in train_groups]
+        return [idx_labeled[i] for i in train_idx], [idx_labeled[i] for i in val_idx]
+    
+    # Usar GroupShuffleSplit para garantir que accessions inteiros fiquem no mesmo split
+    gss = GroupShuffleSplit(n_splits=1, test_size=val_frac, random_state=seed)
+    for tr, va in gss.split(idx_labeled, y_labeled_binary, groups=groups):
         return idx_labeled[tr].tolist(), idx_labeled[va].tolist()
     return idx_labeled.tolist(), [].tolist()
 
 
 # ---------------------- Modelo/treino ----------------------
 
-
-class EfficientNetWithFusion(nn.Module):
-    """Wrapper que permite concatenar embeddings tabulares antes da cabeça de classificação."""
-
-    def __init__(self, base_model: nn.Module, num_classes: int, extra_feature_dim: int = 0):
-        super().__init__()
-        self.backbone = base_model
-        self.features = base_model.features
-        self.avgpool = base_model.avgpool
-        self.extra_feature_dim = int(extra_feature_dim or 0)
-
-        in_features = base_model.classifier[1].in_features  # Dropout + Linear
-        # substitui classifier padrão por identidade para reutilizar dropout customizado
-        base_model.classifier = nn.Identity()
-
-        fusion_in = in_features + self.extra_feature_dim
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=0.2, inplace=True),
-            nn.Linear(fusion_in, num_classes),
-        )
-
-    def forward(self, x: torch.Tensor, extra_features: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = self.backbone.features(x)
-        x = self.backbone.avgpool(x)
-        x = torch.flatten(x, 1)
-        if self.extra_feature_dim > 0:
-            if extra_features is None:
-                raise ValueError("Embeddings habilitados (--use-embeddings), mas extra_features=None foi recebido.")
-            if extra_features.shape[0] != x.shape[0]:
-                raise ValueError(
-                    f"extra_features batch mismatch: CNN batch={x.shape[0]} vs embeddings batch={extra_features.shape[0]}"
-                )
-            if extra_features.dtype != x.dtype:
-                extra_features = extra_features.to(dtype=x.dtype)
-            x = torch.cat([x, extra_features], dim=1)
-        return self.classifier(x)
-
-
-def build_model(
-    num_classes: int = 4,
-    train_backbone: bool = False,
-    unfreeze_last_block: bool = True,
-    extra_feature_dim: int = 0,
-) -> nn.Module:
-    """Cria EfficientNetB0 com cabeça customizada e, opcionalmente, concatena embeddings 2048-D antes da head."""
-    base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
-    m = EfficientNetWithFusion(base, num_classes=num_classes, extra_feature_dim=extra_feature_dim)
-
+def build_model(num_classes: int = 2, train_backbone: bool = False, unfreeze_last_block: bool = True) -> nn.Module:
+    """Cria EfficientNetB0 pré-treinada, troca o 'classifier' por uma cabeça de 2 saídas (binário: AB vs CD).
+    
+    Por padrão: congela blocos iniciais de features e descongela últimos blocos + classifier.
+    - unfreeze_last_block=True (padrão): descongela últimos blocos de features (equivalente ao layer4)
+    - unfreeze_last_block=False: congela últimos blocos também (apenas classifier treina)
+    - train_backbone=True: descongela todo o backbone (não recomendado; apenas para experimentação)
+    
+    EfficientNetB0 tem 7 blocos principais em features. Por padrão, descongelamos os últimos 2 blocos
+    (equivalente ao layer4 do ResNet50).
+    """
+    m = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
+    
+    # Troca o classifier (Dropout + Linear) por uma nova cabeça de classificação
+    in_features = m.classifier[1].in_features  # o Linear está em classifier[1]
+    m.classifier = nn.Sequential(
+        nn.Dropout(p=0.2, inplace=True),
+        nn.Linear(in_features, num_classes)
+    )
+    
     # congela todas as camadas por padrão
-    for p in m.backbone.parameters():
+    for p in m.parameters():
         p.requires_grad = False
-
+    
     # sempre treina a head nova (classifier)
     for p in m.classifier.parameters():
         p.requires_grad = True
-
+    
     # por padrão, descongela últimos blocos de features (equivalente ao layer4)
     # EfficientNetB0 tem 7 blocos principais: descongelamos os últimos 2 (índices -2 e -1)
     if unfreeze_last_block:
+        # Últimos 2 blocos do features (equivalente ao layer4 do ResNet50)
         num_blocks = len(m.features)
-        for i in range(max(0, num_blocks - 2), num_blocks):  # últimos 2 blocos
+        for i in range(num_blocks - 2, num_blocks):  # últimos 2 blocos
             for p in m.features[i].parameters():
                 p.requires_grad = True
-
+    
     # apenas se explicitamente solicitado, descongela todo o backbone
     if train_backbone:
-        for p in m.backbone.parameters():
+        for p in m.parameters():
             p.requires_grad = True
     return m
 
@@ -1039,17 +1097,10 @@ def extract_embeddings(
     handle = model.avgpool.register_forward_hook(hook_fn)
 
     for batch in tqdm(loader, desc="Embeddings", leave=False):
-        if len(batch) == 4:
-            x, _, metas, extra_features = batch
-        else:
-            x, _, metas = batch
-            extra_features = None
+        x, y, metas = batch
         x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
-        extra_tensor = None
-        if extra_features is not None:
-            extra_tensor = extra_features.to(device=device, non_blocking=True)
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
-            _ = model(x, extra_tensor)  # forward para acionar hook
+            _ = model(x)  # forward para acionar hook
         feat = np.concatenate(buffer, axis=0)
         buffer.clear()  # limpa o acumulado do hook para o próximo batch
         feats.append(feat)
@@ -1090,22 +1141,14 @@ def train_one_epoch(
     log_per_iter = logger.isEnabledFor(logging.DEBUG)
     last_step_end = time.perf_counter()
 
-    for step, batch in enumerate(tqdm(loader, desc="Train", leave=False), 1):
+    for step, (x, y, _) in enumerate(tqdm(loader, desc="Train", leave=False), 1):
         iter_start = time.perf_counter()
         # Tempos a seguir alimentam apenas logs DEBUG, ajudando a identificar gargalos de IO, transferência ou backward.
         data_wait = iter_start - last_step_end
 
         to_device_start = time.perf_counter()
-        if len(batch) == 4:
-            x, y, _, extra_features = batch
-        else:
-            x, y, _ = batch
-            extra_features = None
         x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
         y_tensor = torch.tensor(y, dtype=torch.long, device=device)
-        extra_tensor = None
-        if extra_features is not None:
-            extra_tensor = extra_features.to(device=device, non_blocking=True)
         to_device_time = time.perf_counter() - to_device_start
 
         zero_start = time.perf_counter()
@@ -1114,7 +1157,7 @@ def train_one_epoch(
 
         forward_start = time.perf_counter()
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
-            logits = model(x, extra_tensor)
+            logits = model(x)
             loss = loss_fn(logits, y_tensor)
         forward_time = time.perf_counter() - forward_start
 
@@ -1168,8 +1211,9 @@ def train_one_epoch(
 
 @torch.no_grad()
 def validate(model, loader, device, *, amp_enabled: bool = False) -> Dict[str, Any]:
-    """Validação: acumula predições e probabilidades, calcula métricas e retorna linhas detalhadas.
-    Observação: kappa quadrática reflete melhor a natureza ordinal da densidade (A<B<C<D).
+    """Validação binária: acumula predições e probabilidades, calcula métricas e retorna linhas detalhadas.
+    
+    Labels binários: 0=AB (baixa densidade), 1=CD (alta densidade).
     Respeita o modo AMP para consistência, recastando logits para float32 antes das métricas.
     """
     model.eval()
@@ -1177,18 +1221,10 @@ def validate(model, loader, device, *, amp_enabled: bool = False) -> Dict[str, A
     all_p = []
     all_prob = []
     rows = []
-    for batch in tqdm(loader, desc="Val", leave=False):
-        if len(batch) == 4:
-            x, y, metas, extra_features = batch
-        else:
-            x, y, metas = batch
-            extra_features = None
+    for x, y, metas in tqdm(loader, desc="Val", leave=False):
         x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
-        extra_tensor = None
-        if extra_features is not None:
-            extra_tensor = extra_features.to(device=device, non_blocking=True)
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
-            logits = model(x, extra_tensor)
+            logits = model(x)
         logits = logits.float()
         probs = torch.softmax(logits, dim=1).cpu().numpy()
         pred = logits.argmax(dim=1).cpu().numpy()
@@ -1201,17 +1237,16 @@ def validate(model, loader, device, *, amp_enabled: bool = False) -> Dict[str, A
     y_pred = np.concatenate(all_p).astype(int)
     prob = np.concatenate(all_prob, axis=0)
 
-    # métricas (map 0..3 -> 1..4 para relatório)
-    y_true_14 = y_true + 1
-    y_pred_14 = y_pred + 1
-    acc = accuracy_score(y_true_14, y_pred_14)
-    kappa_q = cohen_kappa_score(y_true_14, y_pred_14, weights='quadratic')
+    # métricas binárias (0=AB, 1=CD)
+    acc = accuracy_score(y_true, y_pred)
+    kappa = cohen_kappa_score(y_true, y_pred)
     try:
-        auc_ovr = roc_auc_score(pd.get_dummies(y_true), prob, multi_class='ovr')
+        # Para binário, usa apenas a classe positiva (CD)
+        auc = roc_auc_score(y_true, prob[:, 1])
     except Exception:
-        auc_ovr = None
-    cm = confusion_matrix(y_true_14, y_pred_14, labels=[1,2,3,4]).tolist()
-    report = classification_report(y_true_14, y_pred_14, labels=[1,2,3,4], output_dict=True, zero_division=0)
+        auc = None
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist()
+    report = classification_report(y_true, y_pred, labels=[0, 1], output_dict=True, zero_division=0, target_names=["AB", "CD"])
 
     # salva predições detalhadas
     out_rows = []
@@ -1219,18 +1254,18 @@ def validate(model, loader, device, *, amp_enabled: bool = False) -> Dict[str, A
         pr = prob[i]
         out_rows.append({
             **m,
-            "y_true": int(y_true_14[i]),
-            "y_pred": int(y_pred_14[i]),
-            "p_A": float(pr[0]),
-            "p_B": float(pr[1]),
-            "p_C": float(pr[2]),
-            "p_D": float(pr[3]),
+            "y_true": int(y_true[i]),
+            "y_pred": int(y_pred[i]),
+            "y_true_label": "AB" if y_true[i] == 0 else "CD",
+            "y_pred_label": "AB" if y_pred[i] == 0 else "CD",
+            "p_AB": float(pr[0]),
+            "p_CD": float(pr[1]),
         })
 
     return {
         "acc": acc,
-        "kappa_quadratic": kappa_q,
-        "auc_ovr": auc_ovr,
+        "kappa": kappa,
+        "auc": auc,
         "confusion_matrix": cm,
         "classification_report": report,
         "val_rows": out_rows,
@@ -1238,27 +1273,27 @@ def validate(model, loader, device, *, amp_enabled: bool = False) -> Dict[str, A
 
 
 def save_metrics_figure(metrics: Dict[str, Any], out_path: str) -> None:
-    """Gera uma figura com matriz de confusão e barras de precisão/recall/F1 por classe.
+    """Gera uma figura com matriz de confusão e barras de precisão/recall/F1 por classe (binário).
     - metrics: dicionário retornado por validate()
     - out_path: caminho do PNG de saída (ex.: .../metrics/val_metrics.png)
     """
     try:
-        cm = np.array(metrics.get("confusion_matrix", [[0,0,0,0]]*4), dtype=float)
+        cm = np.array(metrics.get("confusion_matrix", [[0,0],[0,0]]), dtype=float)
         report = metrics.get("classification_report", {})
         acc = float(metrics.get("acc", 0.0))
-        kappa = float(metrics.get("kappa_quadratic", 0.0))
-        auc = metrics.get("auc_ovr", None)
+        kappa = float(metrics.get("kappa", 0.0))
+        auc = metrics.get("auc", None)
 
-        labels = ["A", "B", "C", "D"]  # mapeamento 1..4 → A..D
-        cls_ids = [1, 2, 3, 4]
+        labels = ["AB", "CD"]  # binário: baixa densidade vs alta densidade
+        cls_names = ["AB", "CD"]
 
-        def _get(rep: Dict[str, Any], cls: int, key: str) -> float:
-            # Helper evita KeyError quando o relatório estiver incompleto; `dict.get` tornaria encadeamento verboso.
-            return float(rep.get(str(cls), {}).get(key, 0.0))
+        def _get(rep: Dict[str, Any], cls_name: str, key: str) -> float:
+            # Helper evita KeyError quando o relatório estiver incompleto
+            return float(rep.get(cls_name, {}).get(key, 0.0))
 
-        prec = [ _get(report, c, "precision") for c in cls_ids ]
-        rec  = [ _get(report, c, "recall")    for c in cls_ids ]
-        f1   = [ _get(report, c, "f1-score")  for c in cls_ids ]
+        prec = [ _get(report, c, "precision") for c in cls_names ]
+        rec  = [ _get(report, c, "recall")    for c in cls_names ]
+        f1   = [ _get(report, c, "f1-score")  for c in cls_names ]
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -1268,17 +1303,17 @@ def save_metrics_figure(metrics: Dict[str, Any], out_path: str) -> None:
         ax.set_title("Matriz de Confusão (True x Pred)")
         ax.set_xlabel("Predito")
         ax.set_ylabel("Verdadeiro")
-        ax.set_xticks(range(4), labels)
-        ax.set_yticks(range(4), labels)
+        ax.set_xticks(range(2), labels)
+        ax.set_yticks(range(2), labels)
         # anotações
         for i in range(cm.shape[0]):
             for j in range(cm.shape[1]):
-                ax.text(j, i, int(cm[i, j]), ha="center", va="center", color="black")
+                ax.text(j, i, int(cm[i, j]), ha="center", va="center", color="black", fontsize=14, fontweight="bold")
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
         # Barras por classe
         ax = axes[1]
-        x = np.arange(4)
+        x = np.arange(2)
         w = 0.25
         ax.bar(x - w, prec, width=w, label="Precisão")
         ax.bar(x,       rec,  width=w, label="Recall")
@@ -1290,7 +1325,7 @@ def save_metrics_figure(metrics: Dict[str, Any], out_path: str) -> None:
 
         # Título geral com métricas globais
         auc_txt = f"{auc:.3f}" if isinstance(auc, (float, np.floating)) else "NA"
-        fig.suptitle(f"Acc={acc:.3f} | KappaQ={kappa:.3f} | AUC(OvR)={auc_txt}")
+        fig.suptitle(f"Acc={acc:.3f} | Kappa={kappa:.3f} | AUC={auc_txt}")
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -1325,10 +1360,18 @@ def save_history_figure(hist_rows: List[Dict[str, Any]], out_path: str) -> None:
         # Acc/Kappa/AUC (val)
         ax = axes[1]
         ax.plot(dfh["epoch"], dfh["val_acc"], label="val_acc", color="#2ca02c")
-        ax.plot(dfh["epoch"], dfh["val_kappa_quadratic"], label="kappa_quadrática", color="#d62728")
-        if "val_auc_ovr" in dfh.columns:
+        if "val_kappa" in dfh.columns:
+            ax.plot(dfh["epoch"], dfh["val_kappa"], label="kappa", color="#d62728")
+        elif "val_kappa_quadratic" in dfh.columns:
+            ax.plot(dfh["epoch"], dfh["val_kappa_quadratic"], label="kappa", color="#d62728")
+        if "val_auc" in dfh.columns:
             try:
-                ax.plot(dfh["epoch"], dfh["val_auc_ovr"], label="auc_ovr", color="#9467bd")
+                ax.plot(dfh["epoch"], dfh["val_auc"], label="auc", color="#9467bd")
+            except Exception:
+                pass
+        elif "val_auc_ovr" in dfh.columns:
+            try:
+                ax.plot(dfh["epoch"], dfh["val_auc_ovr"], label="auc", color="#9467bd")
             except Exception:
                 pass
         ax.set_xlabel("Época")
@@ -1343,37 +1386,6 @@ def save_history_figure(hist_rows: List[Dict[str, Any]], out_path: str) -> None:
         plt.close(fig)
     except Exception as e:
         LOGGER.warning("Falha ao salvar curva de treino: %s", e)
-
-
-def _append_ray_metrics(args: argparse.Namespace, payload: Dict[str, Any]) -> None:
-    trial_name = getattr(args, "ray_trial_name", None)
-    if not trial_name:
-        return
-    log_dir = getattr(args, "ray_logdir", None)
-    base = Path(log_dir) if log_dir else Path(args.outdir)
-    base.mkdir(parents=True, exist_ok=True)
-    record = {
-        "trial_name": trial_name,
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        **payload,
-    }
-    log_path = base / f"ray_{trial_name}.jsonl"
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record) + "\n")
-
-
-def _log_optuna_trial(args: argparse.Namespace, payload: Dict[str, Any] | None) -> None:
-    trial_id = getattr(args, "optuna_trial_id", None)
-    if not trial_id or payload is None:
-        return
-    out_path = Path(args.outdir) / "optuna_trial.json"
-    data = {
-        "trial_id": trial_id,
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        "objective": float(payload.get("macro_f1", 0.0)),
-        "metrics": payload,
-    }
-    out_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _resolve_loader_runtime(args: argparse.Namespace, device: torch.device) -> Tuple[Dict[str, Any], List[str]]:
@@ -1445,97 +1457,21 @@ def _resolve_loader_runtime(args: argparse.Namespace, device: torch.device) -> T
     return cfg, notes
 
 
-def _tensor_to_cam(activations: torch.Tensor, gradients: torch.Tensor) -> torch.Tensor:
-    weights = gradients.mean(dim=(2, 3), keepdim=True)
-    cam = torch.relu((weights * activations).sum(dim=1, keepdim=True))
-    return cam
-
-
-def export_gradcam_samples(
-    model: nn.Module,
-    dataset: MammoDensityDataset,
-    device: torch.device,
-    out_dir: str,
-    num_samples: int,
-    img_size: int,
-) -> None:
-    if num_samples <= 0:
-        return
-    os.makedirs(out_dir, exist_ok=True)
-    model.eval()
-    target_layer = getattr(model, "features", None)
-    if target_layer is None:
-        raise ValueError("Modelo não possui atributo 'features'; Grad-CAM indisponível.")
-    target_layer = target_layer[-1]
-    select_indices = list(range(min(num_samples, len(dataset))))
-
-    for idx in select_indices:
-        tensor, label, meta, extra = dataset[idx]
-        input_tensor = tensor.unsqueeze(0).to(device=device, non_blocking=True, memory_format=torch.channels_last)
-        if extra is not None:
-            extra_tensor = extra.unsqueeze(0).to(device=device, non_blocking=True)
-        else:
-            extra_tensor = None
-
-        activations: list[torch.Tensor] = []
-        gradients: list[torch.Tensor] = []
-
-        def _forward_hook(_module, _inp, output):
-            activations.append(output.detach())
-
-        def _backward_hook(_module, _grad_in, grad_out):
-            gradients.append(grad_out[0].detach())
-
-        handle_f = target_layer.register_forward_hook(_forward_hook)
-        handle_b = target_layer.register_full_backward_hook(_backward_hook)
-
-        logits = model(input_tensor, extra_tensor)
-        pred_idx = int(logits.argmax(dim=1).item())
-        target_cls = pred_idx if label is None or label < 0 else int(label)
-        score = logits[:, target_cls]
-        model.zero_grad(set_to_none=True)
-        score.backward()
-        handle_f.remove()
-        handle_b.remove()
-
-        if not activations or not gradients:
-            continue
-        cam = _tensor_to_cam(activations[-1], gradients[-1])
-        cam = torch.nn.functional.interpolate(cam, size=input_tensor.shape[-2:], mode="bilinear", align_corners=False)
-        cam = cam.squeeze().cpu().numpy()
-        cam -= cam.min()
-        cam /= (cam.max() + 1e-8)
-
-        # Preparar imagem base
-        base = dicom_to_pil_rgb(meta["image_path"]).resize((img_size, img_size))
-        heatmap = (cm.jet(cam)[..., :3] * 255).astype("uint8")
-        heatmap_img = Image.fromarray(heatmap).convert("RGB")
-        overlay = Image.blend(base.convert("RGB"), heatmap_img, alpha=0.45)
-
-        # Anotações
-        draw = ImageDraw.Draw(overlay)
-        true_label = "NA" if label is None or label < 0 else str(label + 1)
-        caption = f"idx={idx} | pred={pred_idx + 1} | true={true_label}"
-        text_bg = (0, 0, 0, 180)
-        draw.rectangle([(0, 0), (overlay.width, 24)], fill=text_bg)
-        draw.text((4, 4), caption, fill=(255, 255, 255))
-
-        filename = f"gradcam_idx{idx:04d}_pred{pred_idx+1}_true{true_label}.png"
-        overlay.save(os.path.join(out_dir, filename))
-
-
-def _run_single_training(
-    args: argparse.Namespace,
-    df_tr: pd.DataFrame,
-    df_va: pd.DataFrame,
-    embedding_store: Optional[Stage1EmbeddingStore],
-) -> Dict[str, Any]:
-    df_all = pd.concat([df_tr, df_va], ignore_index=True)
-    resolved_cache_mode = resolve_dataset_cache_mode(args.cache_mode, df_all)
-    setattr(args, "cache_mode_resolved", resolved_cache_mode)
-    dicom_count = int(df_all["image_path"].map(_is_dicom_path).sum())
-    logger = None
-
+def run(args: argparse.Namespace):
+    """Orquestra o pipeline de ponta a ponta (dados -> modelo -> métricas -> embeddings)."""
+    seed_everything(args.seed, args.deterministic)
+    device = resolve_device(args.device)
+    configure_runtime(device, args.deterministic, args.allow_tf32)
+    amp_capable = device.type in {"cuda", "mps"}
+    amp_requested = args.amp if getattr(args, "amp", None) is not None else amp_capable
+    amp_enabled = bool(amp_requested and amp_capable)
+    setattr(args, "amp_requested", bool(amp_requested))
+    setattr(args, "amp_effective", amp_enabled)
+    scaler = (
+        GradScaler(device=device.type)
+        if amp_enabled and device.type == "cuda"
+        else None
+    )
     outdir_root = Path(args.outdir)
     outdir_root.mkdir(parents=True, exist_ok=True)
     results_base = outdir_root / "results"
@@ -1545,19 +1481,13 @@ def _run_single_training(
         results_dir = results_base
     args.outdir_base = str(outdir_root)
     args.outdir = str(results_dir)
+    # A raiz (`outdir_base`) guarda cache compartilhado; `outdir` aponta para o diretório incrementado da execução atual.
     os.makedirs(args.outdir, exist_ok=True)
     os.makedirs(os.path.join(args.outdir, "metrics"), exist_ok=True)
     logger = setup_logging(args.outdir, args.log_level)
     logger.info("Resultados serão gravados em: %s", args.outdir)
     logger.info("Iniciando execução | torch=%s | torchvision=%s", torch.__version__, torchvision.__version__)
     logger.debug("Argumentos recebidos: %s", vars(args))
-    amp_capable = resolve_device(args.device).type in {"cuda", "mps"}
-    amp_requested = args.amp if getattr(args, "amp", None) is not None else amp_capable
-    amp_enabled = bool(amp_requested and amp_capable)
-    setattr(args, "amp_requested", bool(amp_requested))
-    setattr(args, "amp_effective", amp_enabled)
-    device = resolve_device(args.device)
-    configure_runtime(device, args.deterministic, args.allow_tf32)
     if amp_requested and not amp_enabled:
         logger.warning(
             "AMP solicitado, mas o device %s não oferece suporte; mantendo execução em precisão total.",
@@ -1614,15 +1544,70 @@ def _run_single_training(
             profiler = None
             logger.warning("Não foi possível inicializar o profiler: %s", exc)
 
-    logger.info("Total de amostras utilizáveis: %d", len(df_all))
-    logger.debug("Distribuição de rótulos (1-4): %s", df_all["professional_label"].value_counts().sort_index().to_dict())
+    # 1) Carrega dados (CSV ou diretório do dataset)
+    if os.path.isdir(args.csv):
+        # Verificar se é dataset mamografias (subpastas com featureS.txt) ou patches_completo (featureS.txt na raiz)
+        feature_path_root = os.path.join(args.csv, "featureS.txt")
+        has_root_feature = os.path.exists(feature_path_root)
+        
+        # Verificar se há subpastas com featureS.txt
+        has_subfolder_features = False
+        for item in os.listdir(args.csv):
+            if item.startswith('__') or item.startswith('.'):
+                continue
+            subfolder_path = os.path.join(args.csv, item)
+            if os.path.isdir(subfolder_path):
+                subfeature_path = os.path.join(subfolder_path, "featureS.txt")
+                if os.path.exists(subfeature_path):
+                    has_subfolder_features = True
+                    break
+        
+        if has_subfolder_features:
+            # Dataset mamografias: subpastas com featureS.txt
+            logger.info("Detectado dataset mamografias (subpastas com featureS.txt)")
+            df = _df_from_mamografias_txt(args.csv)
+        elif has_root_feature:
+            # Dataset patches_completo: featureS.txt na raiz
+            logger.info("Detectado dataset patches_completo (featureS.txt na raiz)")
+            df = _df_from_patches_txt(args.csv)
+        else:
+            raise ValueError(
+                f"Diretório '{args.csv}' não contém arquivos featureS.txt reconhecidos. "
+                "Esperado: subpastas com featureS.txt (mamografias) ou featureS.txt na raiz (patches_completo)."
+            )
+    elif {"AccessionNumber", "Classification"}.issubset(set(pd.read_csv(args.csv, nrows=0).columns)):
+        df_cls = _read_classificacao_csv(args.csv)
+        df = _df_from_classificacao_with_paths(df_cls, args.dicom_root, exclude_class_5=not args.include_class_5)
+    else:
+        df = _df_from_path_csv(args.csv)
 
+    if df.empty:
+        raise RuntimeError("Nenhuma linha válida encontrada após mapear caminhos a partir do CSV.")
+
+    # 2) Filtra labels 1..4 e prepara para mapeamento binário
+    df = df.copy()
+    df = df[df["professional_label"].isin([1,2,3,4])]
+    df = df.reset_index(drop=True)
+    if df.empty:
+        raise RuntimeError("Após excluir classe 5, o CSV ficou vazio.")
+    logger.info("Total de amostras utilizáveis: %d", len(df))
+    # Log distribuição original e binária
+    dist_orig = df["professional_label"].value_counts().sort_index().to_dict()
+    df_binary_temp = df.copy()
+    df_binary_temp["binary_label"] = df_binary_temp["professional_label"].apply(_map_to_binary_label)
+    dist_binary = df_binary_temp["binary_label"].value_counts().sort_index().to_dict()
+    logger.info("Distribuição de rótulos originais (1-4): %s", dist_orig)
+    logger.info("Distribuição de rótulos binários (0=AB, 1=CD): %s", dist_binary)
+
+    resolved_cache_mode = resolve_dataset_cache_mode(args.cache_mode, df)
+    setattr(args, "cache_mode_resolved", resolved_cache_mode)
+    dicom_count = int(df["image_path"].map(_is_dicom_path).sum())
     if args.cache_mode == "auto":
         logger.info(
             "Cache mode auto → %s (dicom=%d/%d)",
             resolved_cache_mode,
             dicom_count,
-            len(df_all),
+            len(df),
         )
     elif resolved_cache_mode != args.cache_mode:
         logger.info("Cache mode ajustado de %s para %s", args.cache_mode, resolved_cache_mode)
@@ -1634,33 +1619,40 @@ def _run_single_training(
         cache_root.mkdir(parents=True, exist_ok=True)
         logger.info("Cache compartilhado em: %s", cache_root)
 
-    rows_tr = df_tr.reset_index(drop=True)
-    rows_va = df_va.reset_index(drop=True)
+    # 3) Split treino/val estratificado
+    tr_idx, va_idx = make_splits(df, val_frac=args.val_frac, seed=args.seed)
+    df_tr = df.iloc[tr_idx].reset_index(drop=True)
+    df_va = df.iloc[va_idx].reset_index(drop=True)
+    logger.info("Split estratificado -> treino=%d | validação=%d", len(df_tr), len(df_va))
+
+    # 4) Datasets/Loaders
+    rows_tr = df_tr.to_dict(orient="records")
+    rows_va = df_va.to_dict(orient="records")
     cache_train = str(cache_root / "train") if cache_root is not None else None
     cache_val = str(cache_root / "val") if cache_root is not None else None
     ds_tr = MammoDensityDataset(
-        rows_tr.to_dict(orient="records"),
+        rows_tr,
         img_size=args.img_size,
         train=True,
         augment=args.train_augment,
         cache_mode=resolved_cache_mode,
         cache_dir=cache_train,
         split_name="train",
-        embedding_store=embedding_store,
     )
     ds_va = MammoDensityDataset(
-        rows_va.to_dict(orient="records"),
+        rows_va,
         img_size=args.img_size,
         train=False,
         augment=False,
         cache_mode=resolved_cache_mode,
         cache_dir=cache_val,
         split_name="val",
-        embedding_store=embedding_store,
     )
+    # Sanidade: garantir que estamos usando nossa subclasse (e não a base Dataset)
     import torch.utils.data as tud
     if type(ds_tr) is tud.Dataset:
         raise RuntimeError("Instância de Dataset base detectada (sem __getitem__). Verifique a definição de MammoDensityDataset.")
+    # Sampler ponderado opcional: balanceia batches favorecendo classes raras
     loader_common = dict(num_workers=loader_cfg["num_workers"], pin_memory=loader_cfg["pin_memory"], collate_fn=_collate)
     if loader_cfg["num_workers"] > 0:
         loader_common["persistent_workers"] = loader_cfg["persistent_workers"]
@@ -1668,33 +1660,22 @@ def _run_single_training(
             loader_common["prefetch_factor"] = loader_cfg["prefetch_factor"]
     dl_tr_kwargs = dict(batch_size=args.batch_size, **loader_common)
     if args.sampler_weighted:
-        ys = [r.get("professional_label") for r in rows_tr.to_dict(orient="records")]
-        ys01 = [int(y) - 1 for y in ys]
-        counts = {c: max(1, ys01.count(c)) for c in range(4)}
+        # constrói pesos por amostra com base na frequência de classe binária no treino (0=AB, 1=CD)
+        ys = [_map_to_binary_label(r.get("professional_label")) for r in rows_tr]
+        ys_binary = [y for y in ys if y is not None]
+        counts = {c: max(1, ys_binary.count(c)) for c in range(2)}
         import torch.utils.data as tud
-        sample_weights = [1.0 / counts[y] for y in ys01]
+        sample_weights = [1.0 / counts[y] for y in ys_binary]
         sampler = tud.WeightedRandomSampler(weights=torch.tensor(sample_weights, dtype=torch.double), num_samples=len(sample_weights), replacement=True)
         dl_tr = DataLoader(ds_tr, sampler=sampler, shuffle=False, **dl_tr_kwargs)
-        LOGGER.info("Treinando com WeightedRandomSampler (classes balanceadas).")
+        LOGGER.info("Treinando com WeightedRandomSampler (classes binárias balanceadas: AB vs CD).")
     else:
         dl_tr = DataLoader(ds_tr, shuffle=True, **dl_tr_kwargs)
         LOGGER.info("Treinando com shuffle aleatório convencional.")
     dl_va = DataLoader(ds_va, batch_size=args.batch_size, shuffle=False, **dict(loader_common))
 
-    scaler = (
-        GradScaler(device=device.type)
-        if amp_enabled and device.type == "cuda"
-        else None
-    )
-
-    model = build_model(
-        num_classes=4,
-        train_backbone=args.train_backbone,
-        unfreeze_last_block=args.unfreeze_last_block,
-        extra_feature_dim=embedding_store.feature_dim if embedding_store is not None else 0,
-    )
-    if embedding_store is not None:
-        logger.info("Fusion tabular habilitada: concatenando embeddings %d-D antes da classifier.", embedding_store.feature_dim)
+    # 5) Modelo e otimizador
+    model = build_model(num_classes=2, train_backbone=args.train_backbone, unfreeze_last_block=args.unfreeze_last_block)
     model.to(device)
     compiled = False
     if getattr(args, "torch_compile", False):
@@ -1713,32 +1694,44 @@ def _run_single_training(
         else:
             LOGGER.warning("torch.compile não disponível nesta versão do PyTorch; ignorando flag.")
     setattr(args, "torch_compile_effective", compiled)
+    # 5.1) Loss ponderada opcional: 'auto' usa pesos ~ inverso da frequência por classe binária no treino
     loss_fn = nn.CrossEntropyLoss()
     if args.class_weights == "auto":
-        ys = [int(r.get("professional_label")) - 1 for r in rows_tr.to_dict(orient="records")]
-        counts = np.array([max(1, ys.count(c)) for c in range(4)], dtype=np.float64)
+        ys = [_map_to_binary_label(r.get("professional_label")) for r in rows_tr]
+        ys_binary = [y for y in ys if y is not None]
+        counts = np.array([max(1, ys_binary.count(c)) for c in range(2)], dtype=np.float64)
         if np.any(counts == 0):
-            LOGGER.warning("Alguma classe ausente no treino; ignorando class weights.")
+            LOGGER.warning("Alguma classe binária ausente no treino; ignorando class weights.")
         else:
-            weights = (len(ys) / (4.0 * counts)).astype(np.float32)
+            # Regra simples: weight_c = N_total / (n_classes * count_c)
+            weights = (len(ys_binary) / (2.0 * counts)).astype(np.float32)
             cw = torch.tensor(weights, dtype=torch.float32, device=device)
             loss_fn = nn.CrossEntropyLoss(weight=cw)
-            LOGGER.info("Class weights (auto): %s", weights.tolist())
+            LOGGER.info("Class weights (auto, binário): AB=%s, CD=%s", weights[0], weights[1])
 
-    loader_common_kwargs = dict(num_workers=loader_cfg["num_workers"], pin_memory=loader_cfg["pin_memory"], collate_fn=_collate)
-    if loader_cfg["num_workers"] > 0:
-        loader_common_kwargs["persistent_workers"] = loader_cfg["persistent_workers"]
-        if loader_cfg["prefetch_factor"] is not None:
-            loader_common_kwargs["prefetch_factor"] = loader_cfg["prefetch_factor"]
-    dl_va_eval = DataLoader(ds_va, batch_size=args.batch_size, shuffle=False, **dict(loader_common_kwargs))
-
+    # 5.2) Otimizador com grupos (head vs backbone)
+    # Warmup opcional: se warmup_epochs > 0, congela últimos blocos temporariamente e treina só a head nas primeiras épocas
+    # Função auxiliar para obter parâmetros dos últimos blocos de features
+    def get_last_blocks_params(model):
+        """Retorna parâmetros dos últimos 2 blocos de features (equivalente ao layer4)."""
+        num_blocks = len(model.features)
+        params = []
+        for i in range(num_blocks - 2, num_blocks):  # últimos 2 blocos
+            params.extend(list(model.features[i].parameters()))
+        return params
+    
+    if args.warmup_epochs > 0 and not args.train_backbone and args.unfreeze_last_block:
+        last_blocks_params = get_last_blocks_params(model)
+        for p in last_blocks_params:
+            p.requires_grad = False
+        LOGGER.info("Warmup ativo: treinar apenas a head por %d época(s); últimos blocos serão liberados após warmup", args.warmup_epochs)
+    head_params = list(model.classifier.parameters())
+    # backbone inicialmente congelado; se args.unfreeze_last_block ou warmup vai habilitar depois
+    last_blocks_params = get_last_blocks_params(model)
     param_groups = [
-        {"params": [p for p in model.classifier.parameters() if p.requires_grad], "lr": args.lr},
+        {"params": [p for p in head_params if p.requires_grad], "lr": args.lr},
     ]
-    last_blocks_params = []
-    num_blocks = len(model.features)
-    for i in range(max(0, num_blocks - 2), num_blocks):
-        last_blocks_params.extend(list(model.features[i].parameters()))
+    # se já veio com unfreeze_last_block/train_backbone, adiciona grupo já
     if any(p.requires_grad for p in last_blocks_params):
         param_groups.append({"params": [p for p in last_blocks_params if p.requires_grad], "lr": args.backbone_lr})
     adamw_kwargs = dict(weight_decay=args.weight_decay)
@@ -1754,14 +1747,16 @@ def _run_single_training(
             adamw_kwargs.pop("fused", None)
         optim = torch.optim.AdamW(param_groups, **adamw_kwargs)
 
+    # 6) Loop de treino
     hist_rows = []
-    best = {"acc": -1, "state": None, "metrics_payload": None}
+    best = {"acc": -1, "state": None}
     patience = max(0, int(getattr(args, "early_stop_patience", 0) or 0))
     min_delta = float(getattr(args, "early_stop_min_delta", 0.0) or 0.0)
     if min_delta < 0:
         LOGGER.warning("early-stop-min-delta negativo (%s) ajustado para 0.0.", min_delta)
         min_delta = 0.0
     no_improve_epochs = 0
+    early_stop_triggered = False
     lr_patience = max(0, int(getattr(args, "lr_reduce_patience", 0) or 0))
     scheduler = None
     if lr_patience > 0:
@@ -1789,12 +1784,14 @@ def _run_single_training(
     context = profiler if profiler is not None else contextlib.nullcontext()
     with context:
         for epoch in range(1, args.epochs + 1):
+            # Warmup: após warmup_epochs, libera últimos blocos (se estavam congelados pelo warmup)
             if args.warmup_epochs > 0 and epoch == args.warmup_epochs + 1 and not args.train_backbone and args.unfreeze_last_block:
+                # Função auxiliar para obter parâmetros dos últimos blocos
                 num_blocks = len(model.features)
                 last_blocks_params = []
                 for i in range(num_blocks - 2, num_blocks):
                     last_blocks_params.extend(list(model.features[i].parameters()))
-
+                
                 if not any(p.requires_grad for p in last_blocks_params):
                     for p in last_blocks_params:
                         p.requires_grad = True
@@ -1822,29 +1819,19 @@ def _run_single_training(
                 "train_loss": tr_loss,
                 "train_acc": tr_acc,
                 "val_acc": val["acc"],
-                "val_kappa_quadratic": val["kappa_quadratic"],
-                "val_auc_ovr": (val["auc_ovr"] if val["auc_ovr"] is not None else np.nan),
+                "val_kappa": val["kappa"],
+                "val_auc": (val["auc"] if val["auc"] is not None else np.nan),
                 "sec": round(t1 - t0, 2),
             })
-            macro_avg = val.get("classification_report", {}).get("macro avg", {})
-            current_payload = {
-                "epoch": int(epoch),
-                "val_acc": float(val.get("acc", 0.0)),
-                "kappa_quadratic": float(val.get("kappa_quadratic", 0.0)),
-                "macro_f1": float(macro_avg.get("f1-score", 0.0)),
-                "macro_recall": float(macro_avg.get("recall", 0.0)),
-                "auc_ovr": float(val["auc_ovr"]) if val.get("auc_ovr") is not None else 0.0,
-            }
-            _append_ray_metrics(args, current_payload)
-            auc_txt = "NA" if val["auc_ovr"] is None else f"{val['auc_ovr']:.4f}"
+            auc_txt = "NA" if val["auc"] is None else f"{val['auc']:.4f}"
             LOGGER.info(
-                "Epoch %d/%d | train_loss=%.4f | train_acc=%.4f | val_acc=%.4f | kappa_q=%.4f | auc_ovr=%s | tempo=%.2fs",
+                "Epoch %d/%d | train_loss=%.4f | train_acc=%.4f | val_acc=%.4f | kappa=%.4f | auc=%s | tempo=%.2fs",
                 epoch,
                 args.epochs,
                 tr_loss,
                 tr_acc,
                 val["acc"],
-                val["kappa_quadratic"],
+                val["kappa"],
                 auc_txt,
                 t1 - t0,
             )
@@ -1863,11 +1850,6 @@ def _run_single_training(
             if improved:
                 best["acc"] = val["acc"]
                 best["state"] = {k: v.cpu() for k, v in model.state_dict().items()}
-                best["metrics_payload"] = current_payload
-                if getattr(args, "save_best", True):
-                    ckpt_path = os.path.join(args.outdir, "best_model.pt")
-                    torch.save(best["state"], ckpt_path)
-                    LOGGER.debug("Checkpoint atualizado em %s", ckpt_path)
                 no_improve_epochs = 0
             else:
                 if patience > 0:
@@ -1886,6 +1868,7 @@ def _run_single_training(
                             epoch,
                             best["acc"],
                         )
+                        early_stop_triggered = True
                         break
             pd.DataFrame(val["val_rows"]).to_csv(os.path.join(args.outdir, "val_predictions.csv"), index=False)
             metrics_path = os.path.join(args.outdir, "metrics", "val_metrics.json")
@@ -1893,32 +1876,30 @@ def _run_single_training(
                 json.dump({k: (v if not isinstance(v, np.generic) else v.item()) for k, v in val.items() if k != "val_rows"}, f, indent=2)
             save_metrics_figure(val, os.path.join(args.outdir, "metrics", "val_metrics.png"))
             LOGGER.debug("Artefatos de validacao atualizados (epoch %d).", epoch)
+
+            # Atualiza figura de historico (loss/acc/kappa/AUC) a cada epoca
             save_history_figure(hist_rows, os.path.join(args.outdir, "train_history.png"))
 
     history_path = os.path.join(args.outdir, "train_history.csv")
     pd.DataFrame(hist_rows).to_csv(history_path, index=False)
     LOGGER.info("Histórico de treino salvo em %s", history_path)
 
+    # 7) Embeddings do conjunto de validação com o melhor modelo
     if best["state"] is not None:
         model.load_state_dict(best["state"])
         best_epoch = max(hist_rows, key=lambda r: r["val_acc"]) if hist_rows else None
         LOGGER.info("Melhor val_acc observada: %.4f", best["acc"])
         if best_epoch is not None:
             LOGGER.info(
-                "Resumo da melhor época: epoch=%d | val_acc=%.4f | kappa_q=%.4f | auc_ovr=%.4f | train_acc=%.4f | train_loss=%.4f",
+                "Resumo da melhor época: epoch=%d | val_acc=%.4f | kappa=%.4f | auc=%.4f | train_acc=%.4f | train_loss=%.4f",
                 best_epoch["epoch"],
                 best_epoch["val_acc"],
-                best_epoch.get("val_kappa_quadratic", float("nan")),
-                best_epoch.get("val_auc_ovr", float("nan")),
+                best_epoch.get("val_kappa", best_epoch.get("val_kappa_quadratic", float("nan"))),
+                best_epoch.get("val_auc", best_epoch.get("val_auc_ovr", float("nan"))),
                 best_epoch.get("train_acc", float("nan")),
                 best_epoch.get("train_loss", float("nan")),
             )
-    loader_common_eval = dict(num_workers=loader_cfg["num_workers"], pin_memory=loader_cfg["pin_memory"], collate_fn=_collate)
-    if loader_cfg["num_workers"] > 0:
-        loader_common_eval["persistent_workers"] = loader_cfg["persistent_workers"]
-        if loader_cfg["prefetch_factor"] is not None:
-            loader_common_eval["prefetch_factor"] = loader_cfg["prefetch_factor"]
-    dl_va_eval = DataLoader(ds_va, batch_size=args.batch_size, shuffle=False, **dict(loader_common_eval))
+    dl_va_eval = DataLoader(ds_va, batch_size=args.batch_size, shuffle=False, **dict(loader_common))
     LOGGER.info(
         "Resumo final do split (device=%s, pin_memory=%s): train=%d | val=%d",
         device,
@@ -1929,6 +1910,7 @@ def _run_single_training(
     feats, metas = extract_embeddings(model, dl_va_eval, device, amp_enabled=amp_enabled)
     emb_npz_path = os.path.join(args.outdir, "embeddings_val.npz")
     np.savez_compressed(emb_npz_path, embeddings=feats)
+    # salva CSV combinando metadados + embeddings (como colunas e0..e1279 para EfficientNetB0)
     emb_cols = {f"e{i}": feats[:, i] for i in range(feats.shape[1])}
     df_emb = pd.DataFrame(metas)
     df_emb = pd.concat([df_emb, pd.DataFrame(emb_cols)], axis=1)
@@ -1936,157 +1918,9 @@ def _run_single_training(
     df_emb.to_csv(emb_csv_path, index=False)
     LOGGER.info("Embeddings do conjunto de validação salvos em %s e %s", emb_npz_path, emb_csv_path)
 
-    if getattr(args, "gradcam_samples", 0):
-        try:
-            gradcam_dir = os.path.join(args.outdir, args.gradcam_dir or "gradcam")
-            export_gradcam_samples(
-                model,
-                ds_va,
-                device,
-                gradcam_dir,
-                num_samples=max(0, int(args.gradcam_samples)),
-                img_size=args.img_size,
-            )
-            LOGGER.info("Grad-CAMs salvos em %s", gradcam_dir)
-        except Exception as exc:
-            LOGGER.warning("Falha ao gerar Grad-CAMs: %s", exc)
-
     LOGGER.info("Treino e extração de embeddings concluídos. Resultados em: %s", args.outdir)
     LOGGER.info("Log detalhado disponível em: %s", os.path.join(args.outdir, "run.log"))
-    _log_optuna_trial(args, best.get("metrics_payload"))
-    return val
 
-
-def run(args: argparse.Namespace):
-    """Orquestra o pipeline (single split ou StratifiedKFold)."""
-    seed_everything(args.seed, args.deterministic)
-
-    if {"AccessionNumber", "Classification"}.issubset(set(pd.read_csv(args.csv, nrows=0).columns)):
-        df_cls = _read_classificacao_csv(args.csv)
-        df = _df_from_classificacao_with_paths(df_cls, args.dicom_root, exclude_class_5=not args.include_class_5)
-    else:
-        df = _df_from_path_csv(args.csv)
-
-    if df.empty:
-        raise RuntimeError("Nenhuma linha válida encontrada após mapear caminhos a partir do CSV.")
-
-    df = df.copy()
-    df = df[df["professional_label"].isin([1,2,3,4])]
-    df = df.reset_index(drop=True)
-    if df.empty:
-        raise RuntimeError("Após excluir classe 5, o CSV ficou vazio.")
-
-    subset = getattr(args, "subset", None)
-    if subset is not None:
-        subset = int(subset)
-        if subset <= 0:
-            LOGGER.warning("subset<=0 ignorado; mantendo %d amostras disponíveis.", len(df))
-        else:
-            total_before_subset = len(df)
-            subset_n = min(subset, total_before_subset)
-            if subset_n < total_before_subset:
-                df = df.sample(n=subset_n, random_state=args.seed).reset_index(drop=True)
-                LOGGER.info("subset habilitado: usando %d/%d amostras antes do split.", subset_n, total_before_subset)
-
-    embedding_store: Optional[Stage1EmbeddingStore] = None
-    if getattr(args, "use_embeddings", False):
-        feat_path = args.embeddings_features or os.path.join(args.embeddings_dir, "features.npy")
-        meta_path = args.embeddings_metadata or os.path.join(args.embeddings_dir, "metadata.csv")
-        if not os.path.isfile(feat_path):
-            raise FileNotFoundError(f"features.npy não encontrado (use --embeddings-features): {feat_path}")
-        if not os.path.isfile(meta_path):
-            raise FileNotFoundError(f"metadata.csv não encontrado (use --embeddings-metadata): {meta_path}")
-        embedding_store = Stage1EmbeddingStore.from_artifacts(feat_path, meta_path)
-        covered, total, missing = _check_embeddings_coverage(df, embedding_store)
-        if covered != total:
-            sample_txt = ", ".join(missing) if missing else "verifique se Stage 1 foi executado."
-            raise RuntimeError(
-                f"Embeddings Stage 1 cobrem {covered}/{total} amostras. Exemplos faltantes: {sample_txt}"
-            )
-        LOGGER.info(
-            "Embeddings Stage 1 carregados de %s (%d vetores, dim=%d).",
-            os.path.dirname(os.path.abspath(feat_path)),
-            len(embedding_store),
-            embedding_store.feature_dim,
-        )
-        setattr(args, "embedding_dim", embedding_store.feature_dim)
-    else:
-        setattr(args, "embedding_dim", 0)
-
-    if getattr(args, "cv_folds", 1) and args.cv_folds > 1:
-        _run_cross_validation(args, df, embedding_store)
-        return
-
-    tr_idx, va_idx = make_splits(df, val_frac=args.val_frac, seed=args.seed)
-    df_tr = df.iloc[tr_idx].reset_index(drop=True)
-    df_va = df.iloc[va_idx].reset_index(drop=True)
-    _run_single_training(args, df_tr, df_va, embedding_store)
-
-
-def _run_cross_validation(
-    args: argparse.Namespace,
-    df: pd.DataFrame,
-    embedding_store: Optional[Stage1EmbeddingStore],
-) -> None:
-    folds = int(getattr(args, "cv_folds", 1) or 1)
-    base_outdir = Path(args.cv_outdir)
-    base_outdir.mkdir(parents=True, exist_ok=True)
-    LOGGER.info("Iniciando StratifiedKFold (k=%d) com registros em %s", folds, base_outdir)
-    skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=args.seed)
-    summary: list[dict[str, Any]] = []
-    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(df, df["professional_label"]), 1):
-        fold_args = copy.deepcopy(args)
-        fold_args.cv_folds = 1
-        fold_args.auto_increment_outdir = False
-        fold_args.outdir = str(base_outdir / f"fold_{fold_idx}")
-        fold_args.seed = args.seed + fold_idx - 1
-        LOGGER.info("→ Fold %d/%d | outdir=%s", fold_idx, folds, fold_args.outdir)
-        metrics = _run_single_training(
-            fold_args,
-            df.iloc[tr_idx].reset_index(drop=True),
-            df.iloc[va_idx].reset_index(drop=True),
-            embedding_store,
-        )
-        summary.append({
-            "fold": fold_idx,
-            "outdir": fold_args.outdir,
-            "metrics": {
-                "accuracy": metrics.get("acc"),
-                "kappa_quadratic": metrics.get("kappa_quadratic"),
-                "macro_f1": metrics.get("classification_report", {}).get("macro avg", {}).get("f1-score"),
-                "auc_ovr": metrics.get("auc_ovr"),
-            },
-        })
-    rows_for_stats = []
-    for entry in summary:
-        stats = entry["metrics"]
-        rows_for_stats.append([
-            float(stats.get("accuracy") or 0.0),
-            float(stats.get("kappa_quadratic") or 0.0),
-            float(stats.get("macro_f1") or 0.0),
-            float(stats.get("auc_ovr") or 0.0),
-        ])
-    arr = np.array(rows_for_stats, dtype=float)
-    mean = arr.mean(axis=0)
-    std = arr.std(axis=0)
-    agg = {
-        "folds": summary,
-        "mean": {
-            "accuracy": mean[0],
-            "kappa_quadratic": mean[1],
-            "macro_f1": mean[2],
-            "auc_ovr": mean[3],
-        },
-        "std": {
-            "accuracy": std[0],
-            "kappa_quadratic": std[1],
-            "macro_f1": std[2],
-            "auc_ovr": std[3],
-        },
-    }
-    summary_path = base_outdir / "cv_summary.json"
-    summary_path.write_text(json.dumps(agg, indent=2))
-    LOGGER.info("Cross-validation concluída; resumo salvo em %s", summary_path)
 
 def build_argparser() -> argparse.ArgumentParser:
     """Cria e documenta os argumentos de linha de comando.
@@ -2097,10 +1931,10 @@ def build_argparser() -> argparse.ArgumentParser:
     - Para melhorar classes raras: --class-weights auto e/ou --sampler-weighted.
     - Para fine-tuning leve: --warmup-epochs 2 --unfreeze-last-block --backbone-lr 1e-5.
     """
-    p = argparse.ArgumentParser(description="EfficientNetB0 - Densidade mamária com Transfer Learning")
-    p.add_argument("--csv", required=True, help="Caminho para classificacao.csv ou CSV baseado em caminhos")
+    p = argparse.ArgumentParser(description="EfficientNetB0 - Classificação binária de densidade mamária (AB vs CD) com Transfer Learning")
+    p.add_argument("--csv", required=True, help="Caminho para classificacao.csv, CSV baseado em caminhos, ou diretório do dataset (mamografias/patches_completo)")
     p.add_argument("--dicom-root", dest="dicom_root", default="archive", help="Raiz das pastas por AccessionNumber (para classificacao.csv)")
-    p.add_argument("--outdir", default="outputs/mammo_efficientnetb0_density", help="Pasta raiz para results_*/metrics e cache compartilhado")
+    p.add_argument("--outdir", default="outputs/mammo_efficientnetb0_density_abxcd", help="Pasta raiz para results_*/metrics e cache compartilhado")
     p.add_argument("--epochs", type=int, default=HP.EPOCHS)
     p.add_argument("--batch-size", dest="batch_size", type=int, default=HP.BATCH_SIZE)
     p.add_argument("--num-workers", dest="num_workers", type=int, default=HP.NUM_WORKERS)
@@ -2132,88 +1966,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--unfreeze-last-block", dest="unfreeze_last_block", action="store_true", help="Descongela últimos blocos de features (padrão)")
     p.add_argument("--no-unfreeze-last-block", dest="unfreeze_last_block", action="store_false", help="Congela últimos blocos (apenas classifier treina)")
     p.add_argument("--include-class-5", dest="include_class_5", action="store_true", help="Inclui exemplos com Classification==5")
-    p.add_argument(
-        "--subset",
-        dest="subset",
-        type=int,
-        default=None,
-        help="Limita o dataset a N amostras antes do split (útil para smoke tests/CI).",
-    )
     p.add_argument("--class-weights", dest="class_weights", default=HP.CLASS_WEIGHTS, choices=["none","auto"], help="Pondera CrossEntropy por frequência de classe (auto)")
     p.add_argument("--sampler-weighted", dest="sampler_weighted", action="store_true", help="Usa WeightedRandomSampler no treino")
-    p.add_argument(
-        "--save-best",
-        dest="save_best",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Salva o melhor checkpoint como best_model.pt dentro de --outdir.",
-    )
-    p.add_argument(
-        "--use-embeddings",
-        dest="use_embeddings",
-        action="store_true",
-        help="Concatena embeddings 2048-D da Etapa 1 antes da cabeça densa (requer features.npy + metadata.csv).",
-    )
-    p.add_argument(
-        "--embeddings-dir",
-        dest="embeddings_dir",
-        default=os.path.join("outputs", "embeddings_resnet50"),
-        help="Diretório que contém Stage 1 (features.npy, metadata.csv).",
-    )
-    p.add_argument(
-        "--embeddings-features",
-        dest="embeddings_features",
-        help="Caminho explícito para features.npy (sobrepõe --embeddings-dir).",
-    )
-    p.add_argument(
-        "--embeddings-metadata",
-        dest="embeddings_metadata",
-        help="Caminho explícito para metadata.csv (sobrepõe --embeddings-dir).",
-    )
-    p.add_argument(
-        "--gradcam-samples",
-        dest="gradcam_samples",
-        type=int,
-        default=0,
-        help="Quantidade de amostras de Grad-CAM a exportar no split de validação (0 desativa).",
-    )
-    p.add_argument(
-        "--gradcam-dir",
-        dest="gradcam_dir",
-        default="gradcam",
-        help="Subpasta dentro de --outdir para salvar as figuras de Grad-CAM.",
-    )
-    p.add_argument(
-        "--optuna-trial-id",
-        dest="optuna_trial_id",
-        default=None,
-        help="Quando definido, grava optuna_trial.json com a métrica objetivo (macro-F1).",
-    )
-    p.add_argument(
-        "--ray-trial-name",
-        dest="ray_trial_name",
-        default=None,
-        help="Nome do experimento para Ray Tune; gera ray_<nome>.jsonl com métricas por época.",
-    )
-    p.add_argument(
-        "--ray-logdir",
-        dest="ray_logdir",
-        default=None,
-        help="Diretório padrão para salvar os JSONL do Ray Tune (default: --outdir).",
-    )
-    p.add_argument(
-        "--cv-folds",
-        dest="cv_folds",
-        type=int,
-        default=1,
-        help="Quantidade de folds StratifiedKFold (1 desativa o modo CV).",
-    )
-    p.add_argument(
-        "--cv-outdir",
-        dest="cv_outdir",
-        default=str(Path("outputs") / "density_experiments" / "results_k"),
-        help="Diretório base para salvar execuções por fold quando --cv-folds > 1.",
-    )
     p.add_argument("--warmup-epochs", dest="warmup_epochs", type=int, default=HP.WARMUP_EPOCHS, help="Épocas só na head antes de liberar últimos blocos (últimos blocos precisam estar descongelados via --unfreeze-last-block)")
     p.add_argument("--prefetch-factor", dest="prefetch_factor", type=int, default=HP.PREFETCH_FACTOR, help="Batches antecipadas por worker do DataLoader (num_workers>0)")
     p.add_argument("--persistent-workers", dest="persistent_workers", action="store_true", help="Mantém workers do DataLoader vivos entre épocas (recomendado no Windows/macOS)")

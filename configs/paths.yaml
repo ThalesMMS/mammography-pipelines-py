@@ -1,0 +1,11 @@
+# Default locations consumed por Projeto.py quando nenhuma flag é passada.
+# Cada seção adiciona argumentos para o respectivo subcomando.
+embed:
+  data_dir: ./archive
+  csv_path: ./classificacao.csv
+  out_dir: ./outputs/embeddings_resnet50
+
+train-density:
+  csv: ./classificacao.csv
+  dicom_root: ./archive
+  outdir: ./outputs/mammo_efficientnetb0_density
