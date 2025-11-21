@@ -14,6 +14,7 @@ This repository brings together two core scripts for working with mammograms and
   python Unified_Mammo_Classifier.py --mode train --dataset archive --model efficientnet_b0 --task binary --epochs 10 --batch-size 16 --cache-mode auto --gradcam --save-val-preds --export-val-embeddings --outdir outputs/archive_effnet_train
   ```
 - The native scripts `mammography/scripts/train.py` and `mammography/scripts/extract_features.py` now ship the same presets/backbones/features (history charts, Grad-CAM, confusion/predictions, embedding export). Swap `--dataset`/`--arch` to cover all combinations; see `docs/Unified_Mammo_Classifier.md` for example commands.
+- A single launcher with menu (CLI or Web) lives in `menu.py`. Run `python menu.py` for an interactive CLI that builds and executes the train/extract commands, or `python menu.py --ui web` for a simple form at `http://127.0.0.1:8000`.
 
 Main subdirectories:
 - `ResNet50_Test/` - research suite with CLIs to preprocess, extract embeddings, cluster, and analyze breast density.
