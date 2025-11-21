@@ -77,3 +77,12 @@ Swap `--task binary`/`--task multiclass` as needed. All commands emit history ch
 - Add `--gradcam-limit N` to control how many overlays are saved; outputs land in `<outdir>/gradcam/`.
 - `--cache-mode auto` will materialize PNG/tensor caches per dataset size/type; override with `memory`, `disk`, `tensor-disk`, or `tensor-memmap` if you prefer a fixed strategy.
 - Use `--class-weights auto` or `--sampler-weighted` to balance classes; `--early-stop-patience` and `--lr-reduce-*` control training patience/decay.
+
+## Native scripts parity
+The core scripts now mirror these combinations without relying on `Unified_Mammo_Classifier.py`:
+- Train (history + confusion + Grad-CAM + val preds/embeddings):  
+  `python mammography/scripts/train.py --dataset archive --arch efficientnet_b0 --classes binary --epochs 10 --batch-size 16 --cache-mode auto --gradcam --save-val-preds --export-val-embeddings --outdir outputs/archive_effnet_train`
+- Extract embeddings + PCA/t-SNE/UMAP/k-means:  
+  `python mammography/scripts/extract_features.py --dataset mamografias --arch resnet50 --pca --tsne --umap --cluster --save-csv --outdir outputs/mamografias_resnet_extract`
+
+Swap `--dataset` among `archive`, `mamografias`, `patches_completo` and `--arch` between `efficientnet_b0`/`resnet50` to cover the full matrix.

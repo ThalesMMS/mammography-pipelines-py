@@ -15,6 +15,14 @@ def run_tsne(features: np.ndarray, n_components: int = 2, perplexity: float = 30
     tsne = TSNE(n_components=n_components, perplexity=perplexity, random_state=seed, init="pca", learning_rate="auto")
     return tsne.fit_transform(features)
 
+def run_umap(features: np.ndarray, n_components: int = 2, seed: int = 42) -> np.ndarray:
+    try:
+        from umap import UMAP  # type: ignore
+    except Exception as exc:
+        raise ImportError(f"umap-learn não disponível: {exc}")
+    umap_model = UMAP(n_components=n_components, random_state=seed)
+    return umap_model.fit_transform(features)
+
 def find_optimal_k(features: np.ndarray, k_range: range = range(2, 10), seed: int = 42) -> Dict[str, Any]:
     results = []
     best_k = 2

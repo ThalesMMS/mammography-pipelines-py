@@ -261,13 +261,18 @@ class MammoDensityDataset(Dataset):
             else:
                 y = y - 1 # Default 1..4 -> 0..3
         else:
-            y = None
+            y = -1  # Mantém alinhamento em loaders mesmo sem label
         
         embedding_tensor = None
         if self.embedding_store:
             embedding_tensor = self.embedding_store.lookup(r)
-            
-        return img, y, r, embedding_tensor
+
+        meta = {
+            "path": path,
+            "accession": r.get("accession"),
+            "raw_label": r.get("professional_label"),
+        }
+        return img, y, meta, embedding_tensor
 
     @staticmethod
     def _convert_to_tensor(img: Image.Image) -> torch.Tensor:
@@ -298,14 +303,9 @@ class MammoDensityDataset(Dataset):
 def mammo_collate(batch):
     """Collate que mantém metadados como lista de dicts."""
     xs = torch.stack([b[0] for b in batch], dim=0)
-    ys = torch.tensor([b[1] for b in batch if b[1] is not None], dtype=torch.long)
-    if len(ys) != len(batch):
-        # Se houver labels faltantes, cuidado. O código original supõe que todos têm labels ou filtra antes.
-        # Vamos assumir que quem chama tratou isso ou que ys será usado apenas se compatível.
-        pass 
-    
+    ys = torch.tensor([b[1] for b in batch], dtype=torch.long)
     meta = [b[2] for b in batch]
-    
+
     emb_list = [b[3] for b in batch if b[3] is not None]
     embeddings = None
     if len(emb_list) == len(batch):

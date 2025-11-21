@@ -2,11 +2,16 @@ import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional, Any, List
-from ..utils.dicom_io import is_dicom_path
+from typing import Optional, Any, List, Sequence, Tuple, Dict
+from ..utils.dicom_io import is_dicom_path, DICOM_EXTS
 
 CACHE_AUTO_DISK_MAX = 6000
 CACHE_AUTO_MEMORY_MAX = 1000
+DATASET_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
+    "archive": {"csv": "classificacao.csv", "dicom_root": "archive"},
+    "mamografias": {"csv": "mamografias", "dicom_root": None},
+    "patches_completo": {"csv": "patches_completo", "dicom_root": None},
+}
 
 def _find_first_dicom(folder: str) -> Optional[str]:
     """Retorna o primeiro DICOM encontrado na pasta."""
@@ -49,20 +54,83 @@ def _normalize_accession(value: Any) -> Optional[str]:
     text = str(value).strip()
     return text or None
 
-def load_dataset_dataframe(csv_path: str, dicom_root: Optional[str] = None, exclude_class_5: bool = True) -> pd.DataFrame:
-    """Carrega DataFrame a partir de CSV de classificação ou caminhos."""
+def _find_best_data_dir(pref: Optional[str]) -> Optional[str]:
+    if not pref:
+        return pref
+    if os.path.isdir(pref):
+        return pref
+    alt = pref.replace("archieve", "archive")
+    if os.path.isdir(alt):
+        return alt
+    return pref
+
+def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    has_subfolders = any(p.is_dir() for p in root.iterdir() if not p.name.startswith("."))
+    search_dirs = [p for p in root.iterdir() if p.is_dir()] if has_subfolders else [root]
+    for folder in search_dirs:
+        feat_path = folder / "featureS.txt"
+        if not feat_path.exists():
+            continue
+        lines = [l.strip() for l in feat_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        for i in range(0, len(lines), 2):
+            if i + 1 >= len(lines):
+                break
+            fname, cls_raw = lines[i], lines[i + 1]
+            try:
+                birads = int(cls_raw) + 1
+            except Exception:
+                continue
+            if "(" in fname and " (" not in fname:
+                fname = fname.replace("(", " (")
+            if not fname.lower().endswith(".png"):
+                fname = f"{fname}.png"
+            full_path = folder / fname
+            if not full_path.exists():
+                continue
+            rows.append(
+                {
+                    "image_path": str(full_path),
+                    "professional_label": birads,
+                    "accession": folder.name,
+                }
+            )
+    if not rows:
+        raise ValueError(f"Nenhuma imagem encontrada via featureS.txt em {root}")
+    return rows
+
+def resolve_paths_from_preset(csv_path: Optional[str], dataset: Optional[str], dicom_root: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    if dataset and dataset in DATASET_PRESETS:
+        preset = DATASET_PRESETS[dataset]
+        csv_path = csv_path or preset.get("csv")
+        if preset.get("dicom_root") and not dicom_root:
+            dicom_root = preset.get("dicom_root")
+    return csv_path, dicom_root
+
+def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = None, exclude_class_5: bool = True, dataset: Optional[str] = None) -> pd.DataFrame:
+    """Carrega DataFrame a partir de CSV, diretórios com featureS.txt ou presets conhecidos."""
+    csv_path, dicom_root = resolve_paths_from_preset(csv_path, dataset, dicom_root)
+    if not csv_path:
+        raise ValueError("csv_path não definido; use --csv ou --dataset com preset válido.")
+
+    # Diretório com featureS.txt (mamografias/patches)
+    if os.path.isdir(csv_path):
+        rows = _rows_from_features_dir(Path(csv_path))
+        return pd.DataFrame(rows)
+
     df = pd.read_csv(csv_path)
-    
-    # Verifica formato
-    if "Classification" in df.columns and dicom_root:
-        # Formato 1: AccessionNumber, Classification
-        # Requer dicom_root para encontrar imagens
+
+    # Formato AccessionNumber + Classification (DICOM raiz)
+    if {"AccessionNumber", "Classification"}.issubset(df.columns):
+        if not dicom_root:
+            raise ValueError("dicom_root é obrigatório para CSV com AccessionNumber/Classification.")
+        dicom_root = _find_best_data_dir(dicom_root)
         rows = []
+        df["AccessionNumber"] = df["AccessionNumber"].astype(str).str.strip()
         for _, r in df.iterrows():
             lab = int(r["Classification"]) if pd.notna(r["Classification"]) else None
             if lab == 5 and exclude_class_5:
                 continue
-            
             acc = str(r.get("AccessionNumber", "")).strip()
             folder = os.path.join(dicom_root, acc)
             if not os.path.isdir(folder):
@@ -70,52 +138,50 @@ def load_dataset_dataframe(csv_path: str, dicom_root: Optional[str] = None, excl
             dcm = _find_first_dicom(folder)
             if dcm is None:
                 continue
-            
-            rows.append({
-                "accession": acc,
-                "image_path": dcm,
-                "professional_label": lab
-            })
+            rows.append({"accession": acc, "image_path": dcm, "professional_label": lab})
         return pd.DataFrame(rows)
-    
-    elif "image_path" in df.columns:
-        # Formato 2: image_path, density_label/label
+
+    # Formato genérico com caminho direto
+    if "image_path" in df.columns:
         label_col_candidates = ["density_label", "label", "y", "professional_label"]
         lab_col = next((c for c in label_col_candidates if c in df.columns), None)
-        
         if lab_col is None:
-             df["professional_label"] = None
+            df["professional_label"] = None
         else:
-             df["professional_label"] = df[lab_col].apply(_coerce_density_label)
-             
+            df["professional_label"] = df[lab_col].apply(_coerce_density_label)
+
         if "AccessionNumber" in df.columns:
             df["accession"] = df["AccessionNumber"].astype(str)
         elif "accession" not in df.columns:
-             df["accession"] = [os.path.basename(os.path.dirname(p)) for p in df["image_path"]]
-        
+            df["accession"] = [os.path.basename(os.path.dirname(p)) for p in df["image_path"]]
         return df[["image_path", "professional_label", "accession"]]
-    
-    else:
-        raise ValueError("CSV formato desconhecido ou faltando --dicom-root para CSV de classificação.")
 
-def resolve_dataset_cache_mode(requested_mode: str, df: pd.DataFrame) -> str:
+    raise ValueError("CSV formato desconhecido ou faltando --dicom-root para CSV de classificação.")
+
+def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -> str:
     mode = (requested_mode or "none").lower()
     if mode != "auto":
         return mode
 
-    if "image_path" not in df.columns:
+    rows: List[Dict[str, Any]]
+    if isinstance(rows_or_df, pd.DataFrame):
+        rows = rows_or_df.to_dict("records")
+    else:
+        rows = list(rows_or_df)  # type: ignore
+
+    if not rows:
         return "none"
-    paths = [str(p) for p in df["image_path"].tolist() if pd.notna(p)]
+
+    paths = [str(r.get("image_path")) for r in rows if r.get("image_path")]
+    total = len(paths)
     if not paths:
         return "none"
 
-    total = len(paths)
-    dicom_mask = [is_dicom_path(p) for p in paths]
-    if all(dicom_mask):
-        if total > CACHE_AUTO_DISK_MAX:
-            return "none"
-        return "disk"
-
+    has_dicom = any(str(p).lower().endswith(DICOM_EXTS) for p in paths)
     if total <= CACHE_AUTO_MEMORY_MAX:
         return "memory"
+    if has_dicom and total <= CACHE_AUTO_DISK_MAX:
+        return "disk"
+    if has_dicom and total > CACHE_AUTO_DISK_MAX:
+        return "tensor-disk"
     return "none"
