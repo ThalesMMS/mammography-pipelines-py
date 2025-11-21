@@ -364,6 +364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "train-density":
             _run_passthrough("mammography/scripts/train.py", args, forwarded)
         elif args.command == "eval-export":
+            _print_eval_guidance(args, forwarded)
         elif args.command == "report-pack":
             _run_report_pack(args, forwarded)
         elif args.command == "rl-refine":

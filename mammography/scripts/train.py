@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import torch
+from torch import profiler
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -42,6 +43,7 @@ def parse_args():
     parser.add_argument("--dataset", choices=sorted(DATASET_PRESETS.keys()), help="Atalho para datasets conhecidos (archive/mamografias/patches_completo)")
     parser.add_argument("--csv", required=False, help="CSV, diretório com featureS.txt ou caminho manual")
     parser.add_argument("--dicom-root", help="Root for DICOMs (usado com classificacao.csv)")
+    parser.add_argument("--include-class-5", action="store_true", help="Mantém amostras com classificação 5 ao carregar classificacao.csv")
     parser.add_argument("--outdir", default="outputs/run", help="Output directory")
     parser.add_argument("--cache-mode", default=HP.CACHE_MODE, choices=["auto", "none", "memory", "disk", "tensor-disk", "tensor-memmap"])
     parser.add_argument("--cache-dir", help="Cache dir")
@@ -56,6 +58,8 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=HP.EPOCHS)
     parser.add_argument("--batch-size", type=int, default=HP.BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=HP.LR)
+    parser.add_argument("--backbone-lr", type=float, default=HP.BACKBONE_LR, help="Learning rate para o backbone (cabeça usa --lr)")
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--img-size", type=int, default=HP.IMG_SIZE)
     parser.add_argument("--seed", type=int, default=HP.SEED)
     parser.add_argument("--device", default=HP.DEVICE)
@@ -72,6 +76,14 @@ def parse_args():
     parser.add_argument("--warmup-epochs", type=int, default=HP.WARMUP_EPOCHS)
     parser.add_argument("--deterministic", action="store_true", default=HP.DETERMINISTIC)
     parser.add_argument("--allow-tf32", action=argparse.BooleanOptionalAction, default=HP.ALLOW_TF32)
+    parser.add_argument("--fused-optim", action="store_true", default=HP.FUSED_OPTIM, help="Ativa AdamW(fused=True) em CUDA quando disponível")
+    parser.add_argument("--torch-compile", action="store_true", default=HP.TORCH_COMPILE, help="Otimiza o modelo com torch.compile quando suportado")
+    parser.add_argument("--lr-reduce-patience", type=int, default=HP.LR_REDUCE_PATIENCE)
+    parser.add_argument("--lr-reduce-factor", type=float, default=HP.LR_REDUCE_FACTOR)
+    parser.add_argument("--lr-reduce-min-lr", type=float, default=HP.LR_REDUCE_MIN_LR)
+    parser.add_argument("--lr-reduce-cooldown", type=int, default=HP.LR_REDUCE_COOLDOWN)
+    parser.add_argument("--profile", action="store_true", help="Habilita torch.profiler no primeiro epoch")
+    parser.add_argument("--profile-dir", default=os.path.join("outputs", "profiler"), help="Destino dos traces do profiler")
     parser.add_argument("--early-stop-patience", type=int, default=HP.EARLY_STOP_PATIENCE)
     parser.add_argument("--early-stop-min-delta", type=float, default=HP.EARLY_STOP_MIN_DELTA)
 
@@ -106,6 +118,37 @@ def resolve_loader_runtime(args, device: torch.device):
         return max(0, min(num_workers, os.cpu_count() or 0)), prefetch, persistent
     return num_workers, prefetch, persistent
 
+def freeze_backbone(model: torch.nn.Module, arch: str) -> None:
+    """Desliga gradientes do backbone, preservando apenas a cabeça."""
+    for name, p in model.named_parameters():
+        if arch == "resnet50" and name.startswith("fc"):
+            continue
+        if arch == "efficientnet_b0" and name.startswith("classifier"):
+            continue
+        p.requires_grad = False
+
+def unfreeze_last_block(model: torch.nn.Module, arch: str) -> None:
+    if arch == "resnet50" and hasattr(model, "layer4"):
+        for p in model.layer4.parameters():
+            p.requires_grad = True
+    if arch == "efficientnet_b0" and hasattr(model, "features"):
+        for p in model.features[-1].parameters():
+            p.requires_grad = True
+
+def build_param_groups(model: torch.nn.Module, arch: str, lr_head: float, lr_backbone: float) -> list[dict]:
+    if arch == "resnet50":
+        head_params = [p for n, p in model.named_parameters() if n.startswith("fc") and p.requires_grad]
+        backbone_params = [p for n, p in model.named_parameters() if not n.startswith("fc") and p.requires_grad]
+    else:
+        head_params = [p for n, p in model.named_parameters() if n.startswith("classifier") and p.requires_grad]
+        backbone_params = [p for n, p in model.named_parameters() if not n.startswith("classifier") and p.requires_grad]
+    params = []
+    if head_params:
+        params.append({"params": head_params, "lr": lr_head})
+    if backbone_params:
+        params.append({"params": backbone_params, "lr": lr_backbone})
+    return params
+
 def main():
     args = parse_args()
 
@@ -123,7 +166,12 @@ def main():
     configure_runtime(device, args.deterministic, args.allow_tf32)
 
     # Load Data
-    df = load_dataset_dataframe(csv_path, dicom_root, exclude_class_5=True, dataset=args.dataset)
+    df = load_dataset_dataframe(
+        csv_path,
+        dicom_root,
+        exclude_class_5=not args.include_class_5,
+        dataset=args.dataset,
+    )
     logger.info(f"Loaded {len(df)} samples from dataset '{args.dataset or 'custom'}'.")
     df = df[df["professional_label"].notna()]
     logger.info(f"Valid samples (with label): {len(df)}")
@@ -210,7 +258,18 @@ def main():
         unfreeze_last_block=args.unfreeze_last_block,
     ).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    if args.torch_compile and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode="max-autotune")
+            logger.info("torch.compile ativado.")
+        except Exception as exc:
+            logger.warning("torch.compile falhou; seguindo sem compile: %s", exc)
+
+    optim_params = build_param_groups(model, args.arch, args.lr, args.backbone_lr)
+    optim_kwargs = {"weight_decay": args.weight_decay}
+    if args.fused_optim and device.type == "cuda":
+        optim_kwargs["fused"] = True
+    optimizer = torch.optim.AdamW(optim_params if optim_params else model.parameters(), **optim_kwargs)
     weights = None
     if args.class_weights == "auto":
         mapped = [_map_row_label(r) for r in train_rows if _map_row_label(r) is not None]
@@ -218,6 +277,16 @@ def main():
         weights = torch.tensor(len(mapped) / (num_classes * counts + 1e-6), dtype=torch.float32).to(device)
     loss_fn = torch.nn.CrossEntropyLoss(weight=weights)
     scaler = GradScaler() if args.amp and device.type == "cuda" else None
+    scheduler = None
+    if args.lr_reduce_patience and args.lr_reduce_patience > 0:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=args.lr_reduce_factor,
+            patience=args.lr_reduce_patience,
+            min_lr=args.lr_reduce_min_lr,
+            cooldown=args.lr_reduce_cooldown,
+        )
 
     best_acc = -1.0
     best_epoch = -1
@@ -227,6 +296,23 @@ def main():
 
     logger.info("Starting training...")
     for epoch in range(1, args.epochs + 1):
+        if args.warmup_epochs and epoch <= args.warmup_epochs:
+            freeze_backbone(model, args.arch)
+        elif args.train_backbone:
+            for p in model.parameters():
+                p.requires_grad = True
+            if args.unfreeze_last_block:
+                unfreeze_last_block(model, args.arch)
+
+        prof_ctx = None
+        if args.profile and epoch == 1:
+            Path(args.profile_dir).mkdir(parents=True, exist_ok=True)
+            activities = [profiler.ProfilerActivity.CPU]
+            if torch.cuda.is_available():
+                activities.append(profiler.ProfilerActivity.CUDA)
+            prof_ctx = profiler.profile(activities=activities, record_shapes=False)
+            prof_ctx.__enter__()
+
         t_loss, t_acc = train_one_epoch(
             model,
             train_loader,
@@ -250,6 +336,15 @@ def main():
         )
         v_acc = val_metrics.get("acc", 0.0)
         v_loss = val_metrics.get("loss", 0.0) or 0.0
+
+        if prof_ctx is not None:
+            try:
+                prof_ctx.__exit__(None, None, None)
+                trace_path = Path(args.profile_dir) / "trace.json"
+                prof_ctx.export_chrome_trace(trace_path)
+                logger.info(f"Trace salvo em {trace_path}")
+            except Exception as exc:
+                logger.warning("Falha ao salvar trace do profiler: %s", exc)
 
         logger.info(
             f"Epoch {epoch}/{args.epochs} | Train Loss: {t_loss:.4f} Acc: {t_acc:.4f} | Val Loss: {v_loss:.4f} Acc: {v_acc:.4f}"
@@ -286,6 +381,9 @@ def main():
             patience_ctr = 0
         else:
             patience_ctr += 1
+
+        if scheduler is not None:
+            scheduler.step(v_acc)
 
         if args.early_stop_patience and patience_ctr >= args.early_stop_patience:
             logger.info(f"Early stopping ativado após {patience_ctr} épocas sem melhoria.")

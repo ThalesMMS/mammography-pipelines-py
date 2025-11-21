@@ -5,15 +5,19 @@ This repository brings together two core scripts for working with mammograms and
 1. `extract_mammo_resnet50.py` - generates embeddings from DICOMs using a pre-trained ResNet50, producing artifacts ready for exploration (NPY/CSV, PCA, t-SNE, clusters).
 2. `RSNA_Mammography_EDA.py` - a script-format notebook covering EDA, data preparation, and multimodal training for the RSNA Breast Cancer Detection challenge. The same file also offers an optional fine-tuning pipeline to classify breast density (classes 1-4) by reusing the embedding extractor preprocessing.
 
-## Unified classifier (all datasets/backbones)
-- Use `Unified_Mammo_Classifier.py` for a single CLI that trains EfficientNetB0 or ResNet50, extracts embeddings, saves Grad-CAMs, histories/metrics, confusion matrices, and validation predictions/embeddings.
-- It understands the three bundled datasets out of the box: `--dataset archive` (DICOM + `classificacao.csv`), `--dataset mamografias` (per-folder `featureS.txt`), and `--dataset patches_completo` (root `featureS.txt`). You can also pass `--csv` manually.
-- See `docs/Unified_Mammo_Classifier.md` for a command matrix covering every combination (train/extract × ResNet50/EfficientNet × archive/mamografias/patches_completo).
-- Quick example (binary EfficientNet + Grad-CAM on the DICOM archive):
+## Pipeline CLIs (all datasets/backbones)
+- The unified CLI was folded into the native scripts to avoid duplication. Use `mammography/scripts/train.py` for training (binary or BI-RADS 1–4) with EfficientNetB0/ResNet50, Grad-CAM, history/metrics, validation predictions/embeddings, and cache/loader heuristics.
+- Use `mammography/scripts/extract_features.py` to extract embeddings and run PCA/t-SNE/UMAP/k-means while saving previews (first image, sample grid, label histogram) and joined CSVs.
+- The same dataset presets remain (`--dataset archive|mamografias|patches_completo`), and you can still point to custom `--csv/--dicom-root`. Add `--include-class-5` if you need to keep Class 5 rows from `classificacao.csv`.
+- See `docs/Unified_Mammo_Classifier.md` for the updated command matrix covering every dataset/backbone combination with the new scripts.
+- Quick train example (binary EfficientNet + Grad-CAM on the DICOM archive):
   ```bash
-  python Unified_Mammo_Classifier.py --mode train --dataset archive --model efficientnet_b0 --task binary --epochs 10 --batch-size 16 --cache-mode auto --gradcam --save-val-preds --export-val-embeddings --outdir outputs/archive_effnet_train
+  python mammography/scripts/train.py --dataset archive --arch efficientnet_b0 --classes binary --epochs 10 --batch-size 16 --cache-mode auto --gradcam --save-val-preds --export-val-embeddings --outdir outputs/archive_effnet_train
   ```
-- The native scripts `mammography/scripts/train.py` and `mammography/scripts/extract_features.py` now ship the same presets/backbones/features (history charts, Grad-CAM, confusion/predictions, embedding export). Swap `--dataset`/`--arch` to cover all combinations; see `docs/Unified_Mammo_Classifier.md` for example commands.
+- Quick extract example (embeddings + projections with ResNet50):
+  ```bash
+  python mammography/scripts/extract_features.py --dataset archive --arch resnet50 --classes multiclass --save-csv --pca --tsne --umap --cluster --outdir outputs/archive_resnet_extract
+  ```
 - A single launcher with menu (CLI or Web) lives in `menu.py`. Run `python menu.py` for an interactive CLI that builds and executes the train/extract commands, or `python menu.py --ui web` for a simple form at `http://127.0.0.1:8000`.
 
 Main subdirectories:
