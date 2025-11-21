@@ -35,6 +35,9 @@ REPO_ROOT = Path(__file__).resolve().parent
 # Preserve the original sys.executable (even if it's a venv shim) so subprocesses reuse the same environment.
 PYTHON = Path(sys.executable)
 
+# Add local src to path
+sys.path.append(str(REPO_ROOT / "mammography/src"))
+
 DEFAULT_CONFIGS: dict[str, Path | None] = {
     "embed": REPO_ROOT / "configs" / "paths.yaml",
     "train-density": REPO_ROOT / "configs" / "density.yaml",
@@ -79,11 +82,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     embed_parser = subparsers.add_parser(
         "embed",
-        help="Envolve extract_mammo_resnet50.py para gerar embeddings.",
+        help="Envolve extract_features.py para gerar embeddings.",
     )
     _add_config_argument(
         embed_parser,
-        "Encaminha argumentos ao extract_mammo_resnet50.py (Stage 1).",
+        "Encaminha argumentos ao extract_features.py (Stage 1).",
     )
 
     density_parser = subparsers.add_parser(
@@ -310,37 +313,9 @@ def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> 
                     LOGGER.warning("Falha ao ler summary.json em %s: %s", summary_path, exc)
 
 
-def _stub_rl_refine(cli_args: Sequence[str], dry_run: bool) -> None:
-    LOGGER.info("rl_refinement não disponível; executando stub.")
-    LOGGER.info("Args encaminhados: %s", " ".join(cli_args) or "<nenhum>")
-    if dry_run:
-        LOGGER.info("Dry-run global; nada a executar.")
-    else:
-        LOGGER.info("Crie o pacote rl_refinement para substituir este stub.")
-
-
 def _invoke_rl_refine(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
-    config_args = _load_config_args(getattr(args, "config", None), args.command)
-    cli_args = [*config_args, *forwarded]
-    if args.dry_run and "--dry-run" not in cli_args:
-        cli_args = ["--dry-run", *cli_args]
-    try:
-        from rl_refinement import train as rl_train  # type: ignore
-    except Exception as exc:  # pragma: no cover - optional module
-        LOGGER.debug("Falha ao importar rl_refinement: %s", exc)
-        _stub_rl_refine(cli_args, args.dry_run)
-        return
+    _run_passthrough("mammography/scripts/train_rl.py", args, forwarded)
 
-    runner = getattr(rl_train, "main", None)
-    if not callable(runner):
-        LOGGER.warning("rl_refinement.train.main não encontrado; usando stub.")
-        _stub_rl_refine(cli_args, args.dry_run)
-        return
-
-    LOGGER.info("Delegando ao rl_refinement.train.main")
-    exit_code = runner(cli_args)
-    if exit_code:
-        raise SystemExit(exit_code)
 
 
 def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
@@ -348,7 +323,12 @@ def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None
         LOGGER.warning("Argumentos adicionais ignorados pelo report-pack: %s", " ".join(forwarded))
     if not args.runs:
         raise SystemExit("Informe pelo menos um --run outputs/.../results_* para empacotar.")
-    from tools import report_pack  # Import adiado para evitar dependência desnecessária.
+    
+    try:
+        from mammography.tools import report_pack
+    except ImportError:
+        # Fallback if tools was imported from root previously
+        from tools import report_pack
 
     run_paths = []
     for run in args.runs:
@@ -380,11 +360,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "embed":
-            _run_passthrough("extract_mammo_resnet50.py", args, forwarded)
+            _run_passthrough("mammography/scripts/extract_features.py", args, forwarded)
         elif args.command == "train-density":
-            _run_passthrough("RSNA_Mammo_EfficientNetB0_Density.py", args, forwarded)
+            _run_passthrough("mammography/scripts/train.py", args, forwarded)
         elif args.command == "eval-export":
-            _print_eval_guidance(args, forwarded)
         elif args.command == "report-pack":
             _run_report_pack(args, forwarded)
         elif args.command == "rl-refine":

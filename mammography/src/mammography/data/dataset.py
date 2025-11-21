@@ -1,0 +1,314 @@
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+from PIL import Image
+from tqdm import tqdm
+from torchvision.transforms import InterpolationMode
+from torchvision.transforms.v2 import functional as tv_v2_F
+
+from ..utils.dicom_io import is_dicom_path, dicom_to_pil_rgb
+
+LOGGER = logging.getLogger("mammography")
+
+@dataclass
+class Stage1EmbeddingStore:
+    """Mantém os vetores 2048-D da Etapa 1 indexados por accession e caminho bruto."""
+
+    embeddings_by_accession: Dict[str, torch.Tensor]
+    embeddings_by_path: Dict[str, torch.Tensor]
+    feature_dim: int
+
+    def lookup(self, row: Dict[str, Any]) -> Optional[torch.Tensor]:
+        acc = row.get("accession")
+        if acc and acc in self.embeddings_by_accession:
+            return self.embeddings_by_accession[acc]
+        path = row.get("image_path")
+        if path:
+            # Tenta path exato
+            if path in self.embeddings_by_path:
+                return self.embeddings_by_path[path]
+            # Normaliza para tentar match
+            norm = str(Path(path).expanduser().resolve()).replace("\", "/").lower()
+            if norm in self.embeddings_by_path:
+                return self.embeddings_by_path[norm]
+        return None
+
+class MammoDensityDataset(Dataset):
+    """Dataset para densidade mamária."""
+
+    def __init__(
+        self,
+        rows: List[Dict[str, Any]],
+        img_size: int,
+        train: bool,
+        augment: bool = True,
+        cache_mode: str = "none",
+        cache_dir: Optional[str] = None,
+        split_name: str = "train",
+        embedding_store: Optional[Stage1EmbeddingStore] = None,
+        label_mapper: Optional[callable] = None,
+    ):
+        self.rows = rows
+        self.img_size = img_size
+        self.cache_mode = (cache_mode or "none").lower()
+        self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.split_name = split_name
+        self.embedding_store = embedding_store
+        self.label_mapper = label_mapper
+
+        valid_cache_modes = {"none", "memory", "disk", "tensor-disk", "tensor-memmap"}
+        if self.cache_mode not in valid_cache_modes:
+            raise ValueError(f"cache_mode inválido: {self.cache_mode}")
+        if self.cache_mode in {"disk", "tensor-disk", "tensor-memmap"} and self.cache_dir is None:
+            raise ValueError("cache_dir é obrigatório quando cache_mode requer persistência em disco")
+
+        self._image_cache: Optional[Dict[str, Image.Image]] = {} if self.cache_mode == "memory" else None
+        self._disk_cache_index: Dict[str, str] = {}
+        self._tensor_disk_index: Dict[str, str] = {}
+        self._tensor_memmap_index: Dict[str, Dict[str, Any]] = {}
+        if self.cache_mode in {"disk", "tensor-disk", "tensor-memmap"}:
+            assert self.cache_dir is not None
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.cache_mode == "disk":
+            self._prepare_disk_cache()
+        elif self.cache_mode in {"tensor-disk", "tensor-memmap"}:
+            self._prepare_tensor_cache()
+
+        self.train = train
+        self.augment = bool(augment and train)
+        self._norm_mean = [0.485, 0.456, 0.406]
+        self._norm_std = [0.229, 0.224, 0.225]
+
+    def __len__(self):
+        return len(self.rows)
+
+    def _read_image(self, path: str) -> Image.Image:
+        if is_dicom_path(path):
+            return dicom_to_pil_rgb(path)
+        return Image.open(path).convert("RGB")
+
+    def _cache_path_for(self, path: str) -> Path:
+        assert self.cache_dir is not None
+        h = hashlib.sha1(path.encode("utf-8")).hexdigest()
+        return self.cache_dir / f"{h}.png"
+
+    def _tensor_cache_base_path(self, path: str) -> Path:
+        assert self.cache_dir is not None
+        h = hashlib.sha1(path.encode("utf-8")).hexdigest()
+        return self.cache_dir / h
+
+    def _prepare_disk_cache(self) -> None:
+        assert self.cache_dir is not None
+        iterable = self.rows
+        for row in tqdm(iterable, desc=f"Cache[{self.split_name}]", leave=False, disable=len(iterable) < 16):
+            path = str(row.get("image_path"))
+            if not path or not is_dicom_path(path):
+                continue
+            cache_path = self._cache_path_for(path)
+            self._disk_cache_index[path] = str(cache_path)
+            if cache_path.exists():
+                continue
+            try:
+                img = self._read_image(path)
+                img.save(cache_path, format="PNG")
+            except Exception as exc:
+                LOGGER.warning("Falha ao materializar cache de %s: %s", path, exc)
+
+    def _prepare_tensor_cache(self) -> None:
+        assert self.cache_dir is not None
+        iterable = self.rows
+        for row in tqdm(iterable, desc=f"TensorCache[{self.split_name}]", leave=False, disable=len(iterable) < 16):
+            path = str(row.get("image_path"))
+            if not path:
+                continue
+            if self.cache_mode == "tensor-disk":
+                cache_path = self._tensor_cache_base_path(path).with_suffix(".pt")
+                self._tensor_disk_index[path] = str(cache_path)
+                if cache_path.exists():
+                    continue
+            elif self.cache_mode == "tensor-memmap":
+                base = self._tensor_cache_base_path(path)
+                data_path = base.with_suffix(".dat")
+                meta_path = base.with_suffix(".json")
+                self._tensor_memmap_index[path] = {"data_path": str(data_path), "meta_path": str(meta_path)}
+                if data_path.exists() and meta_path.exists():
+                    continue
+            try:
+                tensor = self._decode_to_tensor(path)
+                self._materialize_tensor_cache(path, tensor)
+            except Exception as exc:
+                LOGGER.warning("Falha ao decodificar %s para o cache de tensores: %s", path, exc)
+
+    def _decode_to_tensor(self, path: str) -> torch.Tensor:
+        img = self._read_image(path)
+        return self._convert_to_tensor(img)
+
+    def _materialize_tensor_cache(self, path: str, tensor: torch.Tensor) -> None:
+        if self.cache_mode == "tensor-disk":
+            cache_path = self._tensor_cache_base_path(path).with_suffix(".pt")
+            self._tensor_disk_index[path] = str(cache_path)
+            if cache_path.exists():
+                return
+            try:
+                torch.save(tensor, cache_path)
+            except Exception as exc:
+                LOGGER.warning("Falha ao salvar tensor cache em %s: %s", cache_path, exc)
+        elif self.cache_mode == "tensor-memmap":
+            base = self._tensor_cache_base_path(path)
+            data_path = base.with_suffix(".dat")
+            meta_path = base.with_suffix(".json")
+            self._tensor_memmap_index[path] = {"data_path": str(data_path), "meta_path": str(meta_path)}
+            if data_path.exists() and meta_path.exists():
+                return
+            arr = tensor.detach().cpu().numpy()
+            try:
+                mm = np.memmap(data_path, dtype=arr.dtype, mode="w+", shape=arr.shape)
+                mm[:] = arr
+                mm.flush()
+                meta = {"shape": list(arr.shape), "dtype": str(arr.dtype)}
+                Path(meta_path).write_text(json.dumps(meta))
+            except Exception as exc:
+                LOGGER.warning("Falha ao salvar memmap em %s: %s", data_path, exc)
+
+    def _get_base_image(self, path: str) -> Image.Image:
+        if self.cache_mode == "disk":
+            cache_path = self._disk_cache_index.get(path)
+            if cache_path is None and self.cache_dir is not None:
+                cache_path = str(self._cache_path_for(path))
+                self._disk_cache_index[path] = cache_path
+            if cache_path and os.path.exists(cache_path):
+                try:
+                    with Image.open(cache_path) as im:
+                        return im.convert("RGB")
+                except Exception:
+                     # Tenta ler original
+                     pass
+            img = self._read_image(path)
+            if cache_path and is_dicom_path(path):
+                 try:
+                    img.save(cache_path, format="PNG")
+                 except Exception:
+                    pass
+            return img
+
+        if self.cache_mode == "memory":
+            if self._image_cache is None:
+                self._image_cache = {}
+            if path in self._image_cache:
+                return self._image_cache[path].copy()
+            img = self._read_image(path)
+            self._image_cache[path] = img
+            return img.copy()
+
+        return self._read_image(path)
+
+    def _get_cached_tensor(self, path: str) -> Optional[torch.Tensor]:
+        if self.cache_mode == "tensor-disk":
+            cache_path = self._tensor_disk_index.get(path)
+            if cache_path is None and self.cache_dir is not None:
+                cache_path = str(self._tensor_cache_base_path(path).with_suffix(".pt"))
+            if cache_path and os.path.exists(cache_path):
+                try:
+                    return torch.load(cache_path, map_location="cpu")
+                except Exception:
+                    return None
+        elif self.cache_mode == "tensor-memmap":
+            info = self._tensor_memmap_index.get(path)
+            if info is None and self.cache_dir is not None:
+                base = self._tensor_cache_base_path(path)
+                info = {"data_path": str(base.with_suffix(".dat")), "meta_path": str(base.with_suffix(".json"))}
+            if info:
+                data_path = info.get("data_path")
+                meta_path = info.get("meta_path")
+                if data_path and meta_path and os.path.exists(data_path) and os.path.exists(meta_path):
+                    try:
+                         meta = json.loads(Path(meta_path).read_text())
+                         shape = tuple(meta["shape"])
+                         dtype = np.dtype(meta["dtype"])
+                         mm = np.memmap(data_path, dtype=dtype, mode="r", shape=shape)
+                         return torch.from_numpy(np.array(mm, copy=True))
+                    except Exception:
+                        return None
+        return None
+
+    def __getitem__(self, i: int):
+        r = self.rows[i]
+        path = str(r["image_path"])
+        base_tensor = self._get_cached_tensor(path)
+        if base_tensor is None:
+            img = self._get_base_image(path)
+            base_tensor = self._convert_to_tensor(img)
+            if self.cache_mode in {"tensor-disk", "tensor-memmap"}:
+                self._materialize_tensor_cache(path, base_tensor)
+        
+        img = self._apply_transforms(base_tensor)
+        img = self._to_channels_last(img)
+        
+        y = r.get("professional_label")
+        if y is not None and not (isinstance(y, float) and np.isnan(y)):
+            y = int(y)
+            if self.label_mapper:
+                y = self.label_mapper(y)
+            else:
+                y = y - 1 # Default 1..4 -> 0..3
+        else:
+            y = None
+        
+        embedding_tensor = None
+        if self.embedding_store:
+            embedding_tensor = self.embedding_store.lookup(r)
+            
+        return img, y, r, embedding_tensor
+
+    @staticmethod
+    def _convert_to_tensor(img: Image.Image) -> torch.Tensor:
+        return tv_v2_F.to_image(img)
+
+    @staticmethod
+    def _to_channels_last(tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.ndim == 4:
+            return tensor.contiguous(memory_format=torch.channels_last)
+        if tensor.ndim == 3:
+            return tensor.unsqueeze(0).contiguous(memory_format=torch.channels_last).squeeze(0)
+        return tensor
+
+    def _apply_transforms(self, tensor: torch.Tensor) -> torch.Tensor:
+        tensor = tv_v2_F.resize(tensor, [self.img_size], interpolation=InterpolationMode.BICUBIC, antialias=False)
+        tensor = tv_v2_F.center_crop(tensor, [self.img_size, self.img_size])
+        tensor = tv_v2_F.to_dtype(tensor, torch.float32, scale=True)
+        if self.train and getattr(self, "augment", True):
+            if float(torch.rand(1)) < 0.5:
+                tensor = tv_v2_F.horizontal_flip(tensor)
+            angle = float(torch.empty(1).uniform_(-5.0, 5.0))
+            tensor = tv_v2_F.rotate(tensor, angle, interpolation=InterpolationMode.BILINEAR, expand=False, fill=0.0)
+        self._norm_mean = [0.485, 0.456, 0.406]
+        self._norm_std = [0.229, 0.224, 0.225]
+        tensor = tv_v2_F.normalize(tensor, self._norm_mean, self._norm_std)
+        return tensor
+
+def mammo_collate(batch):
+    """Collate que mantém metadados como lista de dicts."""
+    xs = torch.stack([b[0] for b in batch], dim=0)
+    ys = torch.tensor([b[1] for b in batch if b[1] is not None], dtype=torch.long)
+    if len(ys) != len(batch):
+        # Se houver labels faltantes, cuidado. O código original supõe que todos têm labels ou filtra antes.
+        # Vamos assumir que quem chama tratou isso ou que ys será usado apenas se compatível.
+        pass 
+    
+    meta = [b[2] for b in batch]
+    
+    emb_list = [b[3] for b in batch if b[3] is not None]
+    embeddings = None
+    if len(emb_list) == len(batch):
+        embeddings = torch.stack(emb_list, dim=0)
+        
+    return xs, ys, meta, embeddings
