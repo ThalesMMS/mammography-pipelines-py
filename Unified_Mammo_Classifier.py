@@ -97,6 +97,11 @@ LOGGER.addHandler(logging.NullHandler())
 DICOM_EXTS = (".dcm", ".dicom")
 CACHE_AUTO_DISK_MAX = 6000
 CACHE_AUTO_MEMORY_MAX = 1000
+DATASET_PRESETS = {
+    "archive": {"csv": "classificacao.csv", "dicom_root": "archive"},
+    "mamografias": {"csv": "mamografias", "dicom_root": None},
+    "patches_completo": {"csv": "patches_completo", "dicom_root": None},
+}
 
 
 # ==============================================================================
@@ -1313,12 +1318,31 @@ def run_rl_refine_stub(args) -> None:
 # ==============================================================================
 
 
+def _apply_dataset_preset(args) -> None:
+    if not getattr(args, "dataset", None):
+        return
+    preset = DATASET_PRESETS.get(args.dataset)
+    if not preset:
+        return
+    if not args.csv:
+        args.csv = preset.get("csv")
+    if preset.get("dicom_root") and args.dicom_root in {"archive", "archieve"}:
+        args.dicom_root = preset["dicom_root"]
+    LOGGER.info(
+        "Preset dataset '%s' aplicado -> csv=%s | dicom_root=%s",
+        args.dataset,
+        args.csv,
+        args.dicom_root,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified Mammography Pipelines")
     parser.add_argument("--mode", choices=["train", "extract", "eda", "eval-export", "report-pack", "rl-refine"], default="train")
     parser.add_argument("--task", choices=["binary", "multiclass"], default="binary")
     parser.add_argument("--model", choices=["resnet50", "efficientnet_b0"], default="efficientnet_b0")
-    parser.add_argument("--csv", required=True, help="CSV, diretório com featureS.txt ou raiz dos dados")
+    parser.add_argument("--dataset", choices=sorted(DATASET_PRESETS.keys()), help="Atalho para datasets conhecidos (archive/mamografias/patches_completo)")
+    parser.add_argument("--csv", required=False, default=None, help="CSV, diretório com featureS.txt ou raiz dos dados (use --dataset para caminhos padrão)")
     parser.add_argument("--dicom-root", default="archive", help="Raiz dos DICOMs quando usar classificacao.csv")
     parser.add_argument("--img-size", type=int, default=512)
     parser.add_argument("--include-class-5", action="store_true")
@@ -1383,12 +1407,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if not args.csv and not args.dataset:
+        parser.error("Informe --csv <arquivo/dir> ou --dataset {archive,mamografias,patches_completo}.")
+
     Path(args.outdir).mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         handlers=[TqdmLoggingHandler(), logging.FileHandler(Path(args.outdir) / "run.log")],
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
+    _apply_dataset_preset(args)
+    if not args.csv:
+        parser.error("Não foi possível resolver o caminho do dataset; use --csv explicitamente.")
 
     try:
         if args.mode == "train":

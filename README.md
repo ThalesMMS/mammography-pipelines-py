@@ -5,6 +5,15 @@ This repository brings together two core scripts for working with mammograms and
 1. `extract_mammo_resnet50.py` - generates embeddings from DICOMs using a pre-trained ResNet50, producing artifacts ready for exploration (NPY/CSV, PCA, t-SNE, clusters).
 2. `RSNA_Mammography_EDA.py` - a script-format notebook covering EDA, data preparation, and multimodal training for the RSNA Breast Cancer Detection challenge. The same file also offers an optional fine-tuning pipeline to classify breast density (classes 1-4) by reusing the embedding extractor preprocessing.
 
+## Unified classifier (all datasets/backbones)
+- Use `Unified_Mammo_Classifier.py` for a single CLI that trains EfficientNetB0 or ResNet50, extracts embeddings, saves Grad-CAMs, histories/metrics, confusion matrices, and validation predictions/embeddings.
+- It understands the three bundled datasets out of the box: `--dataset archive` (DICOM + `classificacao.csv`), `--dataset mamografias` (per-folder `featureS.txt`), and `--dataset patches_completo` (root `featureS.txt`). You can also pass `--csv` manually.
+- See `docs/Unified_Mammo_Classifier.md` for a command matrix covering every combination (train/extract × ResNet50/EfficientNet × archive/mamografias/patches_completo).
+- Quick example (binary EfficientNet + Grad-CAM on the DICOM archive):
+  ```bash
+  python Unified_Mammo_Classifier.py --mode train --dataset archive --model efficientnet_b0 --task binary --epochs 10 --batch-size 16 --cache-mode auto --gradcam --save-val-preds --export-val-embeddings --outdir outputs/archive_effnet_train
+  ```
+
 Main subdirectories:
 - `ResNet50_Test/` - research suite with CLIs to preprocess, extract embeddings, cluster, and analyze breast density.
 - `density_classifier/` - quick review app that shows all DICOMs of an exam and records BI-RADS density via keyboard.
