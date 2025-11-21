@@ -192,3 +192,5 @@ AGENTS.md
 /outputs/mammo_resnet50_abxcd_cuda/cache
 /outputs/mammo_efficientnetb0_abxcd_cuda/cache
 /outputs/mammo_efficientnetb0_cuda/cache
+/mamografias
+/patches_completo
