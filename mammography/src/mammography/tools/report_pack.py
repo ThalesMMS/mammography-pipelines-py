@@ -23,7 +23,7 @@ from typing import Any, Iterable, Sequence
 
 try:  # pragma: no cover - optional dependency
     from PIL import Image
-except Exception:  # pragma: no cover - fallback quando pillow não estiver instalado
+except Exception:  # pragma: no cover - fallback when pillow is not installed
     Image = None  # type: ignore
 
 LOGGER = logging.getLogger("report_pack")

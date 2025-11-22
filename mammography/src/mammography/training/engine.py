@@ -177,7 +177,7 @@ def validate(
 
     num_classes = prob.shape[1]
 
-    # Ajuste de labels para métricas (assumindo 4 classes = 1..4, 2 classes = 0..1)
+    # Label adjustment for metrics (assuming 4 classes = 1..4, 2 classes = 0..1)
     if num_classes == 4:
         y_true_mapped = y_true + 1
         y_pred_mapped = y_pred + 1
@@ -250,7 +250,7 @@ def extract_embeddings(
         v = v.reshape(v.shape[0], -1)
         buffer.append(v)
 
-    # Tenta registrar hook na avgpool (EfficientNet/ResNet)
+    # Try to register a hook on the avgpool layer (EfficientNet/ResNet)
     target_layer = None
     if hasattr(model, "avgpool"):
         target_layer = model.avgpool
@@ -258,7 +258,7 @@ def extract_embeddings(
          target_layer = model.backbone.avgpool
     
     if target_layer is None:
-        # Fallback genérico se não achar avgpool
+        # Generic fallback if avgpool is not found
         pass
 
     handle = None

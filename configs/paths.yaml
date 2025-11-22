@@ -1,5 +1,5 @@
-# Default locations consumed por Projeto.py quando nenhuma flag é passada.
-# Cada seção adiciona argumentos para o respectivo subcomando.
+# Default locations consumed by Projeto.py when no flag is provided.
+# Each section adds arguments for the respective subcommand.
 embed:
   data_dir: ./archive
   csv_path: ./classificacao.csv

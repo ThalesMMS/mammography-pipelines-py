@@ -1,5 +1,5 @@
 # Placeholder policy configuration consumed by Projeto.py rl-refine.
-algorithm: random  # opções: random, threshold, ppo, a2c
+algorithm: random  # options: random, threshold, ppo, a2c
 episodes: 5
 window: 4
 reward_scale: 1.0

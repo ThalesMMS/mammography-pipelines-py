@@ -48,8 +48,8 @@ class ThresholdPolicy:
         """Keep tweaking until validation kappa crosses the chosen threshold."""
         val_kappa = obs[1]
         if val_kappa >= self.threshold:
-            return 1  # mantém estratégia
-        return 2  # intensifica ajustes
+            return 1  # keep current strategy
+        return 2  # intensify adjustments
 
     def reset(self, *, seed: int | None = None) -> None:  # noqa: ARG002
         return

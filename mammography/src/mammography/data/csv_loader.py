@@ -124,14 +124,14 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
     if not csv_path:
         raise ValueError("csv_path não definido; use --csv ou --dataset com preset válido.")
 
-    # Diretório com featureS.txt (mamografias/patches)
+    # Directory with featureS.txt (mammograms/patches)
     if os.path.isdir(csv_path):
         rows = _rows_from_features_dir(Path(csv_path))
         return pd.DataFrame(rows)
 
     df = pd.read_csv(csv_path)
 
-    # Formato AccessionNumber + Classification (DICOM raiz)
+    # AccessionNumber + Classification format (DICOM root)
     if {"AccessionNumber", "Classification"}.issubset(df.columns):
         if not dicom_root:
             raise ValueError("dicom_root é obrigatório para CSV com AccessionNumber/Classification.")
@@ -152,7 +152,7 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             rows.append({"accession": acc, "image_path": dcm, "professional_label": lab})
         return pd.DataFrame(rows)
 
-    # Formato genérico com caminho direto
+    # Generic format with direct path
     if "image_path" in df.columns:
         label_col_candidates = ["density_label", "label", "y", "professional_label"]
         lab_col = next((c for c in label_col_candidates if c in df.columns), None)

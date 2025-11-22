@@ -60,14 +60,14 @@ def build_model(
         base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
         m = EfficientNetWithFusion(base, num_classes=num_classes, extra_feature_dim=extra_feature_dim)
         
-        # Configura congelamento inicial
+        # Configure initial freezing
         for p in m.backbone.parameters():
             p.requires_grad = False
         for p in m.classifier.parameters():
             p.requires_grad = True
             
         if unfreeze_last_block:
-            # EfficientNetB0: últimos 2 blocos
+            # EfficientNetB0: last 2 blocks
             num_blocks = len(m.features)
             for i in range(max(0, num_blocks - 2), num_blocks):
                 for p in m.features[i].parameters():
@@ -81,7 +81,7 @@ def build_model(
 
     elif arch == "resnet50":
         if extra_feature_dim > 0:
-            # TODO: Implementar fusão para ResNet se necessário
+            # TODO: Implement fusion for ResNet if needed
             raise NotImplementedError("Fusion not implemented for ResNet50 yet.")
             
         m = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)

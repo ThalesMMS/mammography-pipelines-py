@@ -15,33 +15,29 @@ visualizations, basic preprocessing, a PyTorch dataset backed by PNGs, a
 single-channel ResNet50 model, and end-to-end evaluation plots. It is meant to
 be read and tweaked as a guided tutorial.
 
-Context (original Portuguese notes preserved)
----------------------------------------------
-Este script reúne, em formato de caderno executável, as etapas mais comuns
-em um fluxo de trabalho de *deep learning* supervisionado para mamografia:
+Context (translated from the original Portuguese notes)
+-------------------------------------------------------
+This executable-notebook script bundles the most common steps in a supervised
+deep-learning workflow for mammography:
 
-1. **Caracterização da coorte**: leitura dos CSVs oficiais da competição
-   RSNA 2022, inspeção rápida de valores ausentes e criação de colunas
-   auxiliares para visualização.
-2. **Exploração visual**: gráficos com a distribuição de câncer (geral e por
-   invasividade) e amostras de DICOM normalizadas em tons de cinza.
-3. **Preparação de dados**: balanceamento da classe minoritária, imputação e
-   normalização de idade, *one-hot encoding* dos metadados categóricos e
-   separação treino/validação estratificada.
-4. **Dataset PyTorch**: carregamento das imagens PNG 256×256 balanceadas com
-   seus respectivos rótulos binários.
-5. **Modelo e treino**: ResNet50 pré-treinada (ajustada para canal único)
-   empregada de forma direta para classificação binária, seguida por laço de
-   treino com métricas clínicas relevantes (sensibilidade/especificidade).
-6. **Avaliação gráfica**: acompanhamento da evolução de perda, acurácia e
-   métricas sensibilidade/especificidade por época, utilizando Lets-Plot.
+1. **Cohort characterization**: read the official RSNA 2022 competition CSVs,
+   quickly inspect missing values, and create helper columns for visualization.
+2. **Visual exploration**: charts showing cancer distribution (overall and by
+   invasiveness) plus normalized grayscale DICOM samples.
+3. **Data preparation**: balance the minority class, impute/normalize age,
+   one-hot encode categorical metadata, and perform a stratified train/validation split.
+4. **PyTorch dataset**: load balanced 256×256 PNG images with their binary labels.
+5. **Model and training**: use a pretrained ResNet50 (adapted to a single channel)
+   directly for binary classification, followed by a training loop with relevant
+   clinical metrics (sensitivity/specificity).
+6. **Graphical evaluation**: track loss, accuracy, and sensitivity/specificity per
+   epoch using Lets-Plot.
 
-Notas práticas
---------------
-Para executar o script fora do Kaggle, ajuste os caminhos de entrada/saída por
-meio dos argumentos ``--csv-dir``, ``--dicom-dir``, ``--png-dir`` e
-``--output-dir``. Eles aceitam pastas locais, permitindo apontar tanto para os
-CSVs originais quanto para imagens DICOM/PNG pré-processadas.
+Practical notes
+---------------
+To run the script outside Kaggle, adjust input/output paths via ``--csv-dir``,
+``--dicom-dir``, ``--png-dir``, and ``--output-dir``. They accept local folders,
+letting you point either to the original CSVs or to preprocessed DICOM/PNG images.
 """
 
 # ------------------------------- Imports -------------------------------
@@ -99,9 +95,9 @@ from torchvision import transforms
 from torchvision.models import ResNet50_Weights
 from pydicom.pixel_data_handlers.util import apply_modality_lut
 
-# ---------------------- Hiperparâmetros Didáticos ----------------------
-# Esta seção concentra "botões" importantes do pipeline em um só lugar, com
-# explicações em linguagem simples. Ajustá-los aqui propaga o efeito pelo script.
+# ---------------------- Didactic Hyperparameters ----------------------
+# This section gathers the key pipeline "knobs" in one place with plain-language notes.
+# Tweaking them here propagates through the script.
 
 class HP:
     """Core hyperparameters and preprocessing decisions (with bilingual hints).
@@ -120,17 +116,17 @@ class HP:
     TRAIN_SPLIT: float = 0.80
     DATALOADER_WORKERS: int = 2
     RANDOM_SEED: int = 19970507
-    # Visualização (número de pacientes no grid e tamanho dos tiles)
+    # Visualization (patients per grid and tile size)
     VIS_N_PATIENTS: int = 3
     VIS_TILE: int = 300
     VIS_GAP: int = 10
-    # Balanceamento (downsampling de negativos)
+    # Balancing (downsampling negatives)
     DOWNSAMPLE_NEGATIVE: bool = True
-    DOWNSAMPLE_RATIO: float = 1.0  # negativos ~ ratio * positivos
-    # Pré-processamento de idade
+    DOWNSAMPLE_RATIO: float = 1.0  # negatives ~ ratio * positives
+    # Age preprocessing
     AGE_IMPUTE: str = "mean"  # 'mean' | 'median'
     AGE_NORM: str = "minmax"   # 'minmax' | 'zscore'
-    # Colunas categóricas para one-hot
+    # Categorical columns for one-hot
     CAT_COLS = ['view', 'laterality', 'implant']
 
 # ----------------------- Utilidades integradas -----------------------
@@ -226,7 +222,7 @@ def dicom_to_pil_rgb(dcm_path: str) -> Image.Image:
 
 
 def dicom_debug_preprocess(dcm_path: str) -> Dict[str, object]:
-    """Versão detalhada do pipeline de pré-processamento para depuração/visualização."""
+    """Detailed preprocessing pipeline for debugging/visualization."""
     ds = pydicom.dcmread(dcm_path, force=True)
     arr = ds.pixel_array
     arr = _to_float32(arr)
@@ -295,7 +291,7 @@ def dicom_debug_preprocess(dcm_path: str) -> Dict[str, object]:
 
 @dataclass
 class SampleInfo:
-    """Container leve com os metadados necessários para reconstruir cada amostra."""
+    """Lightweight container with the metadata needed to reconstruct each sample."""
     accession: str
     classification: Optional[int]
     path: str
@@ -303,7 +299,7 @@ class SampleInfo:
 
 
 class MammoDicomDataset(Dataset):
-    """Dataset que varre subpastas de data_dir e retorna amostras pré-processadas."""
+    """Dataset that scans data_dir subfolders and returns preprocessed samples."""
 
     def __init__(
         self,
@@ -376,7 +372,7 @@ class MammoDicomDataset(Dataset):
 
 
 def _strip_module_prefixes(state_dict: dict) -> dict:
-    """Remove prefixos típicos ('module.', etc.) para compatibilidade ao carregar pesos."""
+    """Remove common prefixes ('module.', etc.) for compatibility when loading weights."""
     if not isinstance(state_dict, dict):
         return state_dict
     new_sd = {}
@@ -389,7 +385,7 @@ def _strip_module_prefixes(state_dict: dict) -> dict:
 
 
 def _apply_state_dict(model: nn.Module, state: dict) -> nn.Module:
-    """Carrega um state_dict no modelo e imprime diferenças relevantes."""
+    """Load a state_dict into the model and print relevant differences."""
     state_dict = state.get("state_dict", state)
     state_dict = _strip_module_prefixes(state_dict)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -401,7 +397,7 @@ def _apply_state_dict(model: nn.Module, state: dict) -> nn.Module:
 
 
 def _load_weights_from_path(resnet_ctor, weights_path: Optional[str]) -> Optional[nn.Module]:
-    """Retorna um modelo ResNet50 carregado a partir de um caminho explícito (se existir)."""
+    """Return a ResNet50 model loaded from an explicit path (if it exists)."""
     if not weights_path or not os.path.isfile(weights_path):
         return None
     print(f"[info] Carregando pesos locais: {weights_path}")
@@ -411,7 +407,7 @@ def _load_weights_from_path(resnet_ctor, weights_path: Optional[str]) -> Optiona
 
 
 def _list_cache_candidates(torch_home: Optional[str]) -> List[str]:
-    """Retorna uma lista ordenada com os possíveis checkpoints resnet50 encontrados em cache."""
+    """Return an ordered list of potential resnet50 checkpoints found in cache."""
     cache_dirs = []
     if torch_home:
         cache_dirs.append(os.path.join(os.path.abspath(torch_home), "hub", "checkpoints"))
@@ -430,7 +426,7 @@ def _list_cache_candidates(torch_home: Optional[str]) -> List[str]:
 
 
 def _load_weights_from_cache(resnet_ctor, torch_home: Optional[str]) -> Optional[nn.Module]:
-    """Tenta carregar checkpoints já presentes em cache, imprimindo avisos em caso de falha."""
+    """Attempt to load cached checkpoints, printing warnings on failure."""
     for candidate in _list_cache_candidates(torch_home):
         try:
             print(f"[info] Carregando pesos do cache local: {candidate}")
@@ -443,7 +439,7 @@ def _load_weights_from_cache(resnet_ctor, torch_home: Optional[str]) -> Optional
 
 
 def _download_resnet_weights(resnet_ctor, avoid_download: bool) -> nn.Module:
-    """Baixa pesos do torchvision respeitando a flag --avoid_download e aplicando fallbacks."""
+    """Download torchvision weights respecting --avoid_download and applying fallbacks."""
     from torchvision.models import ResNet50_Weights
 
     if avoid_download:
@@ -465,7 +461,7 @@ def _download_resnet_weights(resnet_ctor, avoid_download: bool) -> nn.Module:
 
 
 def resolve_device(device_choice: str) -> torch.device:
-    """Analisa a opção --device e retorna o torch.device apropriado, com fallbacks amigáveis."""
+    """Parse the --device option and return the appropriate torch.device with friendly fallbacks."""
     if device_choice == "auto":
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return torch.device("mps")
@@ -486,7 +482,7 @@ def resolve_device(device_choice: str) -> torch.device:
 
 
 def load_labels_dict(csv_path: str) -> Dict[str, int]:
-    """Lê o CSV de classificações garantindo que AccessionNumber permaneça como string."""
+    """Read the classification CSV ensuring AccessionNumber stays as a string."""
     if not os.path.isfile(csv_path):
         raise FileNotFoundError(f"CSV '{csv_path}' não encontrado. Ajuste --csv_path.")
     df_csv = pd.read_csv(
@@ -500,7 +496,7 @@ def load_labels_dict(csv_path: str) -> Dict[str, int]:
 
 
 def get_transforms() -> Tuple[transforms.Compose, transforms.Compose]:
-    """Retorna transforms de modelo e de visualização coerentes com a ResNet50."""
+    """Return model/visualization transforms aligned with ResNet50 expectations."""
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
     transform_model = transforms.Compose([
@@ -515,13 +511,13 @@ def get_transforms() -> Tuple[transforms.Compose, transforms.Compose]:
     ])
     return transform_model, transform_vis
 
-# ------------------- Constantes reutilizadas -------------------
+# ------------------- Reused Constants -------------------
 
 NO_CANCER_LABEL = "No Cancer"
 COLOR_HEALTHY = "#d8e2dc"
 COLOR_PRESENT = "#f4acb7"
 COLOR_INVASIVE = "#ee4266"
-# Espelha os hiperparâmetros centrais para variáveis usadas adiante
+# Mirror key hyperparameters into variables used later
 RANDOM_SEED = HP.RANDOM_SEED
 TRAIN_SPLIT_RATIO = HP.TRAIN_SPLIT
 DATALOADER_WORKERS = HP.DATALOADER_WORKERS
@@ -530,7 +526,7 @@ DATALOADER_WORKERS = HP.DATALOADER_WORKERS
 LetsPlot.setup_html()
 random.seed(RANDOM_SEED)
 
-# --------------------------- Argumentos de caminho ---------------------------
+# --------------------------- Path Arguments ---------------------------
 
 parser = argparse.ArgumentParser(
     description="RSNA Breast Cancer Detection pipeline com caminhos configuráveis.",
@@ -560,7 +556,7 @@ parser.add_argument(
     help="Diretório raiz onde as cópias balanceadas (train/valid) serão salvas.",
 )
 
-# Em ambientes como notebooks, argumentos extras podem ser injetados pelo kernel.
+# In notebook environments, extra args may be injected by the kernel.
 ARGS, _ = parser.parse_known_args()
 
 CSV_DIR = ARGS.csv_dir
@@ -585,36 +581,36 @@ VALID_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "valid")
 
 # -------------------- Data and Cohort Characteristics --------------------
 
-# Leitura dos CSVs oficiais. No Kaggle, os arquivos ficam em /kaggle/input.
-# O `glimpse` (Polars) é um equivalente ao `df.info()` que exibe tipo e amostra.
-# Discussão: optamos por manter a leitura direta dos CSVs originais para
-# destacar o formato nativo da competição. Em cenários clínicos, essa primeira
-# inspeção costuma revelar problemas de integridade (pacientes duplicados,
-# outliers de idade) antes de pensar em técnicas sofisticadas.
+# Reading the official CSVs. On Kaggle, the files live in /kaggle/input.
+# `glimpse` (Polars) is equivalent to `df.info()`, showing type and a sample.
+# Discussion: we chose to keep the direct read of the original CSVs to highlight
+# the competition's native format. In clinical settings this first inspection
+# often reveals integrity issues (duplicate patients, age outliers) before
+# considering more sophisticated techniques.
 df_train = pl.read_csv(TRAIN_CSV_PATH)
 df_test = pl.read_csv(TEST_CSV_PATH)
 
 df_train.glimpse()
 
-# Verificação rápida de valores ausentes para entender onde é necessário
-# imputar ou descartar registros. O print serve de cabeçalho amigável.
+# Quick check of missing values to see where to impute or drop records.
+# The print acts as a friendly header.
 print('Missing values by column')
 df_train.select(pl.all().is_null().sum())
 
 # ----------------------- Exploratory Data Analysis ----------------------
 
-# Conjunto auxiliar com colunas categóricas legíveis (strings) para gráficos.
-# `target` não é usado diretamente, mas mantém o código alinhado à estrutura
-# de outros cadernos onde poderíamos alternar rótulos.
-# Discussão: preferimos derivar colunas textuais em vez de mapear legendas no
-# próprio gráfico. Isso facilita replicar a mesma tabela em relatórios clínicos
-# sem depender da camada de visualização.
+# Helper set with human-readable categorical columns (strings) for plots.
+# `target` is not used directly but keeps the code aligned with other notebooks
+# where we might toggle labels.
+# Discussion: we prefer deriving textual columns instead of mapping legends
+# inside the chart. This makes it easier to reuse the same table in clinical
+# reports without depending on the visualization layer.
 target = 'cancer'
 
 df_plt = df_train.with_columns(
     pl.when(pl.col('cancer') == 1).then('Cancer Present').otherwise(NO_CANCER_LABEL).alias('cancer'),
-    # Coluna `invasive2`: combina status de câncer + invasividade em texto.
-    # Serve para colorir gráficos com três categorias principais.
+    # Column `invasive2`: combines cancer status + invasiveness as text.
+    # Used to color plots with three main clinical categories.
     pl.when((pl.col('cancer') == 1) & (pl.col('invasive') == 1))
         .then('Invasive')
         .when((pl.col('cancer') == 1) & (pl.col('invasive') == 0))
@@ -625,10 +621,10 @@ df_plt = df_train.with_columns(
         .alias('invasive2')
 )
 
-# --------------------- Gráfico da variável alvo ---------------------
-# A ideia é manter a mesma linguagem visual para todos os gráficos Lets-Plot:
-# tema minimalista, paleta consistente e legendas simplificadas.
-# O `coord_flip` inverte eixos para ganhar espaço em labels.
+# --------------------- Target Variable Plot ---------------------
+# Keep the same visual language for all Lets-Plot charts:
+# minimalist theme, consistent palette, and simplified legends.
+# `coord_flip` swaps axes to gain space for labels.
 var = 'cancer'
 title = 'Cancer Distribution'
 legend_title = ''
@@ -652,8 +648,8 @@ plt1 = \
     coord_flip()+\
     labs(y = "Count", title = title)
 
-# Distribuição de câncer estratificada por invasividade (3 categorias).
-# A paleta utiliza uma cor distinta para cada subgrupo clínico.
+# Cancer distribution stratified by invasiveness (3 categories).
+# The palette uses a distinct color for each clinical subgroup.
 var = 'invasive2'
 title = 'Cancer Distribution by Invasiveness'
 legend_title = ''
@@ -684,10 +680,10 @@ bunch.add_plot(plt1, 0, 0, 500, 250)
 bunch.add_plot(plt2, 520, 0, 500, 250)
 bunch.show()
 
-# --------------------- Opcional: pipeline de densidade ---------------------
-# Integração leve: defina RUN_DENSITY=1 no ambiente para rodar o pipeline de
-# densidade (ResNet50) usando seu classificacao.csv e os DICOMs em `archive/`.
-# Variáveis de ambiente opcionais:
+# --------------------- Optional: Density Pipeline ---------------------
+# Light integration: set RUN_DENSITY=1 in the environment to run the density
+# pipeline (ResNet50) using your classificacao.csv and the DICOMs in `archive/`.
+# Optional environment variables:
 #   DENSITY_CSV (default: classificacao.csv)
 #   DENSITY_DICOM_ROOT (default: archive)
 #   DENSITY_OUTDIR (default: outputs/mammo_resnet50_density)
@@ -718,14 +714,14 @@ try:
 except Exception as _density_err:
     print(f"[aviso] Pipeline de densidade não executado: {_density_err}")
 
-# ------------------------- Visualização de DICOMs -------------------------
+# ------------------------- DICOM Visualization -------------------------
 
-# Função utilitária: reproduz exatamente o pipeline de pré-processamento da
-# ResNet50 (windowing robusto + conversão para RGB) e devolve figura Lets-Plot.
-# Ao reutilizar o mesmo helper do script principal garantimos consistência entre
-# o preview e o que entra na rede.
+# Utility function: reproduces exactly the ResNet50 preprocessing pipeline
+# (robust windowing + RGB conversion) and returns a Lets-Plot figure.
+# Reusing the same helper from the main script keeps the preview consistent
+# with what the network consumes.
 def get_dicom_plt(dcm_path: str, title: str):
-    """Cria figura Lets-Plot replicando o pré-processamento completo da ResNet50."""
+    """Create a Lets-Plot figure mirroring the full ResNet50 preprocessing."""
     dbg = dicom_debug_preprocess(dcm_path)
     img_rgb = np.array(dbg["pil_win_rgb"])
 
@@ -741,8 +737,8 @@ def get_dicom_plt(dcm_path: str, title: str):
 
     return plt
 
-# Recupera subconjuntos de pacientes por categoria clínica para amostragem.
-# Selecionamos apenas alguns IDs para montar um grid compacto de imagens.
+# Retrieve patient subsets by clinical category for sampling.
+# We pick only a few IDs to assemble a compact image grid.
 invasive_patients = df_plt.filter(pl.col('invasive2') == 'Invasive').select(['patient_id', 'image_id'])
 invasive_patient_ids = invasive_patients.get_column('patient_id')
 invasive_img_ids = invasive_patients.get_column('image_id')
@@ -755,18 +751,18 @@ no_cancer_patients = df_plt.filter(pl.col('invasive2') == NO_CANCER_LABEL).selec
 no_cancer_patient_ids = no_cancer_patients.get_column('patient_id')
 no_cancer_img_ids = no_cancer_patients.get_column('image_id')
 
-# Diretório raiz das imagens DICOM originais. `npatients` define quantas
-# amostras por classe serão exibidas (3 aqui para manter o grid enxuto).
-# Discussão: o recorte de três pacientes por grupo é deliberado para priorizar
-# velocidade em ambientes compartilhados (como notebooks públicos) sem perder
-# a noção de variação intra-classe nas imagens.
+# Root directory of the original DICOM images. `npatients` defines how many
+# samples per class will be shown (3 here to keep the grid lean).
+# Discussion: selecting three patients per group is deliberate to prioritize
+# speed in shared environments (like public notebooks) without losing the sense
+# of intra-class variation in the images.
 dicom_dir = DICOM_DATA_DIR
 npatients = HP.VIS_N_PATIENTS
 tile = HP.VIS_TILE
 gap = HP.VIS_GAP
 bunch = GGBunch()
 
-# Renderiza um grid 3×3 (linhas: classes clínicas, colunas: pacientes).
+# Render a 3×3 grid (rows: clinical classes, columns: patients).
 for i in range(npatients):
 
     # For invasive cancer patients
@@ -787,23 +783,23 @@ for i in range(npatients):
     )
     bunch.add_plot(get_dicom_plt(dcm_path, title=NO_CANCER_LABEL), 0 + i*(tile), 2*(tile + gap), tile, tile)
                    
-# Exibe a coletânea de figuras no notebook (Lets-Plot).
+# Display the collection of figures in the notebook (Lets-Plot).
 bunch.show()
 
 # ------------------------- Data Set and Data Loader ------------------------
 
-# Balanceamento simples: a classe "câncer" é bem minoritária. Aqui fazemos
-# *downsampling* aleatório dos negativos para igualar o número de positivos.
-# Em produção consideraríamos estratégias mais robustas (ex.: `class_weight`).
-# Discussão: o downsampling reduz a sensibilidade estatística, mas é uma forma
-# rápida de tornar o protótipo treinável sem precisar recalcular pesos por
-# batch. A intenção é enfatizar a mecânica de balanceamento, não otimizar AUC.
+# Simple balancing: the "cancer" class is quite rare. Here we perform random
+# negative downsampling to match the number of positives.
+# In production we would consider more robust strategies (e.g., `class_weight`).
+# Discussion: downsampling reduces statistical sensitivity but is a fast way to
+# make the prototype trainable without recalculating weights per batch. The
+# intent is to emphasize balancing mechanics, not to optimize AUC.
 df_target1 = df_train.filter(pl.col('cancer') == 1)
 df_target0 = df_train.filter(pl.col('cancer') == 0)
 
-# Didático: quando HP.DOWNSAMPLE_NEGATIVE=True, reduzimos o número de negativos
-# para manter uma razão controlada em relação aos positivos. Isso acelera o
-# treino e evita que a classe majoritária domine todas as iterações.
+# Didactic choice: when HP.DOWNSAMPLE_NEGATIVE=True, we cut the number of
+# negatives to keep a controlled ratio vs positives. This speeds training and
+# prevents the majority class from dominating iterations.
 if HP.DOWNSAMPLE_NEGATIVE:
     n_pos = len(df_target1)
     n_neg_total = len(df_target0)
@@ -815,15 +811,15 @@ if HP.DOWNSAMPLE_NEGATIVE:
         .drop('row_nr')
     )
 
-# Une as classes (balanceadas ou não) e embaralha as linhas para quebrar a ordem.
+# Merge the classes (balanced or not) and shuffle rows to break ordering.
 df_keep = (
     pl.concat([df_target1, df_target0], how='vertical')
     .select(pl.all().shuffle(seed=RANDOM_SEED))
 )
 
-# --- Preparação de metadados tabulares ---
-# Idade possui valores ausentes: imputamos com a média e normalizamos
-# linearmente para [0, 1], útil para estabilidade numérica da rede tabular.
+# --- Tabular metadata preparation ---
+# Age has missing values: we impute with the mean and normalize linearly to
+# [0, 1], helpful for numerical stability of the tabular network.
 if HP.AGE_IMPUTE == 'median':
     age_fill = float(df_keep.get_column('age').median())
 else:
@@ -834,7 +830,7 @@ age_max = df_keep.get_column('age').max()
 age_mean = float(df_keep.get_column('age').mean())
 age_std = float(df_keep.get_column('age').std()) or 1.0
 
-# Imputação
+# Imputation
 df_keep = df_keep.with_columns(
     pl.when(pl.col('age') == None)
     .then(age_fill)
@@ -842,20 +838,20 @@ df_keep = df_keep.with_columns(
     .alias('age')
 )
 
-# Normalização
+# Normalization
 if HP.AGE_NORM.lower() == 'zscore':
     df_keep = df_keep.with_columns(((pl.col('age') - age_mean) / age_std).alias('age'))
 else:
     df_keep = df_keep.with_columns(((pl.col('age') - age_min) / (age_max - age_min)).alias('age'))
 
-# One-hot encoding de colunas categóricas definidas em HP
+# One-hot encode categorical columns defined in HP
 df_keep = df_keep.to_dummies(HP.CAT_COLS)
 
-# Adiciona coluna "trainvalid" particionando por paciente para evitar que um
-# mesmo indivíduo apareça nos dois lados do split. O `GroupShuffleSplit` mantém
-# a proporção desejada (80/20, definida por TRAIN_SPLIT_RATIO) e reflete a
-# prática clínica de avaliar cada paciente em apenas um conjunto, minimizando
-# vazamento contralateral.
+# Add a "trainvalid" column partitioned by patient to avoid the same individual
+# appearing in both sides of the split. `GroupShuffleSplit` preserves the
+# desired ratio (80/20, defined by TRAIN_SPLIT_RATIO) and mirrors the clinical
+# practice of evaluating each patient in only one set, minimizing contralateral
+# leakage.
 patients = df_keep.get_column('patient_id').to_list()
 gss = GroupShuffleSplit(
     n_splits=1,
@@ -874,8 +870,8 @@ df_keep = df_keep.with_columns(
     .alias('trainvalid')
 )
     
-# Construção do nome do arquivo PNG (formato `{patient_id}_{image_id}.png`).
-# Essa etapa permite ligar os metadados tabulares ao arquivo de imagem.
+# Build the PNG filename (format `{patient_id}_{image_id}.png`).
+# This step links tabular metadata to the image file.
 df_keep = df_keep\
     .with_columns(pl.lit('_').alias('underscore'))\
     .with_columns(
@@ -903,22 +899,22 @@ df_train_meta.glimpse()
 print('Validation Metadata Characteristics')
 df_valid_meta.glimpse()
 
-# Diretorios destino onde salvaremos cópias balanceadas convertidas dos DICOMs.
-# Em notebooks Kaggle, /kaggle/working é gravável, mas `--output-dir` permite
-# customizar a pasta ao executar localmente.
-# Discussão: salvar cópias balanceadas evita acessar diretórios originais a
-# cada época, reduzindo gargalos de I/O no Kaggle. Em pipelines orquestrados,
-# usaríamos *data loaders* com cache ou *datastores* dedicados.
+# Destination directories where balanced copies converted from the DICOMs will be saved.
+# On Kaggle notebooks, /kaggle/working is writable, but `--output-dir` lets you
+# customize the folder when running locally.
+# Discussion: saving balanced copies avoids hitting the original directories
+# every epoch, reducing I/O bottlenecks on Kaggle. In orchestrated pipelines we
+# would use cached data loaders or dedicated datastores.
 train_dir = TRAIN_OUTPUT_DIR
 valid_dir = VALID_OUTPUT_DIR
 
-# Garantir que as pastas existam antes de salvar as imagens.
+# Ensure folders exist before saving images.
 os.makedirs(train_dir, exist_ok=True)
 os.makedirs(valid_dir, exist_ok=True)
 
-# Salva as PNGs balanceadas em pastas separadas (train/valid).
-# O uso de `dicom_to_pil_rgb` garante o windowing percentílico e a replicação
-# para 3 canais, alinhando-se ao pipeline do extrator com ResNet50.
+# Save balanced PNGs into separate folders (train/valid).
+# Using `dicom_to_pil_rgb` guarantees percentile windowing and replication to
+# 3 channels, aligning with the ResNet50 extractor pipeline.
 for file in train_fnames:
     patient_id, image_id = file.split("_", 1)
     dcm_path = os.path.join(dicom_dir, patient_id, f"{image_id}.dcm")
@@ -933,40 +929,40 @@ for file in valid_fnames:
 
 # Defining the data set
 class MammographyDataset(Dataset):
-    """Dataset PyTorch que fornece pares (imagem RGB, rótulo) balanceados."""
+    """PyTorch dataset that provides balanced (RGB image, label) pairs."""
 
     def __init__(self, meta_df: pl.DataFrame, img_dir: str, transform=None):
-        """Armazena amostras balanceadas e o diretório raiz das imagens RGB.
+        """Store balanced samples and the root directory of RGB images.
 
         Parameters
         ----------
         meta_df : pl.DataFrame
-            Tabela com colunas auxiliares (incluindo `fname`) para localizar as imagens.
+            Table with helper columns (including `fname`) to locate images.
         img_dir : str
-            Diretório base (train ou valid) contendo as PNGs geradas dos DICOMs.
+            Base directory (train or valid) containing the PNGs generated from DICOMs.
         transform : callable, opcional
-            Pipeline de transformações do torchvision (ToTensor, aug, etc.).
+            Torchvision transform pipeline (ToTensor, aug, etc.).
         """
         self.df = meta_df
         self.img_dir = img_dir
         self.transform = transform
 
     def __len__(self):
-        """Retorna quantas amostras estão disponíveis após o balanceamento."""
+        """Return how many samples are available after balancing."""
         return len(self.df)
 
     def __getitem__(self, idx):
-        """Carrega imagem RGB derivada do DICOM, aplica transforms e devolve (imagem, rótulo)."""
+        """Load RGB image derived from the DICOM, apply transforms, and return (image, label)."""
 
-        # Recupera o rótulo binário diretamente do DataFrame Polars.
+        # Retrieve the binary label directly from the Polars DataFrame.
         label = self.df.get_column('cancer')
         label = torch.tensor(label[idx], dtype=torch.float32)
 
-        # Constrói o caminho absoluto da PNG balanceada.
+        # Build the absolute path to the balanced PNG.
         img_fname = self.df.get_column('fname')
         img_fname = img_fname[idx]
 
-        # Abre a imagem RGB gerada a partir do DICOM e aplica as transformações.
+        # Open the RGB image generated from the DICOM and apply transforms.
         img_path = f'{self.img_dir}/{img_fname}.png'
         img = Image.open(img_path)
 
@@ -977,7 +973,7 @@ class MammographyDataset(Dataset):
 
 
 def preview_transformed_samples(dataset: Dataset, num_samples: int = 8, seed: Optional[int] = None) -> None:
-    """Renderiza um grid com amostras do `train_dataset` após a aplicação do `transform`."""
+    """Render a grid with `train_dataset` samples after applying `transform`."""
 
     if len(dataset) == 0:
         print('Dataset vazio: nada a visualizar.')
@@ -1009,16 +1005,16 @@ def preview_transformed_samples(dataset: Dataset, num_samples: int = 8, seed: Op
     plt.tight_layout()
     plt.show()
 
-# Pipeline de transformação mínimo: converte PIL RGB -> tensor (C×H×W, float [0, 1]).
-# Discussão: mantemos apenas `ToTensor` para isolar o efeito do balanceamento.
-# Em aplicações clínicas reais, validaríamos aumentos geométricos com equipe
-# médica para garantir plausibilidade anatômica.
+# Minimal transform pipeline: convert PIL RGB -> tensor (C×H×W, float [0, 1]).
+# Discussion: we keep only `ToTensor` to isolate the effect of balancing.
+# In real clinical applications, geometric augmentations would be validated
+# with the clinical team to ensure anatomical plausibility.
 transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-# Instancia os datasets de treino/validação apontando para os diretórios
-# balanceados montados anteriormente.
+# Instantiate train/validation datasets pointing to the previously built
+# balanced directories.
 train_dataset = MammographyDataset(
     meta_df=df_train_meta,
     img_dir=train_dir,
@@ -1031,22 +1027,22 @@ valid_dataset = MammographyDataset(
     transform=transform,
 )
 
-# DataLoaders com batch size 64 e *pin_memory* ativado quando houver CUDA.
-# Discussão: `num_workers=2` é conservador pensando em ambientes com restrição
-# de RAM. Ajustar esse número impacta diretamente o throughput de leitura.
+# DataLoaders with batch size 64 and *pin_memory* enabled when CUDA is present.
+# Discussion: `num_workers=2` is conservative for RAM-constrained environments.
+# Adjusting this number directly impacts read throughput.
 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=DATALOADER_WORKERS, pin_memory=torch.cuda.is_available())
 valid_loader = DataLoader(valid_dataset, batch_size=64, shuffle=False, num_workers=DATALOADER_WORKERS, pin_memory=torch.cuda.is_available())
 
-# Visualização rápida para checar contrastes, canais e rótulos antes do treino.
+# Quick visualization to check contrast, channels, and labels before training.
 preview_transformed_samples(train_dataset)
 
 # ------------------------------- PyTorch Model ------------------------------
 
 class MammographyModel(nn.Module):
-    """Classificador baseado apenas em uma ResNet50 adaptada para canal único."""
+    """Classifier based solely on a ResNet50 adapted for a single channel."""
 
     def __init__(self):
-        """Inicializa a ResNet50 adaptada para imagens mamográficas em tons de cinza."""
+        """Initialize ResNet50 tailored for grayscale mammography images."""
         super().__init__()
 
         self.rnet = torchvision.models.resnet50(weights=ResNet50_Weights.DEFAULT)
@@ -1055,7 +1051,7 @@ class MammographyModel(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
-        """Processa a imagem e retorna a probabilidade estimada de câncer."""
+        """Process the image and return the estimated cancer probability."""
 
         logits = self.rnet(img)
         out = self.sigmoid(logits)
@@ -1063,39 +1059,37 @@ class MammographyModel(nn.Module):
 
 model = MammographyModel()
 
-# ------------------------- Função de perda e otimizador -------------------------
-# Binária (BCELoss) pois a última camada aplica sigmoid. Otimizador SGD clássico
-# com momentum/weight decay para ilustrar configuração tradicional.
-# Discussão: BCELoss + sigmoid é didático, mas em produção preferiríamos
-# `BCEWithLogitsLoss` para estabilidade numérica e possibilidade de calibrar a
-# decisão clínica com *logits*.
+# ------------------------- Loss Function and Optimizer -------------------------
+# Binary (BCELoss) because the last layer applies sigmoid. Classic SGD optimizer
+# with momentum/weight decay to illustrate the traditional setup.
+# Discussion: BCELoss + sigmoid is didactic, but in production we'd prefer
+# `BCEWithLogitsLoss` for numerical stability and the ability to calibrate the
+# clinical decision with logits.
 loss_fn = nn.BCELoss()
 optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
 
 # -------------------------------- Training Loop -------------------------------
 
-# Seleciona GPU se disponível; caso contrário usa CPU. O print ajuda a rastrear
-# execuções em logs do Kaggle.
-# Discussão: deixar o `to(device)` explícito reforça o padrão PyTorch para quem
-# está migrando de notebooks CPU-only. A visibilidade do dispositivo evita
-# surpresas de performance em sessões desconectadas.
+# Select GPU if available; otherwise use CPU. The print helps track runs in Kaggle logs.
+# Discussion: keeping `to(device)` explicit reinforces the PyTorch pattern for
+# those moving from CPU-only notebooks. Device visibility avoids performance
+# surprises in detached sessions.
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 print(f'Using device: {device}')
 
-# Quantidade de épocas e buffers para armazenar métricas por época.
+# Number of epochs and buffers to store metrics per epoch.
 npochs = 25
 train_loss, valid_loss = [], []
 train_accuracy, valid_accuracy = [], []
 train_sensitivity, valid_sensitivity = [], []
 train_specificity, valid_specificity = [], []
 
-# Helper para métricas clínicas (sensibilidade/especificidade) derivadas da
-# matriz de confusão. Mantemos separado para reutilizar no treino e validação.
-# Discussão: separar a função facilita substituí-la por métricas adicionais
-# (ex.: `balanced_accuracy`) sem poluir o loop principal.
+# Helper for clinical metrics (sensitivity/specificity) derived from the
+# confusion matrix. Keeping it separate makes it easy to swap in extra metrics
+# (e.g., `balanced_accuracy`) without cluttering the main loop.
 def get_sens_spec(y_true, y_pred):
-    """Calcula sensibilidade e especificidade a partir da matriz de confusão."""
+    """Compute sensitivity and specificity from the confusion matrix."""
 
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     
@@ -1104,8 +1098,8 @@ def get_sens_spec(y_true, y_pred):
 
     return sensitivity, specificity
 
-# Laço principal de treino: `model.train()` habilita dropout/BN, e acumulamos
-# perdas e predições para computar métricas ao final de cada época.
+# Main training loop: `model.train()` enables dropout/BN, and we accumulate
+# losses and predictions to compute metrics at the end of each epoch.
 for epoch in range(npochs):
 
     # Training section
@@ -1127,7 +1121,7 @@ for epoch in range(npochs):
 
         running_loss += loss.item()
 
-        # Guarda predições binárias (threshold 0.5) para métricas agregadas.
+        # Store binary predictions (threshold 0.5) for aggregated metrics.
         preds = outputs.detach().cpu().view(-1).numpy().round()
         train_preds.extend(preds)
         train_labels.extend(label.cpu().numpy())
@@ -1135,7 +1129,7 @@ for epoch in range(npochs):
         if batch%5 == 0:
             print(f'epoch {epoch + 1}  batch {batch + 1}  train loss: {loss.item():10.8f}')
 
-    # Métricas de treino: sensibilidade/especificidade + perda média do epoch.
+    # Training metrics: sensitivity/specificity + mean epoch loss.
     train_sens, train_spec = get_sens_spec(train_labels, train_preds)
     train_sensitivity.append(train_sens)
     train_specificity.append(train_spec)
@@ -1158,15 +1152,15 @@ for epoch in range(npochs):
             
             running_loss += loss.item()
             
-            # Armazena predições para calcular métricas de validação.
+            # Store predictions to compute validation metrics.
             preds = outputs.detach().cpu().view(-1).numpy().round()
             valid_preds.extend(preds)
             valid_labels.extend(label.cpu().numpy())
 
-    # Métricas de validação espelham as de treino para comparar generalização.
-    # Discussão: comparar pares treino/validação por época ajuda a identificar
-    # *overfitting* inicial — especialmente importante quando usamos poucos
-    # negativos e o modelo tende a decorar padrões.
+    # Validation metrics mirror the training ones to compare generalization.
+    # Discussion: comparing train/validation pairs per epoch helps spot early
+    # overfitting — especially important when using few negatives and the model
+    # tends to memorize patterns.
     valid_sens, valid_spec = get_sens_spec(valid_labels, valid_preds)
     valid_sensitivity.append(valid_sens)
     valid_specificity.append(valid_spec)
@@ -1183,10 +1177,10 @@ for epoch in range(npochs):
 
 # ----------------------------------- Evaluation ----------------------------------
 
-# Constrói DataFrames com métricas por época para alimentar Lets-Plot.
-# Discussão: consolidar as listas em um `DataFrame` facilita exportar as
-# métricas para CSV ou dashboards externos, caso seja necessário reportar
-# desempenho longitudinal para a equipe médica.
+# Build DataFrames with per-epoch metrics to feed Lets-Plot.
+# Discussion: consolidating the lists into a `DataFrame` makes it easier to
+# export metrics to CSV or external dashboards if longitudinal performance
+# needs to be reported to the medical team.
 epoch = list(range(1, npochs + 1)) * 2
 set_type = ['Train'] * npochs + ['Valid'] * npochs
 
@@ -1259,7 +1253,7 @@ plt_spec=\
         axis_line_x = element_line(size = 1),
     )
 
-# Agrupa os quatro gráficos em um *bunch* para visualização conjunta.
+# Group the four charts in a bunch for joint visualization.
 bunch = GGBunch()
 bunch.add_plot(plt_loss, 0, 0, 800, 400)
 bunch.add_plot(plt_acc, 0, 410, 800, 400)
@@ -1269,13 +1263,13 @@ bunch.show()
 
 # ============================ Density Classifier ============================
 
-# Esta seção agrega o pipeline completo de treinamento para classificação
-# de densidade mamária (categorias BI-RADS 1–4) utilizando uma ResNet50.
-# A ideia é manter o projeto autocontido: os blocos abaixo podem ser
-# reutilizados a partir deste mesmo arquivo, seja interativamente (import)
-# ou via `run_density_classifier_cli()` com uma lista de argumentos.
+# This section bundles the full training pipeline for breast density
+# classification (BI-RADS categories 1–4) using a ResNet50.
+# The goal is to keep the project self-contained: the blocks below can be
+# reused from this same file, either interactively (import) or via
+# `run_density_classifier_cli()` with an argument list.
 
-# ------------------------ Modelo e configuração base ------------------------
+# ------------------------ Base Model and Configuration ------------------------
 
 def build_resnet50_classifier(
     device: torch.device,
@@ -1286,13 +1280,12 @@ def build_resnet50_classifier(
     torch_home: Optional[str] = None,
     freeze_backbone: bool = False,
 ) -> nn.Module:
-    """Instancia uma ResNet50 ajustada para classificação multi-classe 1–4.
+    """Instantiate a ResNet50 tuned for multi-class (1–4) classification.
 
-    A busca de pesos reutiliza a mesma lógica do extrator de embeddings:
-    prioriza checkpoints fornecidos pelo usuário, depois o cache local,
-    e por fim tenta o download (a menos que ``avoid_download`` seja verdadeiro).
-    Sempre que necessário, a camada ``fc`` é substituída por uma ``nn.Linear``
-    compatível com ``num_classes``.
+    The weight lookup reuses the same logic as the embedding extractor:
+    prioritize user-provided checkpoints, then the local cache, and finally try
+    downloading (unless ``avoid_download`` is true). Whenever needed, the
+    ``fc`` layer is replaced by an ``nn.Linear`` compatible with ``num_classes``.
     """
 
     from torchvision.models import resnet50
@@ -1319,11 +1312,11 @@ def build_resnet50_classifier(
     return model
 
 
-# -------------------------- Registro de histórico --------------------------
+# -------------------------- History Logging --------------------------
 
 @dataclass
 class DensityHistoryEntry:
-    """Snapshot por época para facilitar exportação e plotagem posterior."""
+    """Per-epoch snapshot to ease export and later plotting."""
 
     epoch: int
     train_loss: float
@@ -1332,10 +1325,10 @@ class DensityHistoryEntry:
     val_acc: Optional[float]
 
 
-# ------------------------ Treinamento e avaliação -------------------------
+# ------------------------ Training and Evaluation -------------------------
 
 def _prepare_targets(labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Converte rótulos 1–4 para faixa 0–3 e devolve máscara de exemplos válidos."""
+    """Convert labels 1–4 to range 0–3 and return a mask of valid examples."""
 
     if labels.ndim != 1:
         labels = labels.view(-1)
@@ -1350,7 +1343,7 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
 ) -> Tuple[float, float]:
-    """Executa uma época de treino e retorna ``(loss_médio, acc_média)``."""
+    """Run one training epoch and return ``(avg_loss, avg_acc)``."""
 
     model.train()
     total_loss = 0.0
@@ -1401,7 +1394,7 @@ def evaluate(
     criterion: nn.Module,
     device: torch.device,
 ) -> Tuple[float, float]:
-    """Avalia o modelo em ``loader`` e devolve ``(loss, acc)`` médios."""
+    """Evaluate the model on ``loader`` and return mean ``(loss, acc)``."""
 
     model.eval()
     total_loss = 0.0
@@ -1442,7 +1435,7 @@ def collect_predictions(
     loader: DataLoader,
     device: torch.device,
 ) -> List[Dict[str, object]]:
-    """Gera previsões detalhadas (probabilidades + classe) para cada DICOM."""
+    """Generate detailed predictions (probabilities + class) for each DICOM."""
 
     model.eval()
     records: List[Dict[str, object]] = []
@@ -1462,7 +1455,7 @@ def collect_predictions(
         for i in range(images.size(0)):
             true_label = int(labels[i].item())
             if true_label <= 0:
-                # Mantém compatibilidade: pula exemplos sem classificação válida.
+                # Keep compatibility: skip examples without a valid classification.
                 continue
             records.append(
                 {
@@ -1491,7 +1484,7 @@ def fit_classifier(
     lr: float,
     weight_decay: float,
 ) -> Tuple[nn.Module, List[DensityHistoryEntry]]:
-    """Executa o laço completo de treino, preservando o melhor estado."""
+    """Run the full training loop while preserving the best state."""
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(
@@ -1534,7 +1527,7 @@ def fit_classifier(
 # ------------------------------- Utilidades -------------------------------
 
 def dataset_summary(dataset: Dataset) -> Dict[int, int]:
-    """Conta quantas amostras existem por classe 1–4 no dataset fornecido."""
+    """Count how many samples exist per class 1–4 in the provided dataset."""
 
     counts = {1: 0, 2: 0, 3: 0, 4: 0}
     for sample in dataset.samples:  # type: ignore[attr-defined]
@@ -1549,7 +1542,7 @@ def split_dataset(
     val_fraction: float,
     seed: int,
 ) -> Tuple[Dataset, Optional[Dataset]]:
-    """Divide o dataset em treino/validação preservando índices originais."""
+    """Split the dataset into train/validation while preserving original indices."""
 
     n_total = len(dataset)
     if n_total == 0:
@@ -1578,7 +1571,7 @@ def make_dataloader(
     num_workers: int,
     device: torch.device,
 ) -> DataLoader:
-    """Padroniza a criação de DataLoaders para treino/validação."""
+    """Standardize DataLoader creation for train/validation."""
 
     return DataLoader(
         subset,
@@ -1590,7 +1583,7 @@ def make_dataloader(
 
 
 def indices_from_subset(subset: Optional[Dataset]) -> Iterable[int]:
-    """Recupera índices originais mesmo quando o conjunto é um ``Subset``."""
+    """Recover original indices even when the set is a ``Subset``."""
 
     if subset is None:
         return []
@@ -1600,7 +1593,7 @@ def indices_from_subset(subset: Optional[Dataset]) -> Iterable[int]:
 
 
 def history_to_dict(history: List[DensityHistoryEntry]) -> List[Dict[str, Optional[float]]]:
-    """Transforma o histórico (dataclasses) em estrutura serializável JSON."""
+    """Transform the history (dataclasses) into a JSON-serializable structure."""
 
     return [
         {
@@ -1617,7 +1610,7 @@ def history_to_dict(history: List[DensityHistoryEntry]) -> List[Dict[str, Option
 # ------------------------------- Interface CLI -------------------------------
 
 def parse_density_classifier_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    """Parser dedicado ao classificador de densidade (autônomo e reutilizável)."""
+    """Dedicated parser for the density classifier (standalone and reusable)."""
 
     parser = argparse.ArgumentParser(
         description="Treino de ResNet50 para classificação de densidade mamária (categorias 1–4)."
@@ -1652,7 +1645,7 @@ def parse_density_classifier_args(argv: Optional[List[str]] = None) -> argparse.
 
 
 def run_density_classifier_cli(argv: Optional[List[str]] = None) -> None:
-    """Executa o pipeline completo usando os argumentos fornecidos."""
+    """Run the complete pipeline using the provided arguments."""
 
     args = parse_density_classifier_args(argv)
     seed_everything(args.seed)
