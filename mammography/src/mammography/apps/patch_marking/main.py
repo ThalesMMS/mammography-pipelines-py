@@ -1,4 +1,12 @@
-# src/main.py
+#
+# main.py
+# mammography-pipelines-py
+#
+# Entry point for the patch marking UI, guiding backups, cleanup, filters, and GUI launch.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Entry point for the patch marking UI; guides backups, cleanup, and browsing."""
 import os
 import traceback 
 import unicodedata

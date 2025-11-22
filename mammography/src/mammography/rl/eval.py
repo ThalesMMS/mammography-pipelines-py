@@ -1,3 +1,11 @@
+#
+# eval.py
+# mammography-pipelines-py
+#
+# Minimal evaluation helpers for the RL refinement stub, averaging rewards over small rollouts.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Minimal evaluation helpers for the RL refinement stub."""
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ class EvalConfig:
 
 
 def evaluate_policy(policy: BasePolicy | None = None, config: EvalConfig | None = None) -> dict[str, float]:
+    """Run a handful of episodes and report the mean reward for a given policy."""
     cfg = config or EvalConfig()
     env_cfg = EnvConfig(seed=cfg.seed, max_steps=cfg.max_steps)
     env = SimpleMammoEnv(env_cfg)

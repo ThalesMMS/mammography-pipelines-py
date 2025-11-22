@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+#
+# extract_features.py
+# mammography-pipelines-py
+#
+# Extracts Stage 1 CNN embeddings and optional projections/clustering analyses for mammography datasets.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Stage 1 embedding extraction plus optional PCA/t-SNE/UMAP/clustering analysis."""
 import sys
 import os
 import argparse
@@ -29,11 +38,13 @@ from mammography.analysis.clustering import run_pca, run_tsne, run_kmeans, run_u
 from mammography.vis.plots import plot_scatter, plot_clustering_metrics
 
 def _tensor_to_uint8_image(tensor: torch.Tensor) -> np.ndarray:
+    """Convert a normalized tensor back to uint8 HWC for previews."""
     arr = tensor.permute(1, 2, 0).numpy()
     arr = (arr * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])).clip(0, 1)
     return np.uint8(arr * 255)
 
 def save_first_image_preview(dataset: MammoDensityDataset, out_dir: Path) -> None:
+    """Persist a single decoded example to quickly verify loader correctness."""
     if len(dataset) == 0:
         return
     img, _, meta, _ = dataset[0]
@@ -41,6 +52,7 @@ def save_first_image_preview(dataset: MammoDensityDataset, out_dir: Path) -> Non
     Image.fromarray(_tensor_to_uint8_image(img)).save(out_dir / "first_image_loaded.png")
 
 def save_samples_grid(dataset: MammoDensityDataset, out_dir: Path, max_samples: int = 16) -> None:
+    """Save a grid of sample thumbnails annotated with accession IDs."""
     if len(dataset) == 0:
         return
     idxs = list(range(min(max_samples, len(dataset))))
@@ -65,6 +77,7 @@ def save_samples_grid(dataset: MammoDensityDataset, out_dir: Path, max_samples: 
     grid.save(out_dir / "samples_grid.png")
 
 def plot_labels_distribution(df: pd.DataFrame, out_dir: Path) -> None:
+    """Plot a simple histogram of BI-RADS density labels present in the dataset."""
     if "professional_label" not in df.columns:
         return
     counts = df["professional_label"].value_counts().sort_index()
@@ -78,6 +91,7 @@ def plot_labels_distribution(df: pd.DataFrame, out_dir: Path) -> None:
     plt.close(fig)
 
 def resolve_loader_runtime(args, device: torch.device):
+    """Pick DataLoader knobs that are friendlier to CPU/MPS while reusing CLI defaults."""
     num_workers = args.num_workers
     prefetch = args.prefetch_factor if args.prefetch_factor and args.prefetch_factor > 0 else None
     persistent = args.persistent_workers

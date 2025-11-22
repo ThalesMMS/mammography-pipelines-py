@@ -1,3 +1,11 @@
+#
+# policy.py
+# mammography-pipelines-py
+#
+# Placeholder policies for the RL refinement stubs, offering random and threshold-based actions.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Placeholder policies used by the rl_refinement stubs."""
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ class RandomPolicy:
         self.rng = random.Random(self.seed)
 
     def act(self, obs: Sequence[float]) -> int:  # noqa: ARG002
+        """Pick an action uniformly at random regardless of the observation."""
         return self.rng.randrange(self.action_count)
 
     def reset(self, *, seed: int | None = None) -> None:
@@ -36,6 +45,7 @@ class ThresholdPolicy:
     threshold: float = 0.8
 
     def act(self, obs: Sequence[float]) -> int:
+        """Keep tweaking until validation kappa crosses the chosen threshold."""
         val_kappa = obs[1]
         if val_kappa >= self.threshold:
             return 1  # mantém estratégia

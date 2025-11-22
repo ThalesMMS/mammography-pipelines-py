@@ -1,9 +1,18 @@
-# src/data_manager.py
+#
+# data_manager.py
+# mammography-pipelines-py
+#
+# Wraps the archive folder to index patient studies, apply filters, and track navigation for patch marking.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Convenience wrapper around the archive folder to navigate studies and metadata."""
 
 import os
 import pandas as pd
 
 class DataManager:
+    """Track available patient folders, filters, and navigation state for patch marking."""
     def __init__(self, archive_dir_path: str):
         """
         Initialize the DataManager.

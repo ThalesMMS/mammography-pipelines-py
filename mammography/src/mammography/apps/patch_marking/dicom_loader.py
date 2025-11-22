@@ -1,10 +1,19 @@
-# src/dicom_loader.py
+#
+# dicom_loader.py
+# mammography-pipelines-py
+#
+# Lightweight DICOM loader that extracts windowing hints and photometric metadata for the patch UI.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Lightweight DICOM loader that extracts windowing hints for the patch UI."""
 
 import pydicom
 import numpy as np
 import os
 
 class DicomImageLoader:
+    """Load DICOM pixel data and derive window/photometric metadata for display."""
     def __init__(self):
         pass  # No complex initialization required for now
 

@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+#
+# data_audit.py
+# mammography-pipelines-py
+#
+# Inventories DICOM archives against classification CSVs and emits manifests, logs, and audit tables.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Utility script that inventories the archive/ directory and emits audit artifacts.
 
 Outputs:
@@ -48,6 +56,7 @@ class AccessionAudit:
 
 
 def _parse_csv(csv_path: Path) -> dict[str, str]:
+    """Read the classification CSV and return accession -> class mapping."""
     mapping: dict[str, str] = {}
     with csv_path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -61,6 +70,7 @@ def _parse_csv(csv_path: Path) -> dict[str, str]:
 
 
 def _read_dicom(path: Path) -> bool:
+    """Validate that a DICOM header can be parsed without loading pixel data."""
     try:
         pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
         return True
@@ -69,6 +79,7 @@ def _read_dicom(path: Path) -> bool:
 
 
 def _hash_file(path: Path) -> str:
+    """Generate a checksum to detect duplicate DICOM payloads across folders."""
     import hashlib
 
     h = hashlib.sha256()
@@ -82,12 +93,14 @@ def _hash_file(path: Path) -> str:
 
 
 def _iter_dicom_paths(folder: Path) -> Iterable[Path]:
+    """Yield every *.dcm file inside a folder tree in sorted order."""
     for path in sorted(folder.rglob("*.dcm")):
         if path.is_file():
             yield path
 
 
 def audit_accessions(root: Path, csv_map: dict[str, str]) -> list[AccessionAudit]:
+    """Inspect each accession directory and record readability/label issues."""
     audits: list[AccessionAudit] = []
     for acc_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         accession = acc_dir.name
@@ -116,6 +129,7 @@ def audit_accessions(root: Path, csv_map: dict[str, str]) -> list[AccessionAudit
 
 
 def _write_manifest(audits: list[AccessionAudit], csv_map: dict[str, str], out_path: Path) -> None:
+    """Summarize coverage in a compact JSON manifest for downstream tooling."""
     coverage = Counter(a.classification or "missing" for a in audits)
     total_readable = sum(a.readable_count for a in audits)
     total_files = sum(a.dicom_count for a in audits)
@@ -134,6 +148,7 @@ def _write_manifest(audits: list[AccessionAudit], csv_map: dict[str, str], out_p
 
 
 def _write_audit_csv(audits: list[AccessionAudit], csv_path: Path) -> None:
+    """Export the detailed accession audit to CSV for quick spreadsheet review."""
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -154,6 +169,7 @@ def _write_audit_csv(audits: list[AccessionAudit], csv_path: Path) -> None:
 
 
 def _write_log(audits: list[AccessionAudit], log_path: Path) -> None:
+    """Emit a short human-friendly log used in the Article assets folder."""
     readable_exams = sum(1 for a in audits if a.ok)
     total = len(audits)
     log_lines = [

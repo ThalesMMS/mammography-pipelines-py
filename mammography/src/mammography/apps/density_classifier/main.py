@@ -1,4 +1,12 @@
-# src/main.py
+#
+# main.py
+# mammography-pipelines-py
+#
+# Launches the density classification UI with optional CSV backups and unclassified filtering prompts.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Launch the density classification UI with optional backup and filtering steps."""
 import os
 import traceback
 import unicodedata

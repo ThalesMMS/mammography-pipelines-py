@@ -1,5 +1,22 @@
-"""Anotações didáticas para o pipeline RSNA Breast Cancer Detection.
+#
+# eda_cancer.py
+# mammography-pipelines-py
+#
+# Educational notebook-style pipeline for RSNA Breast Cancer Detection, covering data exploration, preprocessing, training, and visualization.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Educational notebook-style pipeline for RSNA Breast Cancer Detection.
 
+English overview
+----------------
+This script walks through a full supervised workflow: cohort inspection, quick
+visualizations, basic preprocessing, a PyTorch dataset backed by PNGs, a
+single-channel ResNet50 model, and end-to-end evaluation plots. It is meant to
+be read and tweaked as a guided tutorial.
+
+Context (original Portuguese notes preserved)
+---------------------------------------------
 Este script reúne, em formato de caderno executável, as etapas mais comuns
 em um fluxo de trabalho de *deep learning* supervisionado para mamografia:
 
@@ -87,15 +104,13 @@ from pydicom.pixel_data_handlers.util import apply_modality_lut
 # explicações em linguagem simples. Ajustá-los aqui propaga o efeito pelo script.
 
 class HP:
-    """Hiperparâmetros centrais e decisões de pré-processamento.
+    """Core hyperparameters and preprocessing decisions (with bilingual hints).
 
-    - IMG_RESIZE: lado para redimensionar imagens antes do recorte central.
-    - IMG_CROP: tamanho final enviado ao modelo (ResNet50 espera 224).
-    - WINDOW_P_LOW/HIGH: percentis usados no windowing robusto do DICOM.
-      Ideia: recortar extremos (mto claro/escuro) e normalizar o contraste.
-    - TRAIN_SPLIT: fração de pacientes no treino (restante vira validação).
-    - DATALOADER_WORKERS: número de processos auxiliares para carregar dados.
-    - RANDOM_SEED: tomada de decisão pseudo-aleatória reprodutível (splits, etc.).
+    - IMG_RESIZE/IMG_CROP: resize then center-crop to the model's expected input.
+    - WINDOW_P_LOW/HIGH: percentile windowing for robust DICOM contrast.
+    - TRAIN_SPLIT: patient-level split fraction (rest is validation).
+    - DATALOADER_WORKERS: helper workers for data loading.
+    - RANDOM_SEED: reproducibility anchor for splits and initialization.
     """
 
     IMG_RESIZE: int = 256
@@ -121,7 +136,7 @@ class HP:
 # ----------------------- Utilidades integradas -----------------------
 
 def seed_everything(seed: int = 42):
-    """Define seeds para reprodutibilidade razoável (atenção: DataLoader workers podem introduzir variação)."""
+    """Seed Python/NumPy/Torch for reasonable reproducibility across runs."""
     import random
     random.seed(seed)
     np.random.seed(seed)
@@ -132,7 +147,7 @@ def seed_everything(seed: int = 42):
 
 
 def find_best_data_dir(pref: str) -> str:
-    """Tenta localizar a pasta de dados corrigindo grafias comuns."""
+    """Resolve common typos to locate the data directory more forgivingly."""
     if os.path.isdir(pref):
         return pref
     alt = pref.replace("archieve", "archive")
@@ -146,20 +161,20 @@ def find_best_data_dir(pref: str) -> str:
 
 
 def _is_mono1(ds: "pydicom.dataset.FileDataset") -> bool:
-    """Verifica se a imagem é MONOCHROME1 (preto-branco invertidos)."""
+    """Check whether the image uses MONOCHROME1 (inverted black/white)."""
     photometric = getattr(ds, "PhotometricInterpretation", "").upper()
     return photometric == "MONOCHROME1"
 
 
 def _to_float32(arr: np.ndarray) -> np.ndarray:
-    """Garante float32 para cálculos numéricos estáveis e previsíveis."""
+    """Ensure float32 for numerically stable downstream math."""
     if arr.dtype != np.float32:
         arr = arr.astype(np.float32, copy=False)
     return arr
 
 
 def _apply_rescale(ds: "pydicom.dataset.FileDataset", arr: np.ndarray) -> np.ndarray:
-    """Aplica RescaleSlope/RescaleIntercept (quando presentes) de forma segura."""
+    """Apply RescaleSlope/Intercept (or modality LUT) when present."""
     slope = getattr(ds, "RescaleSlope", 1.0)
     intercept = getattr(ds, "RescaleIntercept", 0.0)
     try:
@@ -173,7 +188,7 @@ def _apply_rescale(ds: "pydicom.dataset.FileDataset", arr: np.ndarray) -> np.nda
 
 
 def robust_window(arr: np.ndarray, p_low: float = 0.5, p_high: float = 99.5) -> np.ndarray:
-    """Windowing por percentis para padronizar contraste de mamografias (robusto a outliers)."""
+    """Percentile-based windowing to normalize contrast while being outlier-robust."""
     lo, hi = np.percentile(arr, [p_low, p_high])
     if hi <= lo:
         lo, hi = arr.min(), arr.max()
@@ -185,7 +200,7 @@ def robust_window(arr: np.ndarray, p_low: float = 0.5, p_high: float = 99.5) -> 
 
 
 def dicom_to_pil_rgb(dcm_path: str) -> Image.Image:
-    """Lê um DICOM de mamografia, aplica pré-processamento e retorna PIL Image RGB."""
+    """Read a mammography DICOM, apply preprocessing, and return an RGB PIL image."""
     try:
         ds = pydicom.dcmread(dcm_path, force=True)
         arr = ds.pixel_array

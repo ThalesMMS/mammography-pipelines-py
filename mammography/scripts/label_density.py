@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+#
+# label_density.py
+# mammography-pipelines-py
+#
+# Legacy launcher for the density classifier GUI, including backup prompts and filtering.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Legacy launcher that mirrors the density_classifier UI with extra safety checks."""
 import sys
 import os
 

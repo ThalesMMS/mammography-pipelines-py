@@ -1,8 +1,18 @@
+#
+# config.py
+# mammography-pipelines-py
+#
+# Centralizes default hyperparameters used across the mammography training pipelines.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 from dataclasses import dataclass
+
 
 @dataclass
 class HP:
-    """Hiperparâmetros centrais deste pipeline."""
+    """Centralized training hyperparameters for the pipelines."""
+
     IMG_SIZE: int = 512
     WINDOW_P_LOW: float = 0.5
     WINDOW_P_HIGH: float = 99.5

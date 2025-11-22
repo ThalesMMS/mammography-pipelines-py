@@ -1,4 +1,12 @@
-# src/data_manager.py
+#
+# data_manager.py
+# mammography-pipelines-py
+#
+# Manages exam metadata, background DICOM loading, and shared buffers for the density classifier UI.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Data and caching helpers for the density classifier desktop UI."""
 
 import os
 import pandas as pd
@@ -11,6 +19,7 @@ import numpy as np
 from .dicom_loader import load_dicom_task
 
 class DataManager:
+    """Manage exam metadata and prefetch DICOM renders for the density UI."""
     def __init__(self, project_root: str):
         self.project_root = project_root
         self.archive_dir = os.path.join(self.project_root, "archive")
@@ -73,6 +82,7 @@ class DataManager:
         self.manager.shutdown()
 
     def _manage_buffer_jobs(self):
+        """Preload nearby exams into a multiprocessing-backed buffer."""
         while not self.control_thread_stop_event.is_set():
             if self.current_folder_index < 0:
                 time.sleep(0.1)

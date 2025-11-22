@@ -1,3 +1,11 @@
+#
+# common.py
+# mammography-pipelines-py
+#
+# Shared utilities for seeding, device/runtime setup, logging configuration, and safe path handling.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 import os
 import logging
 import random
@@ -9,7 +17,7 @@ except ImportError:
     TqdmLoggingHandler = logging.StreamHandler
 
 def seed_everything(seed: int = 42, deterministic: bool = False):
-    """Deixa o treinamento mais reprodutível (mesmos splits e inicializações)."""
+    """Make training more reproducible by seeding Python, NumPy, Torch, and CUDA/MPS."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -39,7 +47,7 @@ def seed_everything(seed: int = 42, deterministic: bool = False):
 
 
 def resolve_device(device_choice: str) -> torch.device:
-    """Escolhe o device automaticamente (CUDA > MPS > CPU), ou respeita a escolha explícita."""
+    """Pick the best available device (CUDA > MPS > CPU) unless an explicit choice is provided."""
     if device_choice == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda:0")
@@ -54,7 +62,7 @@ def resolve_device(device_choice: str) -> torch.device:
 
 
 def configure_runtime(device: torch.device, deterministic: bool, allow_tf32: bool) -> None:
-    """Ajusta flags de backend para equilíbrio entre performance e reprodutibilidade."""
+    """Tweak backend flags to balance performance and determinism for the chosen accelerator."""
     if device.type == "cuda":
         index = device.index if device.index is not None else 0
         torch.cuda.set_device(index)
@@ -75,7 +83,7 @@ def configure_runtime(device: torch.device, deterministic: bool, allow_tf32: boo
 
 
 def setup_logging(outdir: str, level: str, name: str = "mammography") -> logging.Logger:
-    """Configura logging para console + arquivo."""
+    """Configure a dual logger that streams to console and writes a rotating run.log."""
     log_dir = outdir
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger(name)
@@ -99,8 +107,8 @@ def setup_logging(outdir: str, level: str, name: str = "mammography") -> logging
 
 
 def increment_path(path: str) -> str:
-    """Se `path` já existir, retorna `path_1`, `path_2`, ... até encontrar livre."""
-    base = path.rstrip("/\ \")
+    """Return a free path by appending _1/_2/... if the desired folder already exists."""
+    base = path.rstrip("/\\ ")
     if not os.path.exists(base):
         return base
     i = 1

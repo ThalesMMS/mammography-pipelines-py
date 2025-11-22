@@ -1,10 +1,19 @@
-# src/ui_viewer.py
+#
+# ui_viewer.py
+# mammography-pipelines-py
+#
+# OpenCV-based viewer that letterboxes DICOM renders and records density classifications.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""OpenCV-based viewer to quickly label breast density for each accession."""
 
 import cv2
 import numpy as np
 from .data_manager import DataManager
 
 class ImageViewerUI:
+    """Minimal OpenCV loop to label density classes with quick navigation."""
     def __init__(self, data_manager: DataManager):
         print("Initializing optimized UI with render loop...")
         self.data_manager = data_manager

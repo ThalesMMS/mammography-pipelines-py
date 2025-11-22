@@ -1,3 +1,11 @@
+#
+# dataset.py
+# mammography-pipelines-py
+#
+# Implements the mammography density Dataset with optional tensor/disk caching and Stage 1 embedding lookup.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 import hashlib
 import json
 import logging
@@ -21,7 +29,7 @@ LOGGER = logging.getLogger("mammography")
 
 @dataclass
 class Stage1EmbeddingStore:
-    """Mantém os vetores 2048-D da Etapa 1 indexados por accession e caminho bruto."""
+    """Stores 2048-D Stage 1 embeddings indexed by accession and raw path."""
 
     embeddings_by_accession: Dict[str, torch.Tensor]
     embeddings_by_path: Dict[str, torch.Tensor]
@@ -33,17 +41,17 @@ class Stage1EmbeddingStore:
             return self.embeddings_by_accession[acc]
         path = row.get("image_path")
         if path:
-            # Tenta path exato
+            # Try exact path first to avoid surprising matches.
             if path in self.embeddings_by_path:
                 return self.embeddings_by_path[path]
-            # Normaliza para tentar match
-            norm = str(Path(path).expanduser().resolve()).replace("\", "/").lower()
+            # Normalize to make Windows/Unix paths line up when comparing.
+            norm = str(Path(path).expanduser().resolve()).replace("\\", "/").lower()
             if norm in self.embeddings_by_path:
                 return self.embeddings_by_path[norm]
         return None
 
 class MammoDensityDataset(Dataset):
-    """Dataset para densidade mamária."""
+    """Dataset for mammography density classification."""
 
     def __init__(
         self,
@@ -71,6 +79,7 @@ class MammoDensityDataset(Dataset):
         if self.cache_mode in {"disk", "tensor-disk", "tensor-memmap"} and self.cache_dir is None:
             raise ValueError("cache_dir é obrigatório quando cache_mode requer persistência em disco")
 
+        # Cache indexes are populated at startup so __getitem__ can stay lightweight.
         self._image_cache: Optional[Dict[str, Image.Image]] = {} if self.cache_mode == "memory" else None
         self._disk_cache_index: Dict[str, str] = {}
         self._tensor_disk_index: Dict[str, str] = {}
@@ -259,9 +268,9 @@ class MammoDensityDataset(Dataset):
             if self.label_mapper:
                 y = self.label_mapper(y)
             else:
-                y = y - 1 # Default 1..4 -> 0..3
+                y = y - 1  # Default mapping 1..4 -> 0..3 for CrossEntropyLoss
         else:
-            y = -1  # Mantém alinhamento em loaders mesmo sem label
+            y = -1  # Keep alignment in the batch even when labels are missing
         
         embedding_tensor = None
         if self.embedding_store:
@@ -287,6 +296,7 @@ class MammoDensityDataset(Dataset):
         return tensor
 
     def _apply_transforms(self, tensor: torch.Tensor) -> torch.Tensor:
+        # Normalize to a square crop so EfficientNet receives consistent inputs.
         tensor = tv_v2_F.resize(tensor, [self.img_size], interpolation=InterpolationMode.BICUBIC, antialias=False)
         tensor = tv_v2_F.center_crop(tensor, [self.img_size, self.img_size])
         tensor = tv_v2_F.to_dtype(tensor, torch.float32, scale=True)
@@ -301,7 +311,7 @@ class MammoDensityDataset(Dataset):
         return tensor
 
 def mammo_collate(batch):
-    """Collate que mantém metadados como lista de dicts."""
+    """Custom collate that keeps metadata as a list of dictionaries."""
     xs = torch.stack([b[0] for b in batch], dim=0)
     ys = torch.tensor([b[1] for b in batch], dtype=torch.long)
     meta = [b[2] for b in batch]

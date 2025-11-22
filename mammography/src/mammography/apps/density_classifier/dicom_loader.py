@@ -1,4 +1,12 @@
-# src/dicom_loader.py
+#
+# dicom_loader.py
+# mammography-pipelines-py
+#
+# Background-friendly DICOM loader that prepares uint8 windowed images for the density classifier UI.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Background-friendly DICOM loader used by the density classifier UI."""
 
 import pydicom
 import numpy as np

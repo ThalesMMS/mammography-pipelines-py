@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+#
+# train.py
+# mammography-pipelines-py
+#
+# Trains EfficientNetB0/ResNet50 density classifiers with optional caching, AMP, Grad-CAM, and evaluation exports.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Train EfficientNetB0/ResNet50 for breast density with optional caches and AMP."""
 import sys
 import os
 import argparse
@@ -37,6 +46,7 @@ from mammography.training.engine import (
 )
 
 def parse_args():
+    """Define and parse CLI arguments for the Stage 2 training script."""
     parser = argparse.ArgumentParser(description="Treinamento Mammography (EfficientNetB0/ResNet50)")
 
     # Data
@@ -96,6 +106,7 @@ def parse_args():
     return parser.parse_args()
 
 def get_label_mapper(mode):
+    """Return a mapper function to collapse classes when running binary experiments."""
     mode = (mode or "density").lower()
     if mode == "binary":
         # 1,2 -> 0 (Low); 3,4 -> 1 (High)
@@ -107,6 +118,7 @@ def get_label_mapper(mode):
     return None # Default 1..4 -> 0..3
 
 def resolve_loader_runtime(args, device: torch.device):
+    """Heuristic knobs to keep DataLoader stable across CPU, CUDA, and MPS."""
     num_workers = args.num_workers
     prefetch = args.prefetch_factor if args.prefetch_factor and args.prefetch_factor > 0 else None
     persistent = args.persistent_workers
@@ -119,7 +131,7 @@ def resolve_loader_runtime(args, device: torch.device):
     return num_workers, prefetch, persistent
 
 def freeze_backbone(model: torch.nn.Module, arch: str) -> None:
-    """Desliga gradientes do backbone, preservando apenas a cabeça."""
+    """Disable backbone gradients so only the classifier head keeps training."""
     for name, p in model.named_parameters():
         if arch == "resnet50" and name.startswith("fc"):
             continue
@@ -136,6 +148,7 @@ def unfreeze_last_block(model: torch.nn.Module, arch: str) -> None:
             p.requires_grad = True
 
 def build_param_groups(model: torch.nn.Module, arch: str, lr_head: float, lr_backbone: float) -> list[dict]:
+    """Create optimizer parameter groups to support differential LR for backbone vs head."""
     if arch == "resnet50":
         head_params = [p for n, p in model.named_parameters() if n.startswith("fc") and p.requires_grad]
         backbone_params = [p for n, p in model.named_parameters() if not n.startswith("fc") and p.requires_grad]

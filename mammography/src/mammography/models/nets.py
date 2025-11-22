@@ -1,10 +1,18 @@
+#
+# nets.py
+# mammography-pipelines-py
+#
+# Defines EfficientNetB0/ResNet50 classifiers with optional tabular fusion and fine-tuning controls.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 import torch
 import torch.nn as nn
 from typing import Optional
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights, resnet50, ResNet50_Weights
 
 class EfficientNetWithFusion(nn.Module):
-    """Wrapper que permite concatenar embeddings tabulares antes da cabeça de classificação."""
+    """Wrapper that optionally concatenates tabular embeddings before classification."""
 
     def __init__(self, base_model: nn.Module, num_classes: int, extra_feature_dim: int = 0):
         super().__init__()
@@ -14,7 +22,7 @@ class EfficientNetWithFusion(nn.Module):
         self.extra_feature_dim = int(extra_feature_dim or 0)
 
         in_features = base_model.classifier[1].in_features  # Dropout + Linear
-        # substitui classifier padrão por identidade para reutilizar dropout customizado
+        # Replace the default classifier with identity so we can attach our own head.
         base_model.classifier = nn.Identity()
 
         fusion_in = in_features + self.extra_feature_dim
@@ -46,7 +54,7 @@ def build_model(
     unfreeze_last_block: bool = True,
     extra_feature_dim: int = 0,
 ) -> nn.Module:
-    """Cria modelo (EfficientNetB0 ou ResNet50) com cabeça customizada."""
+    """Build EfficientNetB0/ResNet50 with a customizable head and optional feature fusion."""
     
     if arch == "efficientnet_b0":
         base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)

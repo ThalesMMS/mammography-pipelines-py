@@ -1,3 +1,11 @@
+#
+# train.py
+# mammography-pipelines-py
+#
+# Stub training loop for the RL refinement stage, including optional SB3 PPO/A2C support.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Stub training loop for the RL refinement stage."""
 
 from __future__ import annotations
@@ -41,6 +49,8 @@ class TrainConfig:
 
 
 class Trainer:
+    """Lightweight orchestrator for both stub policies and optional SB3 agents."""
+
     def __init__(self, config: TrainConfig) -> None:
         env_cfg = EnvConfig(
             seed=config.seed,
@@ -78,6 +88,7 @@ class Trainer:
             total = 0.0
             steps = 0
             while not done and steps < self.config.max_steps:
+                # Policies are intentionally simple; observations are ignored in RandomPolicy.
                 action = self.policy.act(obs)
                 obs, reward, done, _ = self.env.step(action)
                 total += reward
@@ -87,6 +98,7 @@ class Trainer:
         return summary
 
     def _run_sb3(self) -> dict[str, float]:
+        """Delegate training to PPO/A2C from stable-baselines3 when installed."""
         if self.config.algorithm not in {"ppo", "a2c"}:
             raise RuntimeError("SB3 training solicitado para algoritmo incompatível.")
         if (self.config.algorithm == "ppo" and PPO is None) or (self.config.algorithm == "a2c" and A2C is None):
@@ -167,6 +179,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _load_policy_payload(path: Path | None) -> dict[str, Any]:
+    """Load overrides from a YAML/JSON policy config file when provided."""
     if not path:
         return {}
     resolved = path.expanduser().resolve()

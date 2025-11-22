@@ -1,4 +1,12 @@
-# src/ui_viewer.py
+#
+# ui_viewer.py
+# mammography-pipelines-py
+#
+# Matplotlib-based viewer that navigates DICOMs, previews ROIs, and saves annotated PNG crops.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Matplotlib-based viewer to browse DICOMs and save ROI crops as PNGs."""
 
 import shutil
 import datetime
@@ -14,6 +22,7 @@ from .dicom_loader import DicomImageLoader, apply_windowing
 from .roi_selector import RoiSelector
 
 class ImageViewerUI:
+    """Interactive matplotlib UI to navigate DICOMs and save ROI crops."""
     
     def __init__(self, data_manager: DataManager):
         print("Initializing ImageViewerUI...")

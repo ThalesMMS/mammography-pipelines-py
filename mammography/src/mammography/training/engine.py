@@ -1,3 +1,11 @@
+#
+# engine.py
+# mammography-pipelines-py
+#
+# Training/validation utilities for the density models, including Grad-CAM, metrics, and embedding extraction.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 import os
 import time
 import logging
@@ -26,6 +34,7 @@ def train_one_epoch(
     scaler: Optional[GradScaler] = None,
     amp_enabled: bool = False,
 ) -> Tuple[float, float]:
+    """One epoch of supervised training with optional AMP and extra tabular features."""
     model.train()
     if loss_fn is None:
         loss_fn = nn.CrossEntropyLoss()
@@ -62,6 +71,7 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
+        # Use autocast+GradScaler when AMP is enabled to keep training stable.
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
             logits = model(x, extra_tensor)
             loss = loss_fn(logits, y_tensor)
@@ -100,6 +110,7 @@ def validate(
     gradcam_dir: Optional[Path] = None,
     gradcam_limit: int = 4,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Validation loop that returns metrics plus optional per-sample predictions/Grad-CAMs."""
     model.eval()
     all_y = []
     all_p = []
@@ -228,6 +239,7 @@ def extract_embeddings(
     device: torch.device,
     amp_enabled: bool = False,
 ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+    """Register a forward hook to capture pooled CNN embeddings for each batch."""
     model.eval()
     feats: List[np.ndarray] = []
     rows: List[Dict[str, Any]] = []
@@ -292,6 +304,7 @@ def _save_gradcam_batch(
     already: int,
     device: torch.device,
 ) -> int:
+    """Generate Grad-CAM heatmaps for a small batch and persist blended overlays."""
     try:
         target_layer = None
         if hasattr(model, "layer4"):
@@ -356,6 +369,7 @@ def _save_gradcam_batch(
 
 
 def plot_history(history: List[Dict[str, Any]], outdir: Path) -> None:
+    """Persist training curves to CSV/PNG so notebooks and LaTeX can consume them."""
     if not history:
         return
     df = pd.DataFrame(history)
@@ -379,11 +393,13 @@ def plot_history(history: List[Dict[str, Any]], outdir: Path) -> None:
 
 
 def save_predictions(pred_rows: List[Dict[str, Any]], outdir: Path) -> None:
+    """Write per-sample validation predictions when the caller opts in."""
     if not pred_rows:
         return
     pd.DataFrame(pred_rows).to_csv(outdir / "val_predictions.csv", index=False)
 
 def save_metrics_figure(metrics: Dict[str, Any], out_path: str) -> None:
+    """Render confusion matrix and per-class precision/recall/F1 to a single PNG."""
     try:
         cm_data = np.array(metrics.get("confusion_matrix", []), dtype=float)
         report = metrics.get("classification_report", {})

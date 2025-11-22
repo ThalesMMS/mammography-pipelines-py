@@ -1,4 +1,12 @@
-# src/utils.py
+#
+# utils.py
+# mammography-pipelines-py
+#
+# Utility helpers for backing up classification CSVs within the density classifier UI flow.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Small utility helpers used by the density classifier UI."""
 
 import os
 import shutil

@@ -1,3 +1,11 @@
+#
+# env.py
+# mammography-pipelines-py
+#
+# Lightweight environment stubs for RL refinement experiments, including a gym-compatible wrapper.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Lightweight environment stubs for RL refinement experiments."""
 
 from __future__ import annotations
@@ -66,6 +74,7 @@ class SimpleMammoEnv:
             raise ValueError(f"ação inválida: {action}")
         val_acc, val_kappa, train_loss, val_loss = self.state
         delta = (action - 1) * 0.01
+        # Tiny reward shaping: action 0 decreases effort, 2 intensifies, 1 keeps state.
         val_acc = max(0.0, min(1.0, val_acc + delta))
         val_kappa = max(0.0, min(1.0, val_kappa + delta * 1.5))
         train_loss = max(0.0, train_loss - delta)

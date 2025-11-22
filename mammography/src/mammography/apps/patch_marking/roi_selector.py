@@ -1,8 +1,17 @@
-# src/roi_selector.py
+#
+# roi_selector.py
+# mammography-pipelines-py
+#
+# Utility class that maintains square ROIs centered on clicks while clamping to image bounds.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""Utility class to compute square ROIs and keep them within image boundaries."""
 
 import numpy as np
 
 class RoiSelector:
+    """Maintain a square ROI centered on user clicks while clamping to image bounds."""
     def __init__(self, roi_size: int = 448):  # 448 is the default size
         """
         Initialize the RoiSelector.

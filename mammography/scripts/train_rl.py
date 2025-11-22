@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+#
+# train_rl.py
+# mammography-pipelines-py
+#
+# CLI wrapper that launches the RL refinement stub from the repository root.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+"""CLI wrapper to launch the RL refinement stub from repo root."""
 import sys
 import os
 

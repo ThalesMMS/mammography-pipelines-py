@@ -1,3 +1,11 @@
+#
+# csv_loader.py
+# mammography-pipelines-py
+#
+# Loads dataset rows from CSVs, featureS.txt directories, or presets and normalizes labels/paths.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 import os
 import pandas as pd
 import numpy as np
@@ -14,7 +22,7 @@ DATASET_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
 }
 
 def _find_first_dicom(folder: str) -> Optional[str]:
-    """Retorna o primeiro DICOM encontrado na pasta."""
+    """Return the first DICOM path found under the given folder (depth-first)."""
     exts = (".dcm", ".dicom", ".DCM", ".DICOM")
     dicoms: List[str] = []
     for curr, _, files in os.walk(folder):
@@ -27,7 +35,7 @@ def _find_first_dicom(folder: str) -> Optional[str]:
     return dicoms[0] if dicoms else None
 
 def _coerce_density_label(val: Any) -> Optional[int]:
-    """Converte rótulos para {1,2,3,4}."""
+    """Normalize label inputs to integers in {1, 2, 3, 4} when possible."""
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return None
     if isinstance(val, str):
@@ -49,12 +57,14 @@ def _coerce_density_label(val: Any) -> Optional[int]:
         return None
 
 def _normalize_accession(value: Any) -> Optional[str]:
+    """Trim and normalize accession strings, returning None for empty values."""
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
     text = str(value).strip()
     return text or None
 
 def _find_best_data_dir(pref: Optional[str]) -> Optional[str]:
+    """Try common typos so the CLI is more forgiving for frequently used paths."""
     if not pref:
         return pref
     if os.path.isdir(pref):
@@ -100,6 +110,7 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
     return rows
 
 def resolve_paths_from_preset(csv_path: Optional[str], dataset: Optional[str], dicom_root: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Fill `csv_path` and `dicom_root` using the named preset when the user did not pass explicit paths."""
     if dataset and dataset in DATASET_PRESETS:
         preset = DATASET_PRESETS[dataset]
         csv_path = csv_path or preset.get("csv")
@@ -108,7 +119,7 @@ def resolve_paths_from_preset(csv_path: Optional[str], dataset: Optional[str], d
     return csv_path, dicom_root
 
 def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = None, exclude_class_5: bool = True, dataset: Optional[str] = None) -> pd.DataFrame:
-    """Carrega DataFrame a partir de CSV, diretórios com featureS.txt ou presets conhecidos."""
+    """Load a canonical DataFrame from CSVs, featureS.txt directories, or known presets."""
     csv_path, dicom_root = resolve_paths_from_preset(csv_path, dataset, dicom_root)
     if not csv_path:
         raise ValueError("csv_path não definido; use --csv ou --dataset com preset válido.")
@@ -159,6 +170,7 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
     raise ValueError("CSV formato desconhecido ou faltando --dicom-root para CSV de classificação.")
 
 def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -> str:
+    """Pick a cache strategy based on dataset size and whether paths point to DICOM files."""
     mode = (requested_mode or "none").lower()
     if mode != "auto":
         return mode

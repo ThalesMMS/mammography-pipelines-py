@@ -1,3 +1,11 @@
+#
+# plots.py
+# mammography-pipelines-py
+#
+# Provides simple plotting helpers for embedding scatterplots and clustering metric comparisons.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -14,6 +22,7 @@ def plot_scatter(
     title: str = "", 
     out_path: str = "plot.png"
 ):
+    """Quick scatter plot helper for 2-D embeddings such as PCA/t-SNE/UMAP outputs."""
     plt.figure(figsize=(10, 8))
     sns.scatterplot(data=df, x=x_col, y=y_col, hue=hue, palette="viridis", s=60, alpha=0.7)
     plt.title(title)
@@ -22,6 +31,7 @@ def plot_scatter(
     plt.close()
 
 def plot_clustering_metrics(history: list, out_path: str):
+    """Visualize silhouette and Davies-Bouldin scores as k varies."""
     df = pd.DataFrame(history)
     fig, ax1 = plt.subplots(figsize=(10, 6))
     

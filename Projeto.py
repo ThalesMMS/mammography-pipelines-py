@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+#
+# Projeto.py
+# mammography-pipelines-py
+#
+# Orchestrates CLI subcommands for embedding extraction, density training, eval export, and RL refinement.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Projeto.py — Windows-friendly orchestrator for the mammography pipelines.
 
 Sample usage
@@ -47,6 +55,7 @@ DEFAULT_CONFIGS: dict[str, Path | None] = {
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Define the CLI with subcommands that wrap the downstream scripts."""
     parser = argparse.ArgumentParser(
         prog="Projeto.py",
         description=(
@@ -159,17 +168,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_logging(level: str) -> None:
+    """Configure root logging for both CLI feedback and debug traces."""
     numeric = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(level=numeric, format="%(levelname)s | %(message)s", force=True)
 
 
 def _format_command(command: Sequence[str]) -> str:
+    """Format a subprocess command so it is easy to copy/paste/debug."""
     if os.name == "nt":
         return subprocess.list2cmdline(command)
     return " ".join(shlex.quote(part) for part in command)
 
 
 def _read_config(path: Path) -> Any:
+    """Read a YAML/JSON config file and return its payload."""
     text = path.read_text(encoding="utf-8")
     if yaml is not None:
         return yaml.safe_load(text)
@@ -179,6 +191,7 @@ def _read_config(path: Path) -> Any:
 
 
 def _dict_to_cli_args(payload: dict[str, Any]) -> list[str]:
+    """Convert a dictionary of arguments into flat CLI flags."""
     args: list[str] = []
     for key, value in payload.items():
         flag = f"--{key.replace('_', '-')}"
@@ -197,6 +210,7 @@ def _dict_to_cli_args(payload: dict[str, Any]) -> list[str]:
 
 
 def _coerce_cli_args(payload: Any) -> list[str]:
+    """Accept bool/iterable/string inputs and normalize to a list of CLI tokens."""
     if payload is None:
         return []
     if isinstance(payload, str):
@@ -209,6 +223,7 @@ def _coerce_cli_args(payload: Any) -> list[str]:
 
 
 def _default_config(command: str) -> Path | None:
+    """Return the default config path for the subcommand if it exists."""
     candidate = DEFAULT_CONFIGS.get(command)
     if candidate and candidate.exists():
         return candidate
@@ -216,6 +231,7 @@ def _default_config(command: str) -> Path | None:
 
 
 def _load_config_args(config_arg: Path | None, command: str) -> list[str]:
+    """Load YAML/JSON payloads and convert them to CLI arguments for forwarding."""
     config_path = config_arg or _default_config(command)
     if not config_path:
         return []
@@ -247,6 +263,7 @@ def _load_config_args(config_arg: Path | None, command: str) -> list[str]:
 
 
 def _run_passthrough(script_fragment: str, args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+    """Invoke a downstream script, merging config-derived args with forwarded CLI tokens."""
     script = (REPO_ROOT / script_fragment).resolve()
     if not script.exists():
         raise FileNotFoundError(f"Script não encontrado: {script}")
@@ -260,6 +277,7 @@ def _run_passthrough(script_fragment: str, args: argparse.Namespace, forwarded: 
 
 
 def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+    """Emit a short checklist of artifacts needed for evaluation/export."""
     config_args = _load_config_args(getattr(args, "config", None), args.command)
     if config_args:
         LOGGER.info("Argumentos sugeridos (config): %s", " ".join(config_args))
@@ -314,11 +332,13 @@ def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> 
 
 
 def _invoke_rl_refine(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+    """Helper to keep RL refinement invocation consistent with other passthroughs."""
     _run_passthrough("mammography/scripts/train_rl.py", args, forwarded)
 
 
 
 def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+    """Call the report_pack helper and normalize paths provided via CLI."""
     if forwarded:
         LOGGER.warning("Argumentos adicionais ignorados pelo report-pack: %s", " ".join(forwarded))
     if not args.runs:
@@ -349,6 +369,7 @@ def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point that routes subcommands and applies common logging/error handling."""
     parser = _build_parser()
     args, forwarded = parser.parse_known_args(argv)
     if not args.command:

@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+#
+# menu.py
+# mammography-pipelines-py
+#
+# Provides a CLI/web menu to launch training and feature extraction pipelines with preset options.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """
 Menu Launcher — CLI/Web wrapper to run train/extract pipelines with presets.
 
@@ -29,12 +37,14 @@ TASKS = ["binary", "multiclass"]
 
 
 def _prompt_choice(title: str, options: List[str], default: str) -> str:
+    """Ask the user to pick from a set of options with a sensible default."""
     print(f"{title} ({'/'.join(options)}), default [{default}]: ", end="", flush=True)
     val = input().strip().lower()
     return val if val in options else default
 
 
 def _prompt_bool(title: str, default: bool = False) -> bool:
+    """Yes/no prompt that respects the provided default when left blank."""
     dv = "Y/n" if default else "y/N"
     print(f"{title}? [{dv}]: ", end="", flush=True)
     val = input().strip().lower()
@@ -44,6 +54,7 @@ def _prompt_bool(title: str, default: bool = False) -> bool:
 
 
 def _prompt_int(title: str, default: int) -> int:
+    """Integer prompt with graceful fallback to the default value."""
     print(f"{title} (default={default}): ", end="", flush=True)
     val = input().strip()
     try:
@@ -53,6 +64,7 @@ def _prompt_int(title: str, default: int) -> int:
 
 
 def _build_dataset_args(dataset: str, csv_path: Optional[str], dicom_root: Optional[str]) -> List[str]:
+    """Translate dataset selection into CLI flags understood by downstream scripts."""
     if dataset != "custom":
         return ["--dataset", dataset]
     args: List[str] = []
@@ -64,6 +76,7 @@ def _build_dataset_args(dataset: str, csv_path: Optional[str], dicom_root: Optio
 
 
 def build_train_command(params: Dict[str, str]) -> List[str]:
+    """Compose the train.py command from collected UI/CLI parameters."""
     cmd = [
         PYTHON,
         "-u",
@@ -96,6 +109,7 @@ def build_train_command(params: Dict[str, str]) -> List[str]:
 
 
 def build_extract_command(params: Dict[str, str]) -> List[str]:
+    """Compose the extract_features.py command from collected UI/CLI parameters."""
     cmd = [
         PYTHON,
         "-u",
@@ -128,12 +142,14 @@ def build_extract_command(params: Dict[str, str]) -> List[str]:
 
 
 def run_command(cmd: List[str]) -> int:
+    """Print and run a subprocess, returning its exit code."""
     print(f"\n[cmd] {' '.join(shlex.quote(p) for p in cmd)}\n", flush=True)
     proc = subprocess.run(cmd)
     return proc.returncode
 
 
 def cli_menu() -> None:
+    """Interactive CLI menu that mirrors the web form."""
     print("=== Mammography Menu (CLI) ===")
     action = _prompt_choice("Action", ["train", "extract"], "train")
     dataset = _prompt_choice("Dataset", DATASETS, "archive")
@@ -237,10 +253,12 @@ Flags:
 
 
 def _bool_from_form(data: Dict[str, List[str]], key: str) -> bool:
+    """Interpret checkbox values from the web form payload."""
     return key in data and bool(data[key])
 
 
 def _run_and_capture(cmd: List[str]) -> str:
+    """Execute a command and capture stdout/stderr for embedding in HTML."""
     err = None
     try:
         out = subprocess.run(cmd, capture_output=True, text=True)

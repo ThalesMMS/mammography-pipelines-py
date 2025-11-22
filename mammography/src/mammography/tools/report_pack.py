@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+#
+# report_pack.py
+# mammography-pipelines-py
+#
+# Consolidates Stage 2 runs by copying assets, building Grad-CAM collages, and updating LaTeX sections.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Helper utilities to consolidate Stage 2 runs for reporting/Article exports."""
 
 from __future__ import annotations
@@ -34,11 +42,13 @@ class Stage2Run:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
+    """Read a UTF-8 JSON file and return a dictionary payload."""
     with path.open(encoding="utf-8") as handle:
         return json.load(handle)
 
 
 def _copy_asset(src: Path, dest: Path) -> str:
+    """Copy an artifact into the shared assets folder and return its basename."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
     LOGGER.info("Copiado %s -> %s", src, dest)
@@ -46,12 +56,14 @@ def _copy_asset(src: Path, dest: Path) -> str:
 
 
 def _iter_gradcam_images(folder: Path) -> Iterable[Path]:
+    """Yield Grad-CAM PNGs sorted alphabetically to produce deterministic grids."""
     for path in sorted(folder.glob("gradcam_*.png")):
         if path.is_file():
             yield path
 
 
 def _build_gradcam_grid(image_paths: Sequence[Path], dest: Path, max_tiles: int = 4) -> str | None:
+    """Assemble up to `max_tiles` Grad-CAMs into a single collage."""
     selected = list(image_paths)[:max_tiles]
     if not selected:
         return None
@@ -81,6 +93,7 @@ def _build_gradcam_grid(image_paths: Sequence[Path], dest: Path, max_tiles: int 
 
 
 def _format_metric_table(runs: Sequence[Stage2Run]) -> tuple[list[dict[str, str]], dict[str, float]]:
+    """Prepare LaTeX-friendly rows and mean/std aggregates for the report table."""
     table_rows: list[dict[str, str]] = []
     aggregated = {"accuracy": [], "kappa": [], "macro_f1": [], "auc": []}
     for run in runs:
@@ -112,6 +125,7 @@ def _format_metric_table(runs: Sequence[Stage2Run]) -> tuple[list[dict[str, str]
 
 
 def _render_stage2_tex(tex_path: Path, runs: Sequence[Stage2Run]) -> None:
+    """Update the LaTeX section with metrics and assets for the provided runs."""
     if not runs:
         LOGGER.warning("Nenhum run fornecido; pulando geração de stage2_model.tex.")
         return
@@ -219,6 +233,7 @@ def _render_stage2_tex(tex_path: Path, runs: Sequence[Stage2Run]) -> None:
 
 
 def _summarize_run(run_path: Path, assets_dir: Path, gradcam_limit: int) -> Stage2Run:
+    """Collect metrics, copy artifacts, and store summary.json for a single run."""
     summary_path = run_path / "summary.json"
     metrics_path = run_path / "metrics" / "val_metrics.json"
     if not summary_path.exists():
@@ -293,6 +308,7 @@ def package_stage2_runs(
     tex_path: Path | None = None,
     gradcam_limit: int = 4,
 ) -> list[Stage2Run]:
+    """High-level helper used by CLI and Projeto.py to gather/export Stage 2 runs."""
     assets_dir.mkdir(parents=True, exist_ok=True)
     summarized: list[Stage2Run] = []
     for run in runs:
