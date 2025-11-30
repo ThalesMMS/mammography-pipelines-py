@@ -51,6 +51,7 @@ DEFAULT_CONFIGS: dict[str, Path | None] = {
     "train-density": REPO_ROOT / "configs" / "density.yaml",
     "eval-export": None,
     "rl-refine": None,
+    "visualize": None,
 }
 
 
@@ -162,6 +163,97 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_config_argument(
         rl_parser,
         "Invoca rl_refinement.train.main; aceita --policy-config via encaminhamento.",
+    )
+
+    # Visualization subcommand
+    viz_parser = subparsers.add_parser(
+        "visualize",
+        help="Gera visualizações (t-SNE, heatmaps, scatterplots) de embeddings.",
+    )
+    _add_config_argument(
+        viz_parser,
+        "Encaminha argumentos ao visualize.py para geração de gráficos.",
+    )
+    viz_parser.add_argument(
+        "--input", "-i",
+        type=Path,
+        help="Caminho para features (.npy/.npz) ou diretório de run (com --from-run).",
+    )
+    viz_parser.add_argument(
+        "--from-run",
+        action="store_true",
+        help="Trata --input como diretório de run e descobre artefatos automaticamente.",
+    )
+    viz_parser.add_argument(
+        "--output", "-o",
+        type=Path,
+        default=Path("outputs/visualizations"),
+        help="Diretório de saída para visualizações (default: outputs/visualizations).",
+    )
+    viz_parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Gera relatório completo de visualizações.",
+    )
+    viz_parser.add_argument(
+        "--tsne",
+        action="store_true",
+        help="Gera plot t-SNE 2D.",
+    )
+    viz_parser.add_argument(
+        "--tsne-3d",
+        action="store_true",
+        help="Gera plot t-SNE 3D.",
+    )
+    viz_parser.add_argument(
+        "--pca",
+        action="store_true",
+        help="Gera scatter plot PCA.",
+    )
+    viz_parser.add_argument(
+        "--umap",
+        action="store_true",
+        help="Gera scatter plot UMAP.",
+    )
+    viz_parser.add_argument(
+        "--compare-embeddings",
+        action="store_true",
+        help="Compara PCA, t-SNE e UMAP lado a lado.",
+    )
+    viz_parser.add_argument(
+        "--heatmap",
+        action="store_true",
+        help="Gera heatmap de correlação de features.",
+    )
+    viz_parser.add_argument(
+        "--confusion-matrix",
+        action="store_true",
+        help="Gera heatmap de matriz de confusão (requer predictions).",
+    )
+    viz_parser.add_argument(
+        "--scatter-matrix",
+        action="store_true",
+        help="Gera matriz de scatter plots pareados.",
+    )
+    viz_parser.add_argument(
+        "--distribution",
+        action="store_true",
+        help="Gera plots de distribuição de features.",
+    )
+    viz_parser.add_argument(
+        "--class-separation",
+        action="store_true",
+        help="Gera análise de separação de classes.",
+    )
+    viz_parser.add_argument(
+        "--learning-curves",
+        action="store_true",
+        help="Gera curvas de aprendizado (requer history).",
+    )
+    viz_parser.add_argument(
+        "--binary",
+        action="store_true",
+        help="Usa nomes de classes binários (Low/High Density).",
     )
 
     return parser
@@ -336,6 +428,49 @@ def _invoke_rl_refine(args: argparse.Namespace, forwarded: Sequence[str]) -> Non
     _run_passthrough("mammography/scripts/train_rl.py", args, forwarded)
 
 
+def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+    """Execute the visualization script with assembled arguments."""
+    cmd_args: list[str] = []
+    
+    # Build command from parsed arguments
+    if hasattr(args, "input") and args.input:
+        cmd_args.extend(["--input", str(args.input)])
+    if hasattr(args, "from_run") and args.from_run:
+        cmd_args.append("--from-run")
+    if hasattr(args, "output") and args.output:
+        cmd_args.extend(["--output", str(args.output)])
+    if hasattr(args, "report") and args.report:
+        cmd_args.append("--report")
+    if hasattr(args, "tsne") and args.tsne:
+        cmd_args.append("--tsne")
+    if hasattr(args, "tsne_3d") and args.tsne_3d:
+        cmd_args.append("--tsne-3d")
+    if hasattr(args, "pca") and args.pca:
+        cmd_args.append("--pca")
+    if hasattr(args, "umap") and args.umap:
+        cmd_args.append("--umap")
+    if hasattr(args, "compare_embeddings") and args.compare_embeddings:
+        cmd_args.append("--compare-embeddings")
+    if hasattr(args, "heatmap") and args.heatmap:
+        cmd_args.append("--heatmap")
+    if hasattr(args, "confusion_matrix") and args.confusion_matrix:
+        cmd_args.append("--confusion-matrix")
+    if hasattr(args, "scatter_matrix") and args.scatter_matrix:
+        cmd_args.append("--scatter-matrix")
+    if hasattr(args, "distribution") and args.distribution:
+        cmd_args.append("--distribution")
+    if hasattr(args, "class_separation") and args.class_separation:
+        cmd_args.append("--class-separation")
+    if hasattr(args, "learning_curves") and args.learning_curves:
+        cmd_args.append("--learning-curves")
+    if hasattr(args, "binary") and args.binary:
+        cmd_args.append("--binary")
+    
+    # Add any forwarded arguments
+    cmd_args.extend(forwarded)
+    
+    _run_passthrough("mammography/scripts/visualize.py", args, cmd_args)
+
 
 def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
     """Call the report_pack helper and normalize paths provided via CLI."""
@@ -390,6 +525,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _run_report_pack(args, forwarded)
         elif args.command == "rl-refine":
             _invoke_rl_refine(args, forwarded)
+        elif args.command == "visualize":
+            _run_visualize(args, forwarded)
         else:
             parser.error(f"Subcomando desconhecido: {args.command}")
         return 0
