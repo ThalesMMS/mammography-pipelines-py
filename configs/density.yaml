@@ -1,0 +1,22 @@
+# Default EfficientNetB0 density-training hyperparameters.
+# The CLI merges these values before forwarding CLI flags.
+seed: 42
+img_size: 512
+batch_size: 16
+epochs: 30
+arch: efficientnet_b0
+classes: density
+lr: 0.0001
+backbone_lr: 0.00001
+device: auto
+val_frac: 0.2
+class_weights: auto
+sampler_weighted: true
+warmup_epochs: 2
+amp: true
+augment: true
+unfreeze_last_block: true
+early_stop_patience: 5
+notes: |
+  Ajuste estes valores para refletir o preset desejado. A linha de comando
+  substitui o conteúdo carregado aqui.
