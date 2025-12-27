@@ -1,6 +1,6 @@
 #
 # eda_cancer.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Educational notebook-style pipeline for RSNA Breast Cancer Detection, covering data exploration, preprocessing, training, and visualization.
 #

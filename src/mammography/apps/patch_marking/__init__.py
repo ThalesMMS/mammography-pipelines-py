@@ -1,6 +1,6 @@
 #
 # __init__.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Entry markers for the patch marking GUI that assists ROI annotation on studies.
 #

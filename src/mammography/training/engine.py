@@ -1,6 +1,6 @@
 #
 # engine.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Training/validation utilities for the density models, including Grad-CAM, metrics, and embedding extraction.
 #

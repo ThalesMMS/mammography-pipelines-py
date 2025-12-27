@@ -1,6 +1,6 @@
 #
 # dicom_loader.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Background-friendly DICOM loader that prepares uint8 windowed images for the density classifier UI.
 #

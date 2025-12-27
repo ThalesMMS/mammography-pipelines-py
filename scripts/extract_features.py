@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 #
 # extract_features.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
-# Extracts Stage 1 CNN embeddings and optional projections/clustering analyses for mammography datasets.
+# Extracts CNN embeddings and optional projections/clustering analyses for mammography datasets.
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
-"""Stage 1 embedding extraction plus optional PCA/t-SNE/UMAP/clustering analysis."""
+"""Embedding extraction plus optional PCA/t-SNE/UMAP/clustering analysis."""
 import sys
 import os
 import argparse

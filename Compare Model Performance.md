@@ -221,7 +221,7 @@ Agora vou verificar também os resultados dos patches multiclasse para completar
 
 1. **Para RSNA**: ResNet50 pode ser mais robusto apesar da menor acurácia
 2. **Para IRMA**: EfficientNetB0 excelente para classificação binária
-3. **Para produção**: Considerar abordagem em duas etapas (binário + multiclasse)
+3. **Para produção**: Considerar abordagem em dois passos (binário + multiclasse)
 4. **Dados necessários**: Mais amostras da classe C para IRMA
 
 ## Conclusão Final

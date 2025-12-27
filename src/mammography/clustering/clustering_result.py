@@ -10,7 +10,7 @@ It must NOT be used for clinical or medical diagnostic purposes.
 No medical decision should be based on these results.
 
 Educational Context:
-- This model represents the fourth stage in our unsupervised learning pipeline
+- This model represents the fourth step in our unsupervised learning pipeline
 - It captures clustering results from various algorithms (K-means, GMM, HDBSCAN)
 - Evaluation metrics enable comparison of clustering quality
 - Uncertainty measures provide confidence estimates for cluster assignments

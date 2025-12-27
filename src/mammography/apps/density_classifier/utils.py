@@ -1,6 +1,6 @@
 #
 # utils.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Utility helpers for backing up classification CSVs within the density classifier UI flow.
 #

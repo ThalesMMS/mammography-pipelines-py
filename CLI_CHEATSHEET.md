@@ -94,10 +94,28 @@ Use `--dataset <preset>` para preencher `--csv` e `--dicom-root` automaticamente
     --outdir outputs/patches_resnet_extract
   ```
 
-## Saidas do Stage 1
+## Saidas de embeddings
 
 - `features.npy` + `metadata.csv` (embeddings brutas)
 - `joined.csv` (quando `--save-csv`)
 - `preview/` com `first_image_loaded.png`, `samples_grid.png`, `labels_distribution.png`
+
+## Baselines classicos (embeddings)
+
+```bash
+mammography embeddings-baselines -- \
+  --embeddings-dir outputs/embeddings_resnet50 \
+  --outdir outputs/embeddings_baselines
+```
+
+## RSNA (cancer) EDA
+
+```bash
+mammography eda-cancer -- \
+  --csv-dir /path/to/rsna \
+  --png-dir /path/to/rsna-256-pngs \
+  --dicom-dir /path/to/rsna-dicoms \
+  --outdir outputs/rsna_eda
+```
 
 Use `mammography wizard` para montar comandos interativamente.

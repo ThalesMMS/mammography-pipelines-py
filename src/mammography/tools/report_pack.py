@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 #
 # report_pack.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
-# Consolidates Stage 2 runs by copying assets, building Grad-CAM collages, and updating LaTeX sections.
+# Consolidates density runs by copying assets, building Grad-CAM collages, and updating LaTeX sections.
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
-"""Helper utilities to consolidate Stage 2 runs for reporting/Article exports."""
+"""Helper utilities to consolidate density runs for reporting/Article exports."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ LOGGER = logging.getLogger("report_pack")
 
 
 @dataclass
-class Stage2Run:
+class DensityRun:
     path: Path
     run_id: str
     seed: int
@@ -92,7 +92,7 @@ def _build_gradcam_grid(image_paths: Sequence[Path], dest: Path, max_tiles: int 
     return dest.name
 
 
-def _format_metric_table(runs: Sequence[Stage2Run]) -> tuple[list[dict[str, str]], dict[str, float]]:
+def _format_metric_table(runs: Sequence[DensityRun]) -> tuple[list[dict[str, str]], dict[str, float]]:
     """Prepare LaTeX-friendly rows and mean/std aggregates for the report table."""
     table_rows: list[dict[str, str]] = []
     aggregated = {"accuracy": [], "kappa": [], "macro_f1": [], "auc": []}
@@ -124,10 +124,10 @@ def _format_metric_table(runs: Sequence[Stage2Run]) -> tuple[list[dict[str, str]
     return table_rows, mean_std
 
 
-def _render_stage2_tex(tex_path: Path, runs: Sequence[Stage2Run]) -> None:
+def _render_density_tex(tex_path: Path, runs: Sequence[DensityRun]) -> None:
     """Update the LaTeX section with metrics and assets for the provided runs."""
     if not runs:
-        LOGGER.warning("Nenhum run fornecido; pulando geração de stage2_model.tex.")
+        LOGGER.warning("Nenhum run fornecido; pulando geracao de density_model.tex.")
         return
     table_rows, mean_std = _format_metric_table(runs)
     confusion_figs = [
@@ -146,17 +146,17 @@ def _render_stage2_tex(tex_path: Path, runs: Sequence[Stage2Run]) -> None:
         train_fig = best_run.assets["train_curve"]
     latex_lines = [
         "% This file is auto-generated via tools/report_pack.py",
-        "\\subsection{Modelo de Densidade (Stage~2)}",
-        "\\label{sec:stage2-model}",
+        "\\subsection{Modelo de Densidade}",
+        "\\label{sec:density-model}",
         (
             "Executamos três seeds independentes (42/43/44) do pipeline EfficientNetB0 com "
-            "fusão dos embeddings da Etapa~1 e hold-out de 20\\%. A Tabela~\\ref{tab:stage2-metrics} "
+            "fusao dos embeddings e hold-out de 20\\%. A Tabela~\\ref{tab:density-metrics} "
             "resume as métricas de validação e destaca a média $\\pm$ desvio."
         ),
         "\\begin{table}[ht]",
         "  \\centering",
         "  \\caption{Métricas de validação hold-out (20\\%) por seed.}",
-        "  \\label{tab:stage2-metrics}",
+        "  \\label{tab:density-metrics}",
         "  \\begin{tabular}{lcccc}",
         "    \\toprule",
         "    Seed & Accuracy & $\\kappa_q$ & Macro-F1 & AUC (OvR) \\\\",
@@ -180,8 +180,8 @@ def _render_stage2_tex(tex_path: Path, runs: Sequence[Stage2Run]) -> None:
             "  \\end{tabular}",
             "\\end{table}",
             (
-                "Comparando com os classificadores tradicionais da Etapa~1 (balanced accuracy $\\approx$~0,51, "
-                "$\\kappa$~0,45), mesmo o pior seed do Stage~2 mantém ganhos absolutos de 6--8 p.p. em macro-F1 "
+                "Comparando com os classificadores tradicionais baseados em embeddings (balanced accuracy "
+                "$\\approx$~0,51, $\\kappa$~0,45), mesmo o pior seed mantem ganhos absolutos de 6--8 p.p. em macro-F1 "
                 "e 0,22 em $\\kappa$, ainda que a meta de macro-F1 0,72 permaneça em aberto."
             ),
         ]
@@ -204,7 +204,7 @@ def _render_stage2_tex(tex_path: Path, runs: Sequence[Stage2Run]) -> None:
             [
                 "  \\end{tabular}",
                 "  \\caption{Matrizes de confusão e métricas por classe para cada seed.}",
-                "  \\label{fig:stage2-confusion}",
+                "  \\label{fig:density-confusion}",
                 "\\end{figure}",
             ]
         )
@@ -225,14 +225,14 @@ def _render_stage2_tex(tex_path: Path, runs: Sequence[Stage2Run]) -> None:
             f"  \\caption{{Curvas de treino (seed {best_run.seed}) e exemplos de Grad-CAM "
             f"(seed {gradcam_seed if gradcam_seed is not None else '42'}).}}"
         )
-        latex_lines.append("  \\label{fig:stage2-curves-gradcam}")
+        latex_lines.append("  \\label{fig:density-curves-gradcam}")
         latex_lines.append("\\end{figure}")
     tex_path.parent.mkdir(parents=True, exist_ok=True)
     tex_path.write_text("\n".join(latex_lines) + "\n", encoding="utf-8")
     LOGGER.info("Arquivo LaTeX atualizado: %s", tex_path)
 
 
-def _summarize_run(run_path: Path, assets_dir: Path, gradcam_limit: int) -> Stage2Run:
+def _summarize_run(run_path: Path, assets_dir: Path, gradcam_limit: int) -> DensityRun:
     """Collect metrics, copy artifacts, and store summary.json for a single run."""
     summary_path = run_path / "summary.json"
     metrics_path = run_path / "metrics" / "val_metrics.json"
@@ -248,16 +248,16 @@ def _summarize_run(run_path: Path, assets_dir: Path, gradcam_limit: int) -> Stag
     train_curve = run_path / "train_history.png"
     if train_curve.exists():
         assets["train_curve"] = _copy_asset(
-            train_curve, assets_dir / f"stage2_train_seed{seed}.png"
+            train_curve, assets_dir / f"density_train_seed{seed}.png"
         )
     metrics_png = run_path / "metrics" / "val_metrics.png"
     if metrics_png.exists():
         assets["confusion"] = _copy_asset(
-            metrics_png, assets_dir / f"stage2_confusion_seed{seed}.png"
+            metrics_png, assets_dir / f"density_confusion_seed{seed}.png"
         )
     gradcam_dir = run_path / "gradcam"
     if gradcam_dir.exists():
-        grid_path = assets_dir / f"stage2_gradcam_seed{seed}.png"
+        grid_path = assets_dir / f"density_gradcam_seed{seed}.png"
         grid_name = _build_gradcam_grid(list(_iter_gradcam_images(gradcam_dir)), grid_path, gradcam_limit)
         assets["gradcam"] = grid_name
     else:
@@ -290,7 +290,7 @@ def _summarize_run(run_path: Path, assets_dir: Path, gradcam_limit: int) -> Stag
     )
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     LOGGER.info("summary.json atualizado em %s", summary_path)
-    return Stage2Run(
+    return DensityRun(
         path=run_path,
         run_id=run_id,
         seed=seed,
@@ -302,28 +302,28 @@ def _summarize_run(run_path: Path, assets_dir: Path, gradcam_limit: int) -> Stag
     )
 
 
-def package_stage2_runs(
+def package_density_runs(
     runs: Sequence[Path],
     assets_dir: Path,
     tex_path: Path | None = None,
     gradcam_limit: int = 4,
-) -> list[Stage2Run]:
-    """High-level helper used by the CLI to gather/export Stage 2 runs."""
+) -> list[DensityRun]:
+    """High-level helper used by the CLI to gather/export density runs."""
     assets_dir.mkdir(parents=True, exist_ok=True)
-    summarized: list[Stage2Run] = []
+    summarized: list[DensityRun] = []
     for run in runs:
         summarized.append(_summarize_run(run, assets_dir, gradcam_limit))
     summarized.sort(key=lambda r: r.seed)
     if tex_path is not None:
-        _render_stage2_tex(tex_path, summarized)
+        _render_density_tex(tex_path, summarized)
     return summarized
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Empacota execuções Stage 2 para o Article.")
+    parser = argparse.ArgumentParser(description="Empacota execucoes de densidade para o Article.")
     parser.add_argument("--run", dest="runs", action="append", type=Path, required=True, help="Diretório results_* a ser exportado.")
     parser.add_argument("--assets", dest="assets_dir", type=Path, default=Path("Article/assets"), help="Destino das figuras copiadas.")
-    parser.add_argument("--tex", dest="tex_path", type=Path, default=Path("Article/sections/stage2_model.tex"), help="Arquivo LaTeX a atualizar.")
+    parser.add_argument("--tex", dest="tex_path", type=Path, default=Path("Article/sections/density_model.tex"), help="Arquivo LaTeX a atualizar.")
     parser.add_argument("--gradcam-limit", dest="gradcam_limit", type=int, default=4, help="Número máximo de Grad-CAMs individuais no grid.")
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
@@ -333,7 +333,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(levelname)s | %(message)s")
     try:
-        package_stage2_runs(args.runs, args.assets_dir, tex_path=args.tex_path, gradcam_limit=args.gradcam_limit)
+        package_density_runs(args.runs, args.assets_dir, tex_path=args.tex_path, gradcam_limit=args.gradcam_limit)
     except Exception as exc:  # pragma: no cover - CLI fallback
         LOGGER.error("Falha no empacotamento: %s", exc)
         return 1

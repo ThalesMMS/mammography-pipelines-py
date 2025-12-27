@@ -12,7 +12,7 @@ No medical decision should be based on these results.
 Educational Context:
 - DICOM (Digital Imaging and Communications in Medicine) is the standard
   for medical imaging data storage and transmission
-- This module handles the first stage of our pipeline: raw data ingestion
+- This module handles the first step of our pipeline: raw data ingestion
 - Patient-level organization ensures proper data splitting for ML
 - Metadata validation ensures data quality and consistency
 

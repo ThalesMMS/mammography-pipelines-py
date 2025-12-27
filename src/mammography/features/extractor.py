@@ -1,6 +1,6 @@
 #
 # extractor.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Wraps a pretrained ResNet50 to extract pooled embeddings and metadata from DataLoaders.
 #

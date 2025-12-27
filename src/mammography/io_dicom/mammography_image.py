@@ -10,7 +10,7 @@ It must NOT be used for clinical or medical diagnostic purposes.
 No medical decision should be based on these results.
 
 Educational Context:
-- This model represents the first stage in our unsupervised learning pipeline
+- This model represents the first step in our unsupervised learning pipeline
 - It captures essential DICOM metadata needed for proper data splitting
 - State transitions ensure data integrity throughout the pipeline
 - Validation rules enforce medical imaging standards
@@ -37,11 +37,11 @@ class MammographyImage:
 
     This class serves as the foundation of our data model, capturing all
     essential information needed for breast density analysis. It implements
-    a state machine to track the image through different processing stages.
+    a state machine to track the image through different processing steps.
 
     Educational Notes:
     - State transitions: raw → validated → preprocessed → embedded → clustered
-    - Each state represents a different stage in our ML pipeline
+    - Each state represents a different step in our ML pipeline
     - Validation ensures data quality and prevents data leakage
     - Metadata extraction follows DICOM standards for mammography
 
@@ -399,7 +399,7 @@ class MammographyImage:
         Transition to a new processing state.
 
         Educational Note: State transitions ensure data integrity and
-        proper pipeline flow. Each state represents a processing stage.
+        proper pipeline flow. Each state represents a processing step.
 
         Args:
             new_state: Target state for transition

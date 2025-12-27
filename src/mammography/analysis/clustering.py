@@ -1,6 +1,6 @@
 #
 # clustering.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Implements lightweight PCA/t-SNE/UMAP projections and k-means utilities for embedding analysis.
 #

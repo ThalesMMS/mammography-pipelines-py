@@ -1,6 +1,6 @@
 #
 # __init__.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Re-exports embedding analysis helpers such as PCA/UMAP/t-SNE and clustering utilities.
 #

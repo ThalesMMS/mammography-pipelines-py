@@ -1,6 +1,6 @@
 #
 # dicom_loader.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Lightweight DICOM loader that extracts windowing hints and photometric metadata for the patch UI.
 #

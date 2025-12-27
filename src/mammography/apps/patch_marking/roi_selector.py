@@ -1,6 +1,6 @@
 #
 # roi_selector.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Utility class that maintains square ROIs centered on clicks while clamping to image bounds.
 #

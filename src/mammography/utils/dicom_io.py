@@ -1,6 +1,6 @@
 #
 # dicom_io.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # DICOM utilities for detecting file types, applying rescale/windowing, and returning RGB PIL images.
 #

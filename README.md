@@ -21,28 +21,33 @@ mammography --help
 # Interactive wizard
 mammography wizard
 
-# Stage 1: embeddings
+# Embeddings
 mammography embed -- \
   --csv classificacao.csv \
   --dicom-root archive \
-  --outdir outputs/stage1
+  --outdir outputs/embeddings_resnet50
 
-# Stage 2: density training
+# Baselines classicos (embeddings)
+mammography embeddings-baselines -- \
+  --embeddings-dir outputs/embeddings_resnet50 \
+  --outdir outputs/embeddings_baselines
+
+# Treinamento de densidade
 mammography train-density -- \
   --csv classificacao.csv \
   --dicom-root archive \
-  --outdir outputs/stage2 \
+  --outdir outputs/mammo_efficientnetb0_density \
   --epochs 8 \
   --arch resnet50
 
 # Visualization
 mammography visualize -- \
-  --input outputs/stage1/features.npy \
+  --input outputs/embeddings_resnet50/features.npy \
   --outdir outputs/visualizations
 
 # Inference
 mammography inference -- \
-  --checkpoint outputs/stage2/results_1/best_model.pt \
+  --checkpoint outputs/mammo_efficientnetb0_density/results_1/best_model.pt \
   --input archive \
   --output outputs/preds.csv
 
@@ -53,20 +58,22 @@ mammography augment -- \
   --num-augmentations 2
 
 # Report packaging (Article integration)
-mammography report-pack --run outputs/stage2/results_1
+mammography report-pack --run outputs/mammo_efficientnetb0_density/results_1
 ```
 
 ## CLI Overview
 
-The CLI is built around two stages plus utilities:
+The CLI is built around two core workflows plus utilities:
 
-- **Stage 1 — `embed`**: Extract ResNet/EfficientNet embeddings and optional PCA/t-SNE/UMAP analysis.
-- **Stage 2 — `train-density`**: Train density classifiers (EfficientNetB0/ResNet50) with cache modes and reporting artifacts.
+- **`embed`**: Extract ResNet/EfficientNet embeddings and optional PCA/t-SNE/UMAP analysis.
+- **`embeddings-baselines`**: Compare embeddings against classical descriptors (LogReg/SVM/RF).
+- **`train-density`**: Train density classifiers (EfficientNetB0/ResNet50) with cache modes and reporting artifacts.
 - **`visualize`**: Generate plots from embeddings or run directories.
 - **`inference`**: Run checkpointed inference over image folders or single files.
 - **`augment`**: Generate augmented samples from a directory.
 - **`report-pack` / `eval-export`**: Prepare figures/tables for the scientific article.
 - **`wizard`**: Interactive, step-by-step menu for the core workflows.
+- **`eda-cancer`**: RSNA Breast Cancer Detection exploratory pipeline (CSV/PNG/DICOM inputs).
 
 Common flags across the CLI and scripts:
 - `--outdir` for outputs
@@ -79,6 +86,18 @@ Dataset presets:
 - `patches_completo`: PNGs na raiz com `featureS.txt`
 
 See `CLI_CHEATSHEET.md` for command matrices and common recipes.
+
+## RSNA (Cancer) EDA
+
+The `eda-cancer` subcommand wraps `scripts/eda_cancer.py` for the RSNA Breast Cancer Detection dataset.
+
+```bash
+mammography eda-cancer -- \
+  --csv-dir /path/to/rsna \
+  --png-dir /path/to/rsna-256-pngs \
+  --dicom-dir /path/to/rsna-dicoms \
+  --outdir outputs/rsna_eda
+```
 
 ## Repository Structure
 

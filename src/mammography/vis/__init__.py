@@ -1,6 +1,6 @@
 #
 # __init__.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Collects visualization helpers for embedding plots and clustering metrics.
 #

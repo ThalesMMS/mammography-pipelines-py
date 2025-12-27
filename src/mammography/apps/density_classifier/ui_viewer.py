@@ -1,6 +1,6 @@
 #
 # ui_viewer.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # OpenCV-based viewer that letterboxes DICOM renders and records density classifications.
 #

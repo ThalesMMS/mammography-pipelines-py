@@ -1,6 +1,6 @@
 #
 # __init__.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Entry for report packaging and data audit utilities used alongside the pipelines.
 #

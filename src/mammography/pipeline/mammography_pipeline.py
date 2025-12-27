@@ -10,8 +10,8 @@ It must NOT be used for clinical or medical diagnostic purposes.
 No medical decision should be based on these results.
 
 Educational Context:
-- Pipeline integration connects all processing stages
-- Data flow validation ensures consistency between stages
+- Pipeline integration connects all processing steps
+- Data flow validation ensures consistency between steps
 - Error handling provides robust processing capabilities
 - Configuration management enables reproducible experiments
 
@@ -57,8 +57,8 @@ class MammographyPipeline:
     evaluation, and visualization.
 
     Educational Notes:
-    - Pipeline integration connects all processing stages
-    - Data flow validation ensures consistency between stages
+    - Pipeline integration connects all processing steps
+    - Data flow validation ensures consistency between steps
     - Error handling provides robust processing capabilities
     - Configuration management enables reproducible experiments
 
@@ -127,7 +127,7 @@ class MammographyPipeline:
             "input_dir": str(input_dir),
             "output_dir": str(output_dir),
             "device": device,
-            "stages": {},
+            "steps": {},
             "errors": [],
             "total_processing_time": 0.0,
         }
@@ -138,46 +138,46 @@ class MammographyPipeline:
             # Create output directory
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Stage 1: DICOM Reading and Preprocessing
-            typer.echo("Stage 1: DICOM Reading and Preprocessing")
-            preprocessing_results = self._run_preprocessing_stage(input_dir, output_dir)
-            pipeline_results["stages"]["preprocessing"] = preprocessing_results
+            # DICOM reading and preprocessing
+            typer.echo("Leitura DICOM e pre-processamento")
+            preprocessing_results = self._run_preprocessing_step(input_dir, output_dir)
+            pipeline_results["steps"]["preprocessing"] = preprocessing_results
 
             if preprocessing_results["success"]:
-                # Stage 2: Embedding Extraction
-                typer.echo("Stage 2: Embedding Extraction")
-                embedding_results = self._run_embedding_stage(
+                # Embedding extraction
+                typer.echo("Extracao de embeddings")
+                embedding_results = self._run_embedding_step(
                     preprocessing_results["output_dir"], output_dir, device
                 )
-                pipeline_results["stages"]["embedding"] = embedding_results
+                pipeline_results["steps"]["embedding"] = embedding_results
 
                 if embedding_results["success"]:
-                    # Stage 3: Clustering
-                    typer.echo("Stage 3: Clustering")
-                    clustering_results = self._run_clustering_stage(
+                    # Clustering
+                    typer.echo("Clusterizacao")
+                    clustering_results = self._run_clustering_step(
                         embedding_results["output_dir"], output_dir
                     )
-                    pipeline_results["stages"]["clustering"] = clustering_results
+                    pipeline_results["steps"]["clustering"] = clustering_results
 
                     if clustering_results["success"]:
-                        # Stage 4: Evaluation
-                        typer.echo("Stage 4: Evaluation")
-                        evaluation_results = self._run_evaluation_stage(
+                        # Evaluation
+                        typer.echo("Avaliacao")
+                        evaluation_results = self._run_evaluation_step(
                             clustering_results["clustering_result"],
                             embedding_results["embedding_vectors"],
                             output_dir,
                         )
-                        pipeline_results["stages"]["evaluation"] = evaluation_results
+                        pipeline_results["steps"]["evaluation"] = evaluation_results
 
-                        # Stage 5: Visualization
-                        typer.echo("Stage 5: Visualization")
-                        visualization_results = self._run_visualization_stage(
+                        # Visualization
+                        typer.echo("Visualizacao")
+                        visualization_results = self._run_visualization_step(
                             clustering_results["clustering_result"],
                             embedding_results["embedding_vectors"],
                             preprocessing_results["mammography_images"],
                             output_dir,
                         )
-                        pipeline_results["stages"][
+                        pipeline_results["steps"][
                             "visualization"
                         ] = visualization_results
 
@@ -186,19 +186,19 @@ class MammographyPipeline:
                         report_results = self._generate_final_report(
                             pipeline_results, output_dir
                         )
-                        pipeline_results["stages"]["report"] = report_results
+                        pipeline_results["steps"]["report"] = report_results
 
                         pipeline_results["success"] = True
                         typer.echo("Pipeline completed successfully!")
                     else:
                         pipeline_results["success"] = False
-                        pipeline_results["errors"].append("Clustering stage failed")
+                        pipeline_results["errors"].append("Falha na clusterizacao")
                 else:
                     pipeline_results["success"] = False
-                    pipeline_results["errors"].append("Embedding stage failed")
+                    pipeline_results["errors"].append("Falha na extracao de embeddings")
             else:
                 pipeline_results["success"] = False
-                pipeline_results["errors"].append("Preprocessing stage failed")
+                pipeline_results["errors"].append("Falha no pre-processamento")
 
             pipeline_results["total_processing_time"] = time.time() - start_time
 
@@ -250,7 +250,7 @@ class MammographyPipeline:
         Initialize pipeline components.
 
         Educational Note: Component initialization ensures all
-        processing stages are ready for execution.
+        processing steps are ready for execution.
         """
         try:
             # Initialize DICOM reader
@@ -279,11 +279,11 @@ class MammographyPipeline:
             logger.error(f"Error initializing pipeline components: {e!s}")
             raise
 
-    def _run_preprocessing_stage(
+    def _run_preprocessing_step(
         self, input_dir: Path, output_dir: Path
     ) -> Dict[str, Any]:
         """
-        Run preprocessing stage.
+        Run preprocessing step.
 
         Educational Note: Preprocessing converts DICOM files to
         standardized tensors ready for embedding extraction.
@@ -293,10 +293,10 @@ class MammographyPipeline:
             output_dir: Output directory for results
 
         Returns:
-            Dict[str, Any]: Preprocessing stage results
+            Dict[str, Any]: Preprocessing step results
         """
         preprocessing_results = {
-            "stage": "preprocessing",
+            "step": "preprocessing",
             "success": False,
             "processing_time": 0.0,
             "total_files": 0,
@@ -383,17 +383,17 @@ class MammographyPipeline:
             )
 
         except Exception as e:
-            logger.error(f"Error in preprocessing stage: {e!s}")
+            logger.error(f"Error in preprocessing step: {e!s}")
             preprocessing_results["errors"].append(str(e))
             preprocessing_results["processing_time"] = time.time() - start_time
 
         return preprocessing_results
 
-    def _run_embedding_stage(
+    def _run_embedding_step(
         self, input_dir: Path, output_dir: Path, device: str
     ) -> Dict[str, Any]:
         """
-        Run embedding extraction stage.
+        Run embedding extraction step.
 
         Educational Note: Embedding extraction converts preprocessed
         tensors to high-dimensional feature vectors.
@@ -404,10 +404,10 @@ class MammographyPipeline:
             device: Device to use for processing
 
         Returns:
-            Dict[str, Any]: Embedding stage results
+            Dict[str, Any]: Embedding step results
         """
         embedding_results = {
-            "stage": "embedding",
+            "step": "embedding",
             "success": False,
             "processing_time": 0.0,
             "total_tensors": 0,
@@ -489,17 +489,17 @@ class MammographyPipeline:
             )
 
         except Exception as e:
-            logger.error(f"Error in embedding stage: {e!s}")
+            logger.error(f"Error in embedding step: {e!s}")
             embedding_results["errors"].append(str(e))
             embedding_results["processing_time"] = time.time() - start_time
 
         return embedding_results
 
-    def _run_clustering_stage(
+    def _run_clustering_step(
         self, input_dir: Path, output_dir: Path
     ) -> Dict[str, Any]:
         """
-        Run clustering stage.
+        Run clustering step.
 
         Educational Note: Clustering groups similar embeddings
         to discover patterns in the data.
@@ -509,10 +509,10 @@ class MammographyPipeline:
             output_dir: Output directory for results
 
         Returns:
-            Dict[str, Any]: Clustering stage results
+            Dict[str, Any]: Clustering step results
         """
         clustering_results = {
-            "stage": "clustering",
+            "step": "clustering",
             "success": False,
             "processing_time": 0.0,
             "clustering_result": None,
@@ -558,20 +558,20 @@ class MammographyPipeline:
             )
 
         except Exception as e:
-            logger.error(f"Error in clustering stage: {e!s}")
+            logger.error(f"Error in clustering step: {e!s}")
             clustering_results["errors"].append(str(e))
             clustering_results["processing_time"] = time.time() - start_time
 
         return clustering_results
 
-    def _run_evaluation_stage(
+    def _run_evaluation_step(
         self,
         clustering_result: ClusteringResult,
         embedding_vectors: List[EmbeddingVector],
         output_dir: Path,
     ) -> Dict[str, Any]:
         """
-        Run evaluation stage.
+        Run evaluation step.
 
         Educational Note: Evaluation assesses clustering quality
         and performs sanity checks.
@@ -582,10 +582,10 @@ class MammographyPipeline:
             output_dir: Output directory for results
 
         Returns:
-            Dict[str, Any]: Evaluation stage results
+            Dict[str, Any]: Evaluation step results
         """
         evaluation_results = {
-            "stage": "evaluation",
+            "step": "evaluation",
             "success": False,
             "processing_time": 0.0,
             "evaluation_result": None,
@@ -618,13 +618,13 @@ class MammographyPipeline:
             typer.echo("Evaluation completed successfully")
 
         except Exception as e:
-            logger.error(f"Error in evaluation stage: {e!s}")
+            logger.error(f"Error in evaluation step: {e!s}")
             evaluation_results["errors"].append(str(e))
             evaluation_results["processing_time"] = time.time() - start_time
 
         return evaluation_results
 
-    def _run_visualization_stage(
+    def _run_visualization_step(
         self,
         clustering_result: ClusteringResult,
         embedding_vectors: List[EmbeddingVector],
@@ -632,7 +632,7 @@ class MammographyPipeline:
         output_dir: Path,
     ) -> Dict[str, Any]:
         """
-        Run visualization stage.
+        Run visualization step.
 
         Educational Note: Visualization enables qualitative
         validation of clustering results.
@@ -644,10 +644,10 @@ class MammographyPipeline:
             output_dir: Output directory for results
 
         Returns:
-            Dict[str, Any]: Visualization stage results
+            Dict[str, Any]: Visualization step results
         """
         visualization_results = {
-            "stage": "visualization",
+            "step": "visualization",
             "success": False,
             "processing_time": 0.0,
             "visualization_result": None,
@@ -676,7 +676,7 @@ class MammographyPipeline:
             typer.echo("Visualization completed successfully")
 
         except Exception as e:
-            logger.error(f"Error in visualization stage: {e!s}")
+            logger.error(f"Error in visualization step: {e!s}")
             visualization_results["errors"].append(str(e))
             visualization_results["processing_time"] = time.time() - start_time
 
@@ -699,7 +699,7 @@ class MammographyPipeline:
             Dict[str, Any]: Report generation results
         """
         report_results = {
-            "stage": "report",
+            "step": "report",
             "success": False,
             "processing_time": 0.0,
             "report_path": None,
@@ -757,38 +757,38 @@ class MammographyPipeline:
                 "success": pipeline_results["success"],
                 "total_processing_time": pipeline_results["total_processing_time"],
             },
-            "stage_results": {},
+            "step_results": {},
             "errors": pipeline_results["errors"],
         }
 
-        # Add stage results
-        for stage_name, stage_results in pipeline_results["stages"].items():
-            report_content["stage_results"][stage_name] = {
-                "success": stage_results["success"],
-                "processing_time": stage_results["processing_time"],
-                "errors": stage_results.get("errors", []),
+        # Add step results
+        for step_name, step_results in pipeline_results["steps"].items():
+            report_content["step_results"][step_name] = {
+                "success": step_results["success"],
+                "processing_time": step_results["processing_time"],
+                "errors": step_results.get("errors", []),
             }
 
-            # Add stage-specific metrics
-            if stage_name == "preprocessing":
-                report_content["stage_results"][stage_name].update(
+            # Add step-specific metrics
+            if step_name == "preprocessing":
+                report_content["step_results"][step_name].update(
                     {
-                        "total_files": stage_results["total_files"],
-                        "processed_files": stage_results["processed_files"],
-                        "failed_files": stage_results["failed_files"],
+                        "total_files": step_results["total_files"],
+                        "processed_files": step_results["processed_files"],
+                        "failed_files": step_results["failed_files"],
                     }
                 )
-            elif stage_name == "embedding":
-                report_content["stage_results"][stage_name].update(
+            elif step_name == "embedding":
+                report_content["step_results"][step_name].update(
                     {
-                        "total_tensors": stage_results["total_tensors"],
-                        "processed_tensors": stage_results["processed_tensors"],
-                        "failed_tensors": stage_results["failed_tensors"],
+                        "total_tensors": step_results["total_tensors"],
+                        "processed_tensors": step_results["processed_tensors"],
+                        "failed_tensors": step_results["failed_tensors"],
                     }
                 )
-            elif stage_name == "clustering" and stage_results["clustering_result"]:
-                clustering_result = stage_results["clustering_result"]
-                report_content["stage_results"][stage_name].update(
+            elif step_name == "clustering" and step_results["clustering_result"]:
+                clustering_result = step_results["clustering_result"]
+                report_content["step_results"][step_name].update(
                     {
                         "algorithm": clustering_result.algorithm,
                         "n_clusters": len(

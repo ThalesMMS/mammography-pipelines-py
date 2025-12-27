@@ -1,6 +1,6 @@
 #
 # ui_viewer.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Matplotlib-based viewer that navigates DICOMs, previews ROIs, and saves annotated PNG crops.
 #

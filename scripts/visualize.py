@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # visualize.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # CLI script for generating visualizations from embeddings and training outputs.
 #

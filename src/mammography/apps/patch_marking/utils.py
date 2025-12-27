@@ -1,6 +1,6 @@
 #
 # utils.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Helper functions for backing up, cleaning, and normalizing PNG annotations in patch marking workflows.
 #

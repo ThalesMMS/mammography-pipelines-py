@@ -26,13 +26,13 @@ Opcional: abra o assistente interativo:
 mammography wizard
 ```
 
-## 3) Stage 1 — Embeddings
+## 3) Embeddings
 
 ```bash
 mammography embed -- \
   --csv classificacao.csv \
   --dicom-root archive \
-  --outdir outputs/quickstart_stage1
+  --outdir outputs/quickstart_embeddings
 ```
 
 Dataset presets (auto-preenche `--csv`/`--dicom-root` quando aplicavel):
@@ -42,13 +42,21 @@ Dataset presets (auto-preenche `--csv`/`--dicom-root` quando aplicavel):
 
 Use `--include-class-5` se quiser manter BI-RADS 5 ao carregar `classificacao.csv`.
 
-## 4) Stage 2 — Density Training
+## 3b) Baselines classicos (opcional)
+
+```bash
+mammography embeddings-baselines -- \
+  --embeddings-dir outputs/quickstart_embeddings \
+  --outdir outputs/embeddings_baselines
+```
+
+## 4) Treinamento de Densidade
 
 ```bash
 mammography train-density -- \
   --csv classificacao.csv \
   --dicom-root archive \
-  --outdir outputs/quickstart_stage2 \
+  --outdir outputs/quickstart_density \
   --epochs 5 \
   --arch resnet50
 ```
@@ -57,7 +65,7 @@ mammography train-density -- \
 
 ```bash
 mammography visualize -- \
-  --input outputs/quickstart_stage1/features.npy \
+  --input outputs/quickstart_embeddings/features.npy \
   --outdir outputs/quickstart_visuals \
   --tsne
 ```
@@ -65,7 +73,7 @@ mammography visualize -- \
 ## 6) Article Report Pack
 
 ```bash
-mammography report-pack --run outputs/quickstart_stage2/results_1
+mammography report-pack --run outputs/quickstart_density/results_1
 ```
 
 ## 7) Tests (Dataset-Free Subset)
@@ -81,6 +89,16 @@ python -m pytest \
 ```
 
 For full test coverage, additional datasets are required (DICOM archives, RSNA folders).
+
+## Optional: RSNA Breast Cancer EDA
+
+```bash
+mammography eda-cancer -- \
+  --csv-dir /path/to/rsna \
+  --png-dir /path/to/rsna-256-pngs \
+  --dicom-dir /path/to/rsna-dicoms \
+  --outdir outputs/rsna_eda
+```
 
 ## Optional: Windows CUDA install (resumo)
 

@@ -1,6 +1,6 @@
 #
 # main.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Launches the density classification UI with optional CSV backups and unclassified filtering prompts.
 #
@@ -26,7 +26,7 @@ def main():
     # But let's allow passing project root or inferring it.
     
     script_dir = os.path.dirname(os.path.abspath(__file__)) 
-    # heuristic: finding 'mammography-pipelines-py' or just going up until 'archive' is found
+    # heuristic: finding 'mammography-pipelines' or just going up until 'archive' is found
     project_root = os.path.abspath(os.path.join(script_dir, "../../../../.."))
     
     archive_path_check = os.path.join(project_root, "archive")

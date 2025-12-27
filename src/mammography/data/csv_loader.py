@@ -1,6 +1,6 @@
 #
 # csv_loader.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Loads dataset rows from CSVs, featureS.txt directories, or presets and normalizes labels/paths.
 #

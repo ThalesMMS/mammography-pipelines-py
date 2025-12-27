@@ -1,6 +1,6 @@
 #
 # main.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Entry point for the patch marking UI, guiding backups, cleanup, filters, and GUI launch.
 #

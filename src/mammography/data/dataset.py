@@ -1,8 +1,8 @@
 #
 # dataset.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
-# Implements the mammography density Dataset with optional tensor/disk caching and Stage 1 embedding lookup.
+# Implements the mammography density Dataset with optional tensor/disk caching and embedding lookup.
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
@@ -29,8 +29,8 @@ from ..utils.dicom_io import is_dicom_path, dicom_to_pil_rgb
 LOGGER = logging.getLogger("mammography")
 
 @dataclass
-class Stage1EmbeddingStore:
-    """Stores 2048-D Stage 1 embeddings indexed by accession and raw path."""
+class EmbeddingStore:
+    """Stores 2048-D embeddings indexed by accession and raw path."""
 
     embeddings_by_accession: Dict[str, torch.Tensor]
     embeddings_by_path: Dict[str, torch.Tensor]
@@ -52,8 +52,8 @@ class Stage1EmbeddingStore:
         return None
 
 
-def load_stage1_embeddings(embeddings_dir: str) -> Stage1EmbeddingStore:
-    """Load Stage 1 embeddings saved by extract_features.py into a lookup store."""
+def load_embedding_store(embeddings_dir: str) -> EmbeddingStore:
+    """Load embeddings saved by extract_features.py into a lookup store."""
     root = Path(embeddings_dir)
     features_path = root / "features.npy"
     metadata_path = root / "metadata.csv"
@@ -107,7 +107,7 @@ def load_stage1_embeddings(embeddings_dir: str) -> Stage1EmbeddingStore:
     if not embeddings_by_accession and not embeddings_by_path:
         raise ValueError("metadata.csv nao possui colunas 'accession'/'path' validas.")
 
-    return Stage1EmbeddingStore(
+    return EmbeddingStore(
         embeddings_by_accession=embeddings_by_accession,
         embeddings_by_path=embeddings_by_path,
         feature_dim=feature_dim,
@@ -128,7 +128,7 @@ class MammoDensityDataset(Dataset):
         cache_mode: str = "none",
         cache_dir: Optional[str] = None,
         split_name: str = "train",
-        embedding_store: Optional[Stage1EmbeddingStore] = None,
+        embedding_store: Optional[EmbeddingStore] = None,
         label_mapper: Optional[callable] = None,
         mean: Optional[List[float]] = None,
         std: Optional[List[float]] = None,

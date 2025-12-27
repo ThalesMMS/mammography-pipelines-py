@@ -10,7 +10,7 @@ It must NOT be used for clinical or medical diagnostic purposes.
 No medical decision should be based on these results.
 
 Educational Context:
-- This model represents the third stage in our unsupervised learning pipeline
+- This model represents the third step in our unsupervised learning pipeline
 - It captures high-level features extracted from ResNet-50's avgpool layer
 - 2048-dimensional embeddings enable dimensionality reduction and clustering
 - Extraction metadata enables reproducibility and performance analysis

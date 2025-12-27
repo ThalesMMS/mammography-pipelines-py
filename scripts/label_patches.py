@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # label_patches.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Wrapper to launch the patch marking GUI for drawing ROIs on mammograms.
 #

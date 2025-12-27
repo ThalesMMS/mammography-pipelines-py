@@ -1,6 +1,6 @@
 #
 # plots.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Provides simple plotting helpers for embedding scatterplots and clustering metric comparisons.
 #

@@ -1,6 +1,6 @@
 #
 # nets.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Defines EfficientNetB0/ResNet50 classifiers with optional tabular fusion and fine-tuning controls.
 #

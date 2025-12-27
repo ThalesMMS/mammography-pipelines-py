@@ -1,6 +1,6 @@
 #
 # advanced.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Advanced visualization functions: t-SNE plots, heatmaps, scatterplots, and more.
 #

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # train.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Trains EfficientNetB0/ResNet50 density classifiers with optional caching, AMP, Grad-CAM, and evaluation exports.
 #
@@ -41,7 +41,7 @@ from mammography.data.csv_loader import (
     DATASET_PRESETS,
     resolve_paths_from_preset,
 )
-from mammography.data.dataset import MammoDensityDataset, mammo_collate, load_stage1_embeddings
+from mammography.data.dataset import MammoDensityDataset, mammo_collate, load_embedding_store
 from mammography.data.splits import create_splits
 from mammography.models.nets import build_model
 from mammography.training.engine import (
@@ -54,7 +54,7 @@ from mammography.training.engine import (
 )
 
 def parse_args():
-    """Define and parse CLI arguments for the Stage 2 training script."""
+    """Define and parse CLI arguments for the density training script."""
     parser = argparse.ArgumentParser(description="Treinamento Mammography (EfficientNetB0/ResNet50)")
 
     # Data
@@ -65,7 +65,7 @@ def parse_args():
     parser.add_argument("--outdir", default="outputs/run", help="Output directory")
     parser.add_argument("--cache-mode", default=HP.CACHE_MODE, choices=["auto", "none", "memory", "disk", "tensor-disk", "tensor-memmap"])
     parser.add_argument("--cache-dir", help="Cache dir")
-    parser.add_argument("--embeddings-dir", help="Diretorio com features.npy + metadata.csv (Stage 1)")
+    parser.add_argument("--embeddings-dir", help="Diretorio com features.npy + metadata.csv (embeddings)")
     parser.add_argument("--mean", help="Media de normalizacao (ex: 0.485,0.456,0.406)")
     parser.add_argument("--std", help="Std de normalizacao (ex: 0.229,0.224,0.225)")
     parser.add_argument("--log-level", default=HP.LOG_LEVEL, choices=["critical","error","warning","info","debug"])
@@ -269,8 +269,8 @@ def main():
     if args.embeddings_dir:
         if args.arch != "efficientnet_b0":
             raise SystemExit("Fusao de embeddings so esta disponivel para efficientnet_b0.")
-        embedding_store = load_stage1_embeddings(args.embeddings_dir)
-        logger.info("Embeddings Stage 1 carregadas de %s", args.embeddings_dir)
+        embedding_store = load_embedding_store(args.embeddings_dir)
+        logger.info("Embeddings carregadas de %s", args.embeddings_dir)
 
         def _count_missing(rows):
             return sum(1 for r in rows if embedding_store.lookup(r) is None)  # type: ignore[union-attr]

@@ -10,7 +10,7 @@ It must NOT be used for clinical or medical diagnostic purposes.
 No medical decision should be based on these results.
 
 Educational Context:
-- This model represents the second stage in our unsupervised learning pipeline
+- This model represents the second step in our unsupervised learning pipeline
 - It standardizes images for consistent ResNet-50 feature extraction
 - Preprocessing configuration tracking enables reproducibility
 - Tensor validation ensures proper input format for deep learning models

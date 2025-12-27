@@ -1,6 +1,6 @@
 #
 # __init__.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Exposes mammography pipeline modules for data loading, modeling, analysis, and apps.
 #

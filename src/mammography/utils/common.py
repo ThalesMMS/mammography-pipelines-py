@@ -1,6 +1,6 @@
 #
 # common.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Shared utilities for seeding, device/runtime setup, logging configuration, and safe path handling.
 #

@@ -1,6 +1,6 @@
 #
 # __init__.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Registers feature extraction helpers used to build CNN embeddings for mammograms.
 #

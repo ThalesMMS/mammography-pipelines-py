@@ -51,6 +51,7 @@ DEFAULT_CONFIGS: dict[str, Path | None] = {
     "train-density": REPO_ROOT / "configs" / "density.yaml",
     "eval-export": None,
     "visualize": None,
+    "embeddings-baselines": None,
 }
 
 
@@ -95,12 +96,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         embed_parser,
-        "Encaminha argumentos ao extract_features.py (Stage 1).",
+        "Encaminha argumentos ao extract_features.py para embeddings.",
     )
 
     density_parser = subparsers.add_parser(
         "train-density",
-        help="Envolve scripts/train.py para treino de densidade (Stage 2).",
+        help="Envolve scripts/train.py para treino de densidade.",
     )
     _add_config_argument(
         density_parser,
@@ -109,7 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     eval_parser = subparsers.add_parser(
         "eval-export",
-        help="Exibe um checklist para empacotar métricas/figuras da Etapa 2.",
+        help="Exibe um checklist para empacotar métricas/figuras do treino de densidade.",
     )
     _add_config_argument(
         eval_parser,
@@ -124,7 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pack_parser = subparsers.add_parser(
         "report-pack",
-        help="Empacota runs da Etapa 2 em Article/assets e atualiza o LaTeX.",
+        help="Empacota runs de densidade em Article/assets e atualiza o LaTeX.",
     )
     pack_parser.add_argument(
         "--run",
@@ -144,8 +145,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tex",
         dest="tex_path",
         type=Path,
-        default=Path("Article") / "sections" / "stage2_model.tex",
-        help="Arquivo LaTeX que receberá a seção Stage 2 (default: Article/sections/stage2_model.tex).",
+        default=Path("Article") / "sections" / "density_model.tex",
+        help="Arquivo LaTeX que receberá a seção de densidade (default: Article/sections/density_model.tex).",
     )
     pack_parser.add_argument(
         "--gradcam-limit",
@@ -299,6 +300,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_config_argument(
         eda_parser,
         "Encaminha argumentos ao scripts/eda_cancer.py.",
+    )
+
+    baselines_parser = subparsers.add_parser(
+        "embeddings-baselines",
+        help="Compara embeddings com descritores classicos.",
+    )
+    _add_config_argument(
+        baselines_parser,
+        "Encaminha argumentos ao scripts/embeddings_baselines.py.",
     )
 
     return parser
@@ -531,7 +541,7 @@ def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None
         tex_path = (REPO_ROOT / args.tex_path) if not args.tex_path.is_absolute() else args.tex_path
 
     LOGGER.info("Empacotando runs: %s", ", ".join(str(p) for p in run_paths))
-    report_pack.package_stage2_runs(
+    report_pack.package_density_runs(
         run_paths,
         assets_dir,
         tex_path=tex_path,
@@ -575,6 +585,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _run_passthrough("scripts/label_patches.py", args, forwarded)
         elif args.command == "eda-cancer":
             _run_passthrough("scripts/eda_cancer.py", args, forwarded)
+        elif args.command == "embeddings-baselines":
+            _run_passthrough("scripts/embeddings_baselines.py", args, forwarded)
         else:
             parser.error(f"Subcomando desconhecido: {args.command}")
         return 0

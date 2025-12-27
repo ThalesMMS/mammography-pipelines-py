@@ -185,7 +185,7 @@ def _wizard_train() -> WizardCommand:
         if cache_dir:
             args.extend(["--cache-dir", cache_dir])
 
-        embeddings_dir = _ask_optional("Embeddings Stage 1 (diretorio)")
+        embeddings_dir = _ask_optional("Embeddings (diretorio)")
         if embeddings_dir:
             args.extend(["--embeddings-dir", embeddings_dir])
 
@@ -493,6 +493,19 @@ def _wizard_visualize() -> WizardCommand:
     return WizardCommand("Visualizacao", _build_cli_command("visualize", args))
 
 
+def _wizard_embeddings_baselines() -> WizardCommand:
+    args = _ask_config_args()
+    embeddings_dir = _ask_string("Embeddings dir", "outputs/embeddings_resnet50")
+    outdir = _ask_string("Outdir", "outputs/embeddings_baselines")
+    cache_classic = _ask_string("Cache classic (opcional)", "")
+    img_size = _ask_int("Img size (resize classico)", 224)
+    args.extend(["--embeddings-dir", embeddings_dir, "--outdir", outdir, "--img-size", str(img_size)])
+    if cache_classic:
+        args.extend(["--cache-classic", cache_classic])
+    args.extend(_ask_extra_args())
+    return WizardCommand("Baselines (embeddings)", _build_cli_command("embeddings-baselines", args))
+
+
 def _wizard_inference() -> WizardCommand:
     args = _ask_config_args()
     checkpoint = _ask_string("Checkpoint (.pt)")
@@ -599,9 +612,10 @@ def _wizard_report_pack() -> WizardCommand:
 def run_wizard(dry_run: bool = False) -> int:
     print("\n=== MAMMOGRAPHY WIZARD ===")
     options = [
-        "Treinamento de densidade (Stage 2)",
-        "Treino rapido (Stage 2)",
-        "Extracao de embeddings (Stage 1)",
+        "Treinamento de densidade",
+        "Treino rapido de densidade",
+        "Extracao de embeddings",
+        "Baselines classicos (embeddings)",
         "Visualizacao de embeddings",
         "Inferencia",
         "Augmentacao de dados",
@@ -620,20 +634,22 @@ def run_wizard(dry_run: bool = False) -> int:
     elif choice == 2:
         cmd = _wizard_embed()
     elif choice == 3:
-        cmd = _wizard_visualize()
+        cmd = _wizard_embeddings_baselines()
     elif choice == 4:
-        cmd = _wizard_inference()
+        cmd = _wizard_visualize()
     elif choice == 5:
-        cmd = _wizard_augment()
+        cmd = _wizard_inference()
     elif choice == 6:
-        cmd = _wizard_label_density()
+        cmd = _wizard_augment()
     elif choice == 7:
-        cmd = _wizard_label_patches()
+        cmd = _wizard_label_density()
     elif choice == 8:
-        cmd = _wizard_eda()
+        cmd = _wizard_label_patches()
     elif choice == 9:
-        cmd = _wizard_eval_export()
+        cmd = _wizard_eda()
     elif choice == 10:
+        cmd = _wizard_eval_export()
+    elif choice == 11:
         cmd = _wizard_report_pack()
     else:
         print("Saindo do wizard.")

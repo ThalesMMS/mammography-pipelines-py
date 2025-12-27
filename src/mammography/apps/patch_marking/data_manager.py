@@ -1,6 +1,6 @@
 #
 # data_manager.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Wraps the archive folder to index patient studies, apply filters, and track navigation for patch marking.
 #

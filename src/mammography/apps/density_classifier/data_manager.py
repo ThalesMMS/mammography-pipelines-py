@@ -1,6 +1,6 @@
 #
 # data_manager.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Manages exam metadata, background DICOM loading, and shared buffers for the density classifier UI.
 #

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # data_audit.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Inventories DICOM archives against classification CSVs and emits manifests, logs, and audit tables.
 #

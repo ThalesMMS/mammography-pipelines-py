@@ -4,7 +4,7 @@ Este documento descreve a arquitetura e o funcionamento do pipeline consolidado 
 
 ## Visão Geral
 
-A CLI principal é exposta como `mammography` (via `pyproject.toml`). Ela orquestra os estágios principais do pipeline e os utilitários de visualização/relato.
+A CLI principal é exposta como `mammography` (via `pyproject.toml`). Ela orquestra os fluxos principais do pipeline e os utilitários de visualização/relato.
 
 O subcomando `mammography wizard` oferece um menu interativo com passos guiados para os fluxos principais.
 
@@ -21,7 +21,7 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 
 ## Fluxos de Trabalho Principais
 
-### 1) Stage 1 — Embeddings (`embed`)
+### 1) Embeddings (`embed`)
 
 - Script: `scripts/extract_features.py`
 - Entrada: CSV + DICOMs (`--csv`, `--dicom-root`)
@@ -30,7 +30,13 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 - Atalhos: `--run-reduction` (PCA+t-SNE+UMAP) e `--run-clustering` (k-means)
 - Preview: `preview/first_image_loaded.png`, `preview/samples_grid.png`, `preview/labels_distribution.png`
 
-### 2) Stage 2 — Treinamento de Densidade (`train-density`)
+### 1b) Baselines classicos (embeddings)
+
+- Script: `scripts/embeddings_baselines.py`
+- Entrada: `outputs/embeddings_resnet50/` com `features.npy` + `metadata.csv`
+- Saida: `outputs/embeddings_baselines/` com metricas e relatorio comparativo
+
+### 2) Treinamento de Densidade (`train-density`)
 
 - Script: `scripts/train.py`
 - Modelos: EfficientNetB0 / ResNet50
@@ -45,8 +51,14 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 
 ### 4) Relatórios e Auditoria
 
-- `report-pack`: empacota figuras/artefatos de Stage 2 e atualiza LaTeX no `Article/`
+- `report-pack`: empacota figuras/artefatos do treino de densidade e atualiza LaTeX no `Article/`
 - `data_audit`: gera manifest/audit de dados para rastreabilidade
+
+### 5) EDA RSNA (cancer)
+
+- Script: `scripts/eda_cancer.py`
+- Entrada: CSVs RSNA + PNGs 256x256 + DICOMs originais
+- Saida: visualizacoes e datasets balanceados (train/valid) no `--outdir`
 
 ## Flags Consistentes
 

@@ -1,6 +1,6 @@
 #
 # config.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Centralizes default hyperparameters used across the mammography training pipelines.
 #

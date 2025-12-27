@@ -1,6 +1,6 @@
 #
 # test.py
-# mammography-pipelines-py
+# mammography-pipelines
 #
 # Tiny smoke test that opens a sample DICOM and prints its pixel dimensions.
 #
