@@ -1,210 +1,117 @@
 # Mammography Pipelines
 
-This repository brings together two core scripts for working with mammograms and three supporting subdirectories:
+Consolidated mammography pipeline with a single CLI, modular Python package, and a scientific article workspace. The focus is breast density classification (BI-RADS A–D) plus reproducible reporting and research artifacts.
 
-1. `extract_mammo_resnet50.py` - generates embeddings from DICOMs using a pre-trained ResNet50, producing artifacts ready for exploration (NPY/CSV, PCA, t-SNE, clusters).
-2. `RSNA_Mammography_EDA.py` - a script-format notebook covering EDA, data preparation, and multimodal training for the RSNA Breast Cancer Detection challenge. The same file also offers an optional fine-tuning pipeline to classify breast density (classes 1-4) by reusing the embedding extractor preprocessing.
+## Entrypoints
 
-## Pipeline CLIs (all datasets/backbones)
-- The unified CLI was folded into the native scripts to avoid duplication. Use `mammography/scripts/train.py` for training (binary or BI-RADS 1–4) with EfficientNetB0/ResNet50, Grad-CAM, history/metrics, validation predictions/embeddings, and cache/loader heuristics.
-- Use `mammography/scripts/extract_features.py` to extract embeddings and run PCA/t-SNE/UMAP/k-means while saving previews (first image, sample grid, label histogram) and joined CSVs.
-- The same dataset presets remain (`--dataset archive|mamografias|patches_completo`), and you can still point to custom `--csv/--dicom-root`. Add `--include-class-5` if you need to keep Class 5 rows from `classificacao.csv`.
-- See `docs/Unified_Mammo_Classifier.md` for the updated command matrix covering every dataset/backbone combination with the new scripts.
-- Quick train example (binary EfficientNet + Grad-CAM on the DICOM archive):
-  ```bash
-  python mammography/scripts/train.py --dataset archive --arch efficientnet_b0 --classes binary --epochs 10 --batch-size 16 --cache-mode auto --gradcam --save-val-preds --export-val-embeddings --outdir outputs/archive_effnet_train
-  ```
-- Quick extract example (embeddings + projections with ResNet50):
-  ```bash
-  python mammography/scripts/extract_features.py --dataset archive --arch resnet50 --classes multiclass --save-csv --pca --tsne --umap --cluster --outdir outputs/archive_resnet_extract
-  ```
-- A single launcher with menu (CLI or Web) lives in `menu.py`. Run `python menu.py` for an interactive CLI that builds and executes the train/extract commands, or `python menu.py --ui web` for a simple form at `http://127.0.0.1:8000`.
+- `mammography` (primary CLI entrypoint)
 
-Main subdirectories:
-- `ResNet50_Test/` - research suite with CLIs to preprocess, extract embeddings, cluster, and analyze breast density.
-- `density_classifier/` - quick review app that shows all DICOMs of an exam and records BI-RADS density via keyboard.
-- `patch_marking/` - ROI annotation tool that exports PNG crops from DICOM studies using `train.csv`.
+## Installation
 
-Use each script according to your goal: the first focuses on feature extraction and clustering; the second covers the full supervised modeling cycle (cancer) and, on demand, the density classifier.
+```bash
+pip install -r requirements.txt
+```
 
----
+## Quick Start
 
-## Requirements
-- Python 3.10+
-- Install dependencies with:
-  ```bash
-  pip install -r requirements.txt
-  ```
-- For the RSNA pipeline you need to download the official Kaggle data (CSV, PNG and, if desired, DICOM).
+```bash
+# Show CLI help
+mammography --help
 
----
+# Interactive wizard
+mammography wizard
 
-## Pipeline 1 - Embedding Extraction (ResNet50)
-File: `extract_mammo_resnet50.py`
+# Stage 1: embeddings
+mammography embed -- \
+  --csv classificacao.csv \
+  --dicom-root archive \
+  --outdir outputs/stage1
 
-- Input: directory with per-exam subfolders containing DICOMs and the CSV `classificacao.csv`.
-- Process: reading and preprocessing DICOMs (windowing, resize, fake RGB), inference with ResNet50 (`torchvision`), PCA/t-SNE projections, k-means with automatic K selection.
-- Main outputs: `outputs/features.npy`, `outputs/joined.csv`, plots under `outputs/preview/`, clustering metrics/curves.
-- How to run (summary):
-  ```bash
-  python extract_mammo_resnet50.py \
-    --data_dir ./archive \
-    --csv_path ./classificacao.csv \
-    --out_dir ./outputs \
-    --save_csv \
-    --tsne \
-    --weights_path ./resnet50.pth \
-    --avoid_download
-  ```
-- Detailed docs:
-  - `ResNet50_Test/QUICKSTART.md` - step-by-step CLI usage for preprocessing, embedding, clustering, and analysis.
-  - `ResNet50_Test/docs/embedding_extraction.md` - in-depth description of the embedding flow and artifacts.
+# Stage 2: density training
+mammography train-density -- \
+  --csv classificacao.csv \
+  --dicom-root archive \
+  --outdir outputs/stage2 \
+  --epochs 8 \
+  --arch resnet50
 
----
+# Visualization
+mammography visualize -- \
+  --input outputs/stage1/features.npy \
+  --outdir outputs/visualizations
 
-## Pipeline 2 - RSNA Breast Cancer Detection
-File: `RSNA_Mammography_EDA.py`
+# Inference
+mammography inference -- \
+  --checkpoint outputs/stage2/results_1/best_model.pt \
+  --input archive \
+  --output outputs/preds.csv
 
-- Input: Kaggle files (`train.csv`, `test.csv`, 256x256 PNGs or original DICOMs).
-- Process: EDA with `lets-plot`, negative-class downsampling, build a PyTorch dataset with images + metadata, fine-tune ResNet50 (1 channel), and compute metrics (accuracy, sensitivity, specificity).
-- Outputs: EDA plots and training curves displayed inline (`LetsPlot`), metrics printed to the console across epochs. In addition, the script saves artifacts under `--out_dir` (default: `./outputs_classifier`):
-  - `training_history.json`, `classification_metrics.json`, `predictions.csv`
-  - `resnet50_density_classifier.pth` (model weights)
-- How to run (summary):
-  ```bash
-  python RSNA_Mammography_EDA.py
-  ```
-  > Adjust file/directory paths in the script if you are not running in Kaggle's default environment.
-- Complementary docs:
-  - See the top-of-file docstring and CLI help in `RSNA_Mammography_EDA.py` for path configuration and training options.
+# Augmentation
+mammography augment -- \
+  --source-dir archive \
+  --output-dir outputs/augmented \
+  --num-augmentations 2
 
-### Optional Pipeline - Density Classifier
-- Purpose: fit a ResNet50 to BI-RADS 1-4 categories using one DICOM incidence per exam.
-- Recommended execution: use the dedicated script `RSNA_Mammo_ResNet50_Density.py` (full CLI, logs, persistent cache). The original functions remain in `RSNA_Mammography_EDA.py`, but the new script simplifies automation.
-- Quick start:
-  ```bash
-  python RSNA_Mammo_ResNet50_Density.py \
-    --csv classificacao.csv \
-    --dicom-root archive \
-    --outdir outputs/mammo_resnet50_density \
-    --epochs 10 \
-    --batch-size 8 \
-    --cache-mode auto \
-    --auto-increment-outdir
-  ```
-  The folder specified by `--outdir` becomes the shared root of the experiment. Each run creates or reuses:
-  - `<outdir>/results/` (or `results_1`, `results_2`, ... when `--auto-increment-outdir` is active) for histories, metrics, embeddings, and logs of the current run.
-  - `<outdir>/cache/` for decoded PNGs/tensors reused across runs until the folder is removed.
+# Report packaging (Article integration)
+mammography report-pack --run outputs/stage2/results_1
+```
 
-  Adjust arguments as needed (`--warmup-epochs`, `--unfreeze-last-block`, `--cache-mode tensor-memmap`, etc.).
+## CLI Overview
 
----
+The CLI is built around two stages plus utilities:
 
-## Usage Suggestions
-- Run the ResNet50 pipeline to generate reusable embeddings for other models (e.g., classic classifiers or analogous clustering analyses).
-- Use the RSNA pipeline to experiment with supervised training strategies with metadata and compare results to those obtained from embeddings alone.
+- **Stage 1 — `embed`**: Extract ResNet/EfficientNet embeddings and optional PCA/t-SNE/UMAP analysis.
+- **Stage 2 — `train-density`**: Train density classifiers (EfficientNetB0/ResNet50) with cache modes and reporting artifacts.
+- **`visualize`**: Generate plots from embeddings or run directories.
+- **`inference`**: Run checkpointed inference over image folders or single files.
+- **`augment`**: Generate augmented samples from a directory.
+- **`report-pack` / `eval-export`**: Prepare figures/tables for the scientific article.
+- **`wizard`**: Interactive, step-by-step menu for the core workflows.
 
----
+Common flags across the CLI and scripts:
+- `--outdir` for outputs
+- `--dicom-root` for DICOM roots
+- `--cache-mode` for dataset caching
 
-## Relevant File Structure
-- `extract_mammo_resnet50.py`
-- `RSNA_Mammography_EDA.py`
-- `ResNet50_Test/QUICKSTART.md`
-- `ResNet50_Test/docs/` (e.g., `embedding_extraction.md`, `dicom_processing.md`)
-- `requirements.txt`
-- `outputs/` (generated after running the ResNet50 pipeline)
-- `outputs_classifier/` (generated when running density training inside `RSNA_Mammography_EDA.py`; the dedicated density script uses `--outdir`, defaulting to `outputs/mammo_resnet50_density`)
+Dataset presets:
+- `archive`: DICOMs + `classificacao.csv`
+- `mamografias`: PNGs por subpasta com `featureS.txt`
+- `patches_completo`: PNGs na raiz com `featureS.txt`
 
----
+See `CLI_CHEATSHEET.md` for command matrices and common recipes.
 
-With these materials you can choose the flow that best fits your goal: feature extraction for exploration or supervised training based on the RSNA dataset. If in doubt, consult the corresponding quickstarts or open an issue describing your environment/scenario. Happy experimenting!
+## Repository Structure
 
----
+- `src/mammography/`: Main package (data, models, training, tools).
+- `scripts/`: Script entrypoints (embed, train, visualize, inference, augment, labeling, EDA).
+- `configs/`: YAML presets for datasets and training.
+- `Article/`: Scientific article and build assets.
+- `tools/`: Reporting/audit helpers (also available as `mammography.tools`).
+- `tests/`: Unit, integration, performance, and smoke tests.
 
-Use the density pipeline when your goal is to train an explicit parenchymal density classifier. Prefer the dedicated script `RSNA_Mammo_ResNet50_Density.py` for automation, or use the functionality embedded in `RSNA_Mammography_EDA.py` if you want to stay within that script.
+## Scientific Article Workflow
 
----
+The article lives in `Article/` and integrates with pipeline outputs via:
 
-## Quick Guide (Windows + RTX 5080)
+- `mammography report-pack` (CLI) or `python -m mammography.tools.report_pack`
+- `python -m mammography.tools.data_audit` for dataset manifest/audit artifacts
 
-To train with GPU on Windows machines equipped with an RTX 5080 / CUDA 12.8+, follow the flow below. It installs only official packages (PyTorch 2.9 +cu128) in an isolated environment.
+See `Article/README.md` for LaTeX build instructions.
 
-1. Prerequisites
-   - NVIDIA R570 series driver or later (`nvidia-smi` should show CUDA 12.8/13).
-   - Python 3.12 installed (64-bit).
+## Testing
 
-2. Create environment and install dependencies
-   ```powershell
-   cd D:\mammo
-   py -3.12 -m venv venv_gpu_5080
-   .\venv_gpu_5080\Scripts\Activate.ps1
-   python -m pip install --upgrade pip setuptools wheel
+Some tests require local datasets (DICOM archives, RSNA folders). For dataset-free smoke checks, run:
 
-   # Official PyTorch with RTX 5080 support (CUDA 12.8)
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```bash
+python -m pytest \
+  tests/unit/test_dicom_validation.py \
+  tests/unit/test_dimensionality_reduction.py \
+  tests/unit/test_evaluation_metrics.py \
+  tests/unit/test_clustering_algorithms.py \
+  tests/test_cache_mode.py \
+  tests/test_dataset_transforms.py
+```
 
-   # Other libraries used by the scripts
-   pip install -r requirements-base.txt
-   ```
+## Disclaimer
 
-   Verify the GPU is detected:
-   ```powershell
-   python -c "import torch; print(torch.__version__); print('cuda?', torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
-   ```
-
-3. Run the density classifier with GPU
-   ```powershell
-   python RSNA_Mammo_ResNet50_Density.py ^
-     --csv classificacao.csv ^
-     --dicom-root archive ^
-     --outdir outputs/mammo_resnet50_density_cuda ^
-     --epochs 20 ^
-     --batch-size 16 ^
-     --img-size 512 ^
-     --num-workers 8 ^
-     --prefetch-factor 4 ^
-     --cache-mode disk ^
-     --warmup-epochs 2 ^
-     --unfreeze-last-block ^
-     --class-weights auto ^
-     --lr 1e-4 ^
-     --backbone-lr 1e-5 ^
-     --preset windows ^
-     --log-level info
-   ```
-
-   > AMP (autocast + GradScaler) is automatically enabled on CUDA/MPS runs to reduce memory usage during forward/backward and during validation/embedding extraction. Use `--no-amp` to keep full FP32. Metrics are still computed after recasting to float32, but small numerical differences (<1e-4) can arise when comparing to purely FP32 runs.
-
-   > `--cache-mode` controls where base images are stored after first access. `disk` materializes the outputs of `dicom_to_pil_rgb` under `outdir/cache/` (saves CPU on DICOM rereads), `memory` replicates the old behavior in RAM, and `none` disables caching. The default `auto` chooses `disk` for datasets coming from DICOM folders, but falls back to `memory`/`none` when the dataset is too large to justify the extra cost or is already in PNG/JPG.
-
-   > The `--preset windows` flag internally limits `num_workers` to 2 and adjusts `prefetch_factor` to reduce `spawn` overhead. Use `--preset mps` (or `--mps-sync-loaders`) on Apple GPUs when you want to compare asynchronous vs synchronous loading.
-
-   The script automatically detects `cuda:0`; add `--device cuda` if you want to force it explicitly.
-
-4. Optional profiling
-
-   The new DataLoader presets (`--preset windows` or `--preset mps`) automatically adjust `num_workers`, `prefetch_factor`, and `persistent_workers`. To compare the impact of each preset, generate dedicated traces with the PyTorch Profiler:
-
-   ```powershell
-   # Default run (auto)
-   python RSNA_Mammo_ResNet50_Density.py ... --preset auto --profile --profile-dir outputs/profiler_auto
-
-   # Run with Windows heuristics
-   python RSNA_Mammo_ResNet50_Density.py ... --preset windows --profile --profile-dir outputs/profiler_windows
-
-   tensorboard --logdir outputs/profiler_auto,outputs/profiler_windows
-   ```
-
-   On Apple Silicon machines, use `--preset mps` (optionally combine with `--mps-sync-loaders` for debugging) and compare against the asynchronous mode. This makes it easy to validate whether reducing workers actually improves step time and CPU usage.
-
-5. CPU only
-
-   If you want a CPU-only environment:
-   ```powershell
-   py -3.12 -m venv venv_cpu
-   .\venv_cpu\Scripts\Activate.ps1
-   pip install -r requirements-windows-cpu.txt
-   python RSNA_Mammo_ResNet50_Density.py ... --device cpu
-   ```
-
-This flow avoids the old manual builds and uses only the official binaries already compatible with the Blackwell architecture (sm_120).
+⚠️ This is an educational research project. It must NOT be used for clinical or medical diagnostic purposes.

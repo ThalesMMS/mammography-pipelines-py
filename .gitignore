@@ -194,3 +194,6 @@ AGENTS.md
 /outputs/mammo_efficientnetb0_cuda/cache
 /mamografias
 /patches_completo
+/Article
+/archive_legacy/outputs
+weights/medicalnet/resnet_50.pth
