@@ -145,7 +145,7 @@ def _render_density_tex(tex_path: Path, runs: Sequence[DensityRun]) -> None:
     if best_run.assets.get("train_curve"):
         train_fig = best_run.assets["train_curve"]
     latex_lines = [
-        "% This file is auto-generated via tools/report_pack.py",
+        "% This file is auto-generated via mammography report-pack",
         "\\subsection{Modelo de Densidade}",
         "\\label{sec:density-model}",
         (

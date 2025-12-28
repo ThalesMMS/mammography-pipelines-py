@@ -34,6 +34,7 @@ import umap
 from ..clustering.clustering_result import ClusteringResult
 from ..io_dicom.mammography_image import MammographyImage
 from ..models.embeddings.embedding_vector import EmbeddingVector
+from ..utils.numpy_warnings import suppress_numpy_matmul_warnings, resolve_pca_svd_solver
 
 # Configure logging for educational purposes
 logger = logging.getLogger(__name__)
@@ -235,7 +236,9 @@ class ClusterVisualizer:
                 "random_state": 42,
             },
         )
-        config.setdefault("pca_params", {"n_components": 2, "random_state": 42})
+        config.setdefault(
+            "pca_params", {"n_components": 2, "random_state": 42, "svd_solver": "auto"}
+        )
         config.setdefault(
             "plot_params",
             {"figsize": (10, 8), "dpi": 300, "style": "whitegrid", "palette": "husl"},
@@ -305,7 +308,8 @@ class ClusterVisualizer:
                 self.umap_model = umap.UMAP(**umap_params)
 
             # Transform embeddings
-            umap_embeddings = self.umap_model.fit_transform(embedding_matrix)
+            with suppress_numpy_matmul_warnings():
+                umap_embeddings = self.umap_model.fit_transform(embedding_matrix)
 
             # Create plot
             plt.figure(figsize=self.config["plot_params"]["figsize"])
@@ -403,7 +407,8 @@ class ClusterVisualizer:
             umap_params["n_components"] = 3
 
             umap_3d_model = umap.UMAP(**umap_params)
-            umap_embeddings = umap_3d_model.fit_transform(embedding_matrix)
+            with suppress_numpy_matmul_warnings():
+                umap_embeddings = umap_3d_model.fit_transform(embedding_matrix)
 
             # Create 3D plot
             fig = plt.figure(figsize=(12, 10))
@@ -502,12 +507,19 @@ class ClusterVisualizer:
             # Fit PCA model
             pca_params = self.config["pca_params"].copy()
             pca_params["n_components"] = 2
+            pca_params["svd_solver"] = resolve_pca_svd_solver(
+                embedding_matrix.shape[0],
+                embedding_matrix.shape[1],
+                pca_params["n_components"],
+                pca_params.get("svd_solver"),
+            )
 
             if self.pca_model is None:
                 self.pca_model = PCA(**pca_params)
 
             # Transform embeddings
-            pca_embeddings = self.pca_model.fit_transform(embedding_matrix)
+            with suppress_numpy_matmul_warnings():
+                pca_embeddings = self.pca_model.fit_transform(embedding_matrix)
 
             # Create plot
             plt.figure(figsize=self.config["plot_params"]["figsize"])

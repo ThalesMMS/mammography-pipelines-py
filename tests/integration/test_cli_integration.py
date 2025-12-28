@@ -42,3 +42,10 @@ def test_cli_embeddings_baselines_routes_to_script() -> None:
     assert exit_code == 0
     mock_run.assert_called_once()
     assert mock_run.call_args[0][0] == "scripts/embeddings_baselines.py"
+
+
+def test_cli_data_audit_routes_to_tool() -> None:
+    with patch.object(cli, "_run_data_audit") as mock_run:
+        exit_code = cli.main(["--dry-run", "data-audit"])
+    assert exit_code == 0
+    mock_run.assert_called_once()

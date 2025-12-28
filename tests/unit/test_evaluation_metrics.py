@@ -32,32 +32,45 @@ from sklearn.metrics import (
 # from mammography.eval.calinski_harabasz_evaluator import CalinskiHarabaszEvaluator
 
 
+MATMUL_ERRSTATE = {"divide": "ignore", "over": "ignore", "invalid": "ignore"}
+
+
+@pytest.fixture(autouse=True)
+def _suppress_numpy_matmul_warnings():
+    with np.errstate(**MATMUL_ERRSTATE):
+        yield
+
+
 class TestEvaluationMetrics:
     """Unit tests for evaluation metric functions."""
 
     @pytest.fixture
     def sample_data_with_clusters(self) -> Tuple[np.ndarray, np.ndarray]:
         """Create sample data with clear cluster structure."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         n_samples = 100
         n_features = 50
         n_clusters = 4
 
         # Create cluster centers
-        cluster_centers = np.random.randn(n_clusters, n_features) * 2
+        cluster_centers = rng.normal(scale=0.5, size=(n_clusters, n_features))
 
         # Generate samples for each cluster
         data = []
         labels = []
         for i in range(n_clusters):
             cluster_samples = (
-                np.random.randn(n_samples // n_clusters, n_features) * 0.5
+                rng.normal(scale=0.1, size=(n_samples // n_clusters, n_features))
                 + cluster_centers[i]
             )
             data.append(cluster_samples)
             labels.extend([i] * (n_samples // n_clusters))
 
-        data = np.vstack(data)
+        data = np.vstack(data).astype(np.float64)
+        data -= data.mean(axis=0, keepdims=True)
+        std = data.std(axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        data /= std
         labels = np.array(labels)
 
         return data, labels
@@ -65,12 +78,16 @@ class TestEvaluationMetrics:
     @pytest.fixture
     def sample_data_without_clusters(self) -> np.ndarray:
         """Create sample data without clear cluster structure."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         n_samples = 100
         n_features = 50
 
         # Create random data without structure
-        data = np.random.randn(n_samples, n_features)
+        data = rng.normal(scale=0.5, size=(n_samples, n_features)).astype(np.float64)
+        data -= data.mean(axis=0, keepdims=True)
+        std = data.std(axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        data /= std
 
         return data
 

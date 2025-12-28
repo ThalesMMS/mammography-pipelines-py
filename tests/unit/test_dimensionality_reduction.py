@@ -22,46 +22,64 @@ from sklearn.manifold import TSNE
 # from mammography.clustering.umap_reducer import UMAPReducer
 
 
+MATMUL_ERRSTATE = {"divide": "ignore", "over": "ignore", "invalid": "ignore"}
+
+
+@pytest.fixture(autouse=True)
+def _suppress_numpy_matmul_warnings():
+    with np.errstate(**MATMUL_ERRSTATE):
+        yield
+
+
 class TestDimensionalityReduction:
     """Unit tests for dimensionality reduction functions."""
 
     @pytest.fixture
     def sample_embeddings(self) -> np.ndarray:
         """Create sample embeddings for testing."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         n_samples = 100
         n_features = 2048
 
         # Create embeddings with some structure
-        embeddings = np.random.randn(n_samples, n_features)
+        embeddings = rng.normal(scale=0.5, size=(n_samples, n_features))
 
         # Add some structure to make dimensionality reduction meaningful
-        for i in range(n_samples):
-            embeddings[i] += np.random.randn(n_features) * 0.1
+        embeddings += rng.normal(scale=0.05, size=embeddings.shape)
+
+        embeddings = embeddings.astype(np.float64)
+        embeddings -= embeddings.mean(axis=0, keepdims=True)
+        std = embeddings.std(axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        embeddings /= std
 
         return embeddings
 
     @pytest.fixture
     def sample_embeddings_with_clusters(self) -> np.ndarray:
         """Create sample embeddings with clear cluster structure."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         n_samples = 100
         n_features = 2048
         n_clusters = 4
 
         # Create cluster centers
-        cluster_centers = np.random.randn(n_clusters, n_features) * 2
+        cluster_centers = rng.normal(scale=0.5, size=(n_clusters, n_features))
 
         # Generate samples for each cluster
         embeddings = []
         for i in range(n_clusters):
             cluster_samples = (
-                np.random.randn(n_samples // n_clusters, n_features) * 0.5
+                rng.normal(scale=0.1, size=(n_samples // n_clusters, n_features))
                 + cluster_centers[i]
             )
             embeddings.append(cluster_samples)
 
-        embeddings = np.vstack(embeddings)
+        embeddings = np.vstack(embeddings).astype(np.float64)
+        embeddings -= embeddings.mean(axis=0, keepdims=True)
+        std = embeddings.std(axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        embeddings /= std
         return embeddings
 
     def test_pca_reduction(self, sample_embeddings):
@@ -69,7 +87,7 @@ class TestDimensionalityReduction:
         n_components = 50
 
         # Fit PCA
-        pca = PCA(n_components=n_components, random_state=42)
+        pca = PCA(n_components=n_components, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(sample_embeddings)
 
         # Validate reduced embeddings
@@ -96,7 +114,7 @@ class TestDimensionalityReduction:
         for n_components in n_components_list:
             n_components = min(n_components, max_components)
             # Fit PCA
-            pca = PCA(n_components=n_components, random_state=42)
+            pca = PCA(n_components=n_components, random_state=42, svd_solver="full")
             embeddings_reduced = pca.fit_transform(sample_embeddings)
 
             # Validate reduced embeddings
@@ -124,7 +142,11 @@ class TestDimensionalityReduction:
         # Fit PCA multiple times with same seed
         results = []
         for _ in range(3):
-            pca = PCA(n_components=n_components, random_state=random_state)
+            pca = PCA(
+                n_components=n_components,
+                random_state=random_state,
+                svd_solver="full",
+            )
             embeddings_reduced = pca.fit_transform(sample_embeddings)
             results.append(embeddings_reduced)
 
@@ -137,7 +159,7 @@ class TestDimensionalityReduction:
         n_components = 50
 
         # Fit PCA
-        pca = PCA(n_components=n_components, random_state=42)
+        pca = PCA(n_components=n_components, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(sample_embeddings)
 
         # Inverse transform
@@ -160,7 +182,7 @@ class TestDimensionalityReduction:
         n_components = 50
 
         # Fit PCA
-        pca = PCA(n_components=n_components, random_state=42)
+        pca = PCA(n_components=n_components, random_state=42, svd_solver="full")
         pca.fit(sample_embeddings)
 
         # Validate explained variance

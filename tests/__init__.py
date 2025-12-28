@@ -1,5 +1,5 @@
 """
-Tests for ResNet50_Test
+Tests for the mammography pipelines.
 Educational Research Project - NOT for clinical use
 
 ⚠️ DISCLAIMER: This is an EDUCATIONAL RESEARCH project.

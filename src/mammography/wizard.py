@@ -431,13 +431,35 @@ def _wizard_embed() -> WizardCommand:
         if _ask_yes_no("Salvar joined.csv?", False):
             args.append("--save-csv")
 
-        if _ask_yes_no("Executar PCA?", True):
-            args.append("--pca")
-        if _ask_yes_no("Executar t-SNE?", True):
-            args.append("--tsne")
-        if _ask_yes_no("Executar UMAP?", True):
-            args.append("--umap")
-        if _ask_yes_no("Executar clustering?", False):
+        wants_pca = False
+        if _ask_yes_no("Atalho de reducao (PCA + t-SNE + UMAP)?", False):
+            args.append("--run-reduction")
+            wants_pca = True
+        else:
+            if _ask_yes_no("Executar PCA?", True):
+                args.append("--pca")
+                wants_pca = True
+            if _ask_yes_no("Executar t-SNE?", True):
+                args.append("--tsne")
+            if _ask_yes_no("Executar UMAP?", True):
+                args.append("--umap")
+
+        if wants_pca:
+            solver_idx = _ask_choice(
+                "Solver do PCA:",
+                ["auto", "full", "randomized", "arpack"],
+                default=0,
+            )
+            args.extend(
+                ["--pca-svd-solver", ["auto", "full", "randomized", "arpack"][solver_idx]]
+            )
+
+        if _ask_yes_no("Atalho de clustering (k-means auto)?", False):
+            args.append("--run-clustering")
+            cluster_k = _ask_int("K fixo (0 = auto)", 0)
+            if cluster_k >= 2:
+                args.extend(["--cluster-k", str(cluster_k)])
+        elif _ask_yes_no("Executar clustering?", False):
             args.append("--cluster")
             cluster_k = _ask_int("K fixo (0 = auto)", 0)
             if cluster_k >= 2:
@@ -461,33 +483,84 @@ def _wizard_visualize() -> WizardCommand:
     if from_run:
         args.append("--from-run")
 
-    if _ask_yes_no("Gerar report completo?", True):
+    labels_path = _ask_optional("CSV de labels (opcional)")
+    if labels_path:
+        args.extend(["--labels", labels_path])
+        label_col = _ask_string("Coluna de labels", "raw_label")
+        if label_col:
+            args.extend(["--label-col", label_col])
+
+    predictions_path = _ask_optional("CSV de predictions (opcional)")
+    if predictions_path:
+        args.extend(["--predictions", predictions_path])
+
+    history_path = _ask_optional("Historico de treino (CSV/JSON opcional)")
+    if history_path:
+        args.extend(["--history", history_path])
+
+    prefix = _ask_optional("Prefixo de arquivos (opcional)")
+    if prefix:
+        args.extend(["--prefix", prefix])
+
+    report = _ask_yes_no("Gerar report completo?", True)
+    wants_pca = report
+    wants_tsne = report
+    if report:
         args.append("--report")
     else:
         if _ask_yes_no("Gerar PCA?", True):
             args.append("--pca")
+            wants_pca = True
         if _ask_yes_no("Gerar t-SNE?", True):
             args.append("--tsne")
+            wants_tsne = True
         if _ask_yes_no("Gerar t-SNE 3D?", False):
             args.append("--tsne-3d")
+            wants_tsne = True
         if _ask_yes_no("Gerar UMAP?", False):
             args.append("--umap")
         if _ask_yes_no("Comparar embeddings?", False):
             args.append("--compare-embeddings")
+            wants_pca = True
+            wants_tsne = True
         if _ask_yes_no("Gerar heatmap?", False):
             args.append("--heatmap")
+        if _ask_yes_no("Gerar heatmap de features?", False):
+            args.append("--feature-heatmap")
         if _ask_yes_no("Gerar confusion matrix?", False):
             args.append("--confusion-matrix")
         if _ask_yes_no("Gerar scatter matrix?", False):
             args.append("--scatter-matrix")
         if _ask_yes_no("Gerar distribuicoes?", False):
             args.append("--distribution")
+            wants_pca = True
         if _ask_yes_no("Gerar separacao de classes?", False):
             args.append("--class-separation")
         if _ask_yes_no("Gerar curvas de aprendizado?", False):
             args.append("--learning-curves")
-        if _ask_yes_no("Rotulos binarios (low/high)?", False):
-            args.append("--binary")
+
+    if _ask_yes_no("Rotulos binarios (low/high)?", False):
+        args.append("--binary")
+
+    if wants_tsne and _ask_yes_no("Configurar parametros do t-SNE?", False):
+        perplexity = _ask_float("Perplexity", 30.0)
+        tsne_iter = _ask_int("Iteracoes t-SNE", 1000)
+        args.extend(["--perplexity", str(perplexity), "--tsne-iter", str(tsne_iter)])
+
+    if wants_pca:
+        solver_idx = _ask_choice(
+            "Solver do PCA:",
+            ["auto", "full", "randomized", "arpack"],
+            default=0,
+        )
+        args.extend(
+            ["--pca-svd-solver", ["auto", "full", "randomized", "arpack"][solver_idx]]
+        )
+
+    if _ask_yes_no("Configurar parametros gerais?", False):
+        seed = _ask_int("Seed", 42)
+        log_level = _ask_string("Log level", "INFO")
+        args.extend(["--seed", str(seed), "--log-level", log_level])
 
     args.extend(_ask_extra_args())
     return WizardCommand("Visualizacao", _build_cli_command("visualize", args))
@@ -499,9 +572,15 @@ def _wizard_embeddings_baselines() -> WizardCommand:
     outdir = _ask_string("Outdir", "outputs/embeddings_baselines")
     cache_classic = _ask_string("Cache classic (opcional)", "")
     img_size = _ask_int("Img size (resize classico)", 224)
+    solver_idx = _ask_choice(
+        "Solver do PCA:",
+        ["auto", "full", "randomized", "arpack"],
+        default=0,
+    )
     args.extend(["--embeddings-dir", embeddings_dir, "--outdir", outdir, "--img-size", str(img_size)])
     if cache_classic:
         args.extend(["--cache-classic", cache_classic])
+    args.extend(["--pca-svd-solver", ["auto", "full", "randomized", "arpack"][solver_idx]])
     args.extend(_ask_extra_args())
     return WizardCommand("Baselines (embeddings)", _build_cli_command("embeddings-baselines", args))
 
@@ -578,7 +657,21 @@ def _wizard_label_patches() -> WizardCommand:
 
 
 def _wizard_eda() -> WizardCommand:
-    return WizardCommand("EDA cancer", _build_cli_command("eda-cancer", []))
+    args: list[str] = []
+    csv_dir = _ask_optional("CSV dir (train.csv/test.csv, opcional)")
+    if csv_dir:
+        args.extend(["--csv-dir", csv_dir])
+    dicom_dir = _ask_optional("DICOM dir (train_images, opcional)")
+    if dicom_dir:
+        args.extend(["--dicom-dir", dicom_dir])
+    png_dir = _ask_optional("PNG dir (256x256, opcional)")
+    if png_dir:
+        args.extend(["--png-dir", png_dir])
+    output_dir = _ask_optional("Output dir (opcional)")
+    if output_dir:
+        args.extend(["--output-dir", output_dir])
+    args.extend(_ask_extra_args())
+    return WizardCommand("EDA cancer", _build_cli_command("eda-cancer", args))
 
 
 def _wizard_eval_export() -> WizardCommand:
@@ -590,6 +683,34 @@ def _wizard_eval_export() -> WizardCommand:
             args.extend(["--run", run])
     args.extend(_ask_extra_args())
     return WizardCommand("Eval-export", _build_cli_command("eval-export", args))
+
+
+def _wizard_data_audit() -> WizardCommand:
+    args = _ask_config_args()
+    archive = _ask_string("Diretorio archive", "archive")
+    csv_path = _ask_string("CSV de rotulos", "classificacao.csv")
+    manifest = _ask_string("Manifest JSON", "data_manifest.json")
+    audit_csv = _ask_string(
+        "CSV de auditoria",
+        "outputs/embeddings_resnet50/data_audit.csv",
+    )
+    log_path = _ask_string("Log do artigo", "Article/assets/data_qc.log")
+    args.extend(
+        [
+            "--archive",
+            archive,
+            "--csv",
+            csv_path,
+            "--manifest",
+            manifest,
+            "--audit-csv",
+            audit_csv,
+            "--log",
+            log_path,
+        ]
+    )
+    args.extend(_ask_extra_args())
+    return WizardCommand("Auditoria de dados", _build_cli_command("data-audit", args))
 
 
 def _wizard_report_pack() -> WizardCommand:
@@ -622,6 +743,7 @@ def run_wizard(dry_run: bool = False) -> int:
         "Rotular densidade (GUI)",
         "Rotular patches (GUI)",
         "EDA cancer",
+        "Auditoria de dados",
         "Eval-export (checklist)",
         "Report-pack (Article)",
         "Sair",
@@ -648,8 +770,10 @@ def run_wizard(dry_run: bool = False) -> int:
     elif choice == 9:
         cmd = _wizard_eda()
     elif choice == 10:
-        cmd = _wizard_eval_export()
+        cmd = _wizard_data_audit()
     elif choice == 11:
+        cmd = _wizard_eval_export()
+    elif choice == 12:
         cmd = _wizard_report_pack()
     else:
         print("Saindo do wizard.")

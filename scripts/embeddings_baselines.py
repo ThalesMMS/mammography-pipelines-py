@@ -32,6 +32,10 @@ from tqdm import tqdm
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from mammography.utils.dicom_io import dicom_to_pil_rgb, is_dicom_path
+from mammography.utils.numpy_warnings import (
+    suppress_numpy_matmul_warnings,
+    resolve_pca_svd_solver,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -129,6 +133,7 @@ def compute_handcrafted_features(
     cache_path: Path,
     img_size: int,
     embeddings_dir: Path,
+    pca_svd_solver: str | None = "auto",
 ) -> np.ndarray:
     if cache_path.exists():
         cached = np.load(cache_path)
@@ -153,8 +158,12 @@ def compute_handcrafted_features(
     stats_matrix = np.array(stats_features, dtype=np.float32)
     resized_matrix = np.stack(resized_vectors, axis=0) / 255.0
     components = min(32, resized_matrix.shape[1])
-    pca = PCA(n_components=components, random_state=42)
-    pca_matrix = pca.fit_transform(resized_matrix)
+    solver = resolve_pca_svd_solver(
+        resized_matrix.shape[0], resized_matrix.shape[1], components, pca_svd_solver
+    )
+    pca = PCA(n_components=components, random_state=42, svd_solver=solver)
+    with suppress_numpy_matmul_warnings():
+        pca_matrix = pca.fit_transform(resized_matrix)
     handcrafted = np.concatenate([stats_matrix, pca_matrix], axis=1)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache_path, handcrafted)
@@ -259,6 +268,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outdir", type=Path, default=Path("outputs/embeddings_baselines"))
     parser.add_argument("--cache-classic", type=Path, default=Path("outputs/embeddings_baselines/classic_features.npy"))
     parser.add_argument("--img-size", type=int, default=224, help="Tamanho do resize para features classicas (default: 224).")
+    parser.add_argument(
+        "--pca-svd-solver",
+        default="auto",
+        choices=["auto", "full", "randomized", "arpack"],
+        help="Solver do PCA (auto/full/randomized/arpack).",
+    )
     return parser.parse_args()
 
 
@@ -267,7 +282,13 @@ def main() -> int:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     X_embed, y, meta = load_embeddings(args.embeddings_dir)
-    handcrafted = compute_handcrafted_features(meta, args.cache_classic, args.img_size, args.embeddings_dir)
+    handcrafted = compute_handcrafted_features(
+        meta,
+        args.cache_classic,
+        args.img_size,
+        args.embeddings_dir,
+        pca_svd_solver=args.pca_svd_solver,
+    )
 
     embed_summary = evaluate_feature_set("embeddings", X_embed, y, args.outdir)
     classic_summary = evaluate_feature_set("handcrafted", handcrafted, y, args.outdir)

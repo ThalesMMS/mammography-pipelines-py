@@ -8,7 +8,7 @@
 #
 import numpy as np
 import pydicom
-from pydicom.pixel_data_handlers.util import apply_modality_lut
+from pydicom.pixels import apply_modality_lut
 from PIL import Image
 
 DICOM_EXTS = (".dcm", ".dicom")

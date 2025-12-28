@@ -32,6 +32,8 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix
 
+from ..utils.numpy_warnings import suppress_numpy_matmul_warnings, resolve_pca_svd_solver
+
 # Default style configuration
 plt.style.use("seaborn-v0_8-whitegrid")
 PALETTE = "viridis"
@@ -46,6 +48,13 @@ def _ensure_dir(path: Union[str, Path]) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _build_pca(features: np.ndarray, n_components: int, seed: int) -> PCA:
+    solver = resolve_pca_svd_solver(
+        features.shape[0], features.shape[1], n_components, "auto"
+    )
+    return PCA(n_components=n_components, random_state=seed, svd_solver=solver)
 
 
 def plot_tsne_2d(
@@ -92,7 +101,8 @@ def plot_tsne_2d(
         random_state=seed,
         init="pca",
     )
-    embedding = tsne.fit_transform(features)
+    with suppress_numpy_matmul_warnings():
+        embedding = tsne.fit_transform(features)
     
     fig, ax = plt.subplots(figsize=figsize)
     
@@ -158,7 +168,8 @@ def plot_tsne_3d(
         init="pca",
         learning_rate="auto",
     )
-    embedding = tsne.fit_transform(features)
+    with suppress_numpy_matmul_warnings():
+        embedding = tsne.fit_transform(features)
     
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111, projection="3d")
@@ -229,8 +240,9 @@ def plot_heatmap_correlation(
     """
     if features.shape[1] > max_features:
         # Use PCA to reduce for visualization
-        pca = PCA(n_components=max_features, random_state=42)
-        features = pca.fit_transform(features)
+        pca = _build_pca(features, max_features, seed=42)
+        with suppress_numpy_matmul_warnings():
+            features = pca.fit_transform(features)
         feature_names = [f"PC{i+1}" for i in range(max_features)]
     
     df = pd.DataFrame(features, columns=feature_names or [f"F{i}" for i in range(features.shape[1])])
@@ -347,8 +359,9 @@ def plot_feature_heatmap(
             sample_ids = [sample_ids[i] for i in idx]
     
     if features.shape[1] > max_features:
-        pca = PCA(n_components=max_features, random_state=42)
-        features = pca.fit_transform(features)
+        pca = _build_pca(features, max_features, seed=42)
+        with suppress_numpy_matmul_warnings():
+            features = pca.fit_transform(features)
         feature_names = [f"PC{i+1}" for i in range(max_features)]
     
     df = pd.DataFrame(
@@ -402,8 +415,9 @@ def plot_scatter_matrix(
         label_names: Map from int labels to string names
     """
     if features.shape[1] > max_features:
-        pca = PCA(n_components=max_features, random_state=42)
-        features = pca.fit_transform(features)
+        pca = _build_pca(features, max_features, seed=42)
+        with suppress_numpy_matmul_warnings():
+            features = pca.fit_transform(features)
         feature_names = [f"PC{i+1}" for i in range(max_features)]
     
     df = pd.DataFrame(features, columns=feature_names or [f"D{i}" for i in range(features.shape[1])])
@@ -537,18 +551,21 @@ def plot_embedding_comparison(
     
     for ax, method in zip(axes, methods):
         if method.lower() == "pca":
-            pca = PCA(n_components=2, random_state=seed)
-            emb = pca.fit_transform(features)
+            pca = _build_pca(features, 2, seed=seed)
+            with suppress_numpy_matmul_warnings():
+                emb = pca.fit_transform(features)
             method_title = f"PCA (var: {pca.explained_variance_ratio_.sum():.1%})"
         elif method.lower() == "tsne":
             tsne = TSNE(n_components=2, random_state=seed, init="pca", learning_rate="auto")
-            emb = tsne.fit_transform(features)
+            with suppress_numpy_matmul_warnings():
+                emb = tsne.fit_transform(features)
             method_title = "t-SNE"
         elif method.lower() == "umap":
             try:
                 from umap import UMAP
                 umap_model = UMAP(n_components=2, random_state=seed)
-                emb = umap_model.fit_transform(features)
+                with suppress_numpy_matmul_warnings():
+                    emb = umap_model.fit_transform(features)
                 method_title = "UMAP"
             except ImportError:
                 ax.text(0.5, 0.5, "UMAP not installed", ha="center", va="center", transform=ax.transAxes)
@@ -625,7 +642,8 @@ def plot_class_separation(
     intra_var = [features[labels == l].var(axis=0).mean() for l in unique_labels]
     
     # Silhouette scores
-    silhouette_vals = silhouette_samples(features, labels)
+    with suppress_numpy_matmul_warnings():
+        silhouette_vals = silhouette_samples(features, labels)
     
     fig, axes = plt.subplots(1, 3, figsize=figsize)
     
@@ -855,8 +873,9 @@ def generate_visualization_report(
     
     # 7. First PC distribution
     print("Generating PC1 distribution...")
-    pca = PCA(n_components=1, random_state=seed)
-    pc1 = pca.fit_transform(features).ravel()
+    pca = _build_pca(features, 1, seed=seed)
+    with suppress_numpy_matmul_warnings():
+        pc1 = pca.fit_transform(features).ravel()
     _ = plot_distribution(
         pc1,
         labels,

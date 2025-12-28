@@ -46,6 +46,10 @@ from mammography.vis.advanced import (
     plot_learning_curves,
     generate_visualization_report,
 )
+from mammography.utils.numpy_warnings import (
+    suppress_numpy_matmul_warnings,
+    resolve_pca_svd_solver,
+)
 
 BIRADS_NAMES = {
     0: "BI-RADS A",
@@ -325,6 +329,12 @@ Examples:
         help="Random seed (default: 42)",
     )
     general_group.add_argument(
+        "--pca-svd-solver",
+        default="auto",
+        choices=["auto", "full", "randomized", "arpack"],
+        help="Solver do PCA (auto/full/randomized/arpack).",
+    )
+    general_group.add_argument(
         "--binary",
         action="store_true",
         help="Use binary class names (Low/High Density)",
@@ -477,8 +487,12 @@ def main():
         if args.pca:
             logger.info("Generating PCA plot...")
             from sklearn.decomposition import PCA
-            pca = PCA(n_components=2, random_state=args.seed)
-            pca_emb = pca.fit_transform(features)
+            solver = resolve_pca_svd_solver(
+                features.shape[0], features.shape[1], 2, args.pca_svd_solver
+            )
+            pca = PCA(n_components=2, random_state=args.seed, svd_solver=solver)
+            with suppress_numpy_matmul_warnings():
+                pca_emb = pca.fit_transform(features)
             df = pd.DataFrame({"pca_x": pca_emb[:, 0], "pca_y": pca_emb[:, 1]})
             if labels is not None:
                 df["label"] = labels
@@ -500,7 +514,8 @@ def main():
             try:
                 from umap import UMAP
                 umap_model = UMAP(n_components=2, random_state=args.seed)
-                umap_emb = umap_model.fit_transform(features)
+                with suppress_numpy_matmul_warnings():
+                    umap_emb = umap_model.fit_transform(features)
                 df = pd.DataFrame({"umap_x": umap_emb[:, 0], "umap_y": umap_emb[:, 1]})
                 if labels is not None:
                     df["label"] = labels
@@ -598,8 +613,12 @@ def main():
         if args.distribution:
             logger.info("Generating distribution plots...")
             from sklearn.decomposition import PCA
-            pca = PCA(n_components=1, random_state=args.seed)
-            pc1 = pca.fit_transform(features).ravel()
+            solver = resolve_pca_svd_solver(
+                features.shape[0], features.shape[1], 1, args.pca_svd_solver
+            )
+            pca = PCA(n_components=1, random_state=args.seed, svd_solver=solver)
+            with suppress_numpy_matmul_warnings():
+                pc1 = pca.fit_transform(features).ravel()
             
             for kind in ["hist", "kde"]:
                 out_path = output_dir / f"{prefix}pc1_{kind}.png"

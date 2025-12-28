@@ -1,4 +1,4 @@
-"""Preprocessing utilities for the ResNet50_Test research project."""
+"""Preprocessing utilities for the mammography pipelines."""
 
 __version__ = "1.0.0"
 

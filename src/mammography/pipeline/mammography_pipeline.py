@@ -127,7 +127,7 @@ class MammographyPipeline:
             "input_dir": str(input_dir),
             "output_dir": str(output_dir),
             "device": device,
-            "steps": {},
+            "step_results": {},
             "errors": [],
             "total_processing_time": 0.0,
         }
@@ -141,7 +141,7 @@ class MammographyPipeline:
             # DICOM reading and preprocessing
             typer.echo("Leitura DICOM e pre-processamento")
             preprocessing_results = self._run_preprocessing_step(input_dir, output_dir)
-            pipeline_results["steps"]["preprocessing"] = preprocessing_results
+            pipeline_results["step_results"]["preprocessing"] = preprocessing_results
 
             if preprocessing_results["success"]:
                 # Embedding extraction
@@ -149,7 +149,7 @@ class MammographyPipeline:
                 embedding_results = self._run_embedding_step(
                     preprocessing_results["output_dir"], output_dir, device
                 )
-                pipeline_results["steps"]["embedding"] = embedding_results
+                pipeline_results["step_results"]["embedding"] = embedding_results
 
                 if embedding_results["success"]:
                     # Clustering
@@ -157,7 +157,7 @@ class MammographyPipeline:
                     clustering_results = self._run_clustering_step(
                         embedding_results["output_dir"], output_dir
                     )
-                    pipeline_results["steps"]["clustering"] = clustering_results
+                    pipeline_results["step_results"]["clustering"] = clustering_results
 
                     if clustering_results["success"]:
                         # Evaluation
@@ -167,7 +167,7 @@ class MammographyPipeline:
                             embedding_results["embedding_vectors"],
                             output_dir,
                         )
-                        pipeline_results["steps"]["evaluation"] = evaluation_results
+                        pipeline_results["step_results"]["evaluation"] = evaluation_results
 
                         # Visualization
                         typer.echo("Visualizacao")
@@ -177,7 +177,7 @@ class MammographyPipeline:
                             preprocessing_results["mammography_images"],
                             output_dir,
                         )
-                        pipeline_results["steps"][
+                        pipeline_results["step_results"][
                             "visualization"
                         ] = visualization_results
 
@@ -186,7 +186,7 @@ class MammographyPipeline:
                         report_results = self._generate_final_report(
                             pipeline_results, output_dir
                         )
-                        pipeline_results["steps"]["report"] = report_results
+                        pipeline_results["step_results"]["report"] = report_results
 
                         pipeline_results["success"] = True
                         typer.echo("Pipeline completed successfully!")
@@ -762,7 +762,7 @@ class MammographyPipeline:
         }
 
         # Add step results
-        for step_name, step_results in pipeline_results["steps"].items():
+        for step_name, step_results in pipeline_results["step_results"].items():
             report_content["step_results"][step_name] = {
                 "success": step_results["success"],
                 "processing_time": step_results["processing_time"],

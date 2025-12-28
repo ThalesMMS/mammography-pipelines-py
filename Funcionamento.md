@@ -15,7 +15,6 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 ├── scripts/              # Entrypoints de execução (embed, train, visualize)
 ├── configs/              # Presets YAML (paths, density)
 ├── Article/              # Artigo científico + assets + Makefile
-├── tools/                # Utilitários de auditoria/report-pack (espelhados em src/)
 ├── tests/                # Unit, integration, smoke, performance
 ```
 
@@ -52,7 +51,7 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 ### 4) Relatórios e Auditoria
 
 - `report-pack`: empacota figuras/artefatos do treino de densidade e atualiza LaTeX no `Article/`
-- `data_audit`: gera manifest/audit de dados para rastreabilidade
+- `data-audit`: gera manifest/audit de dados para rastreabilidade
 
 ### 5) EDA RSNA (cancer)
 

@@ -31,29 +31,44 @@ from sklearn.mixture import GaussianMixture
 # from mammography.clustering.visualizer import ClusteringVisualizer
 
 
+MATMUL_ERRSTATE = {"divide": "ignore", "over": "ignore", "invalid": "ignore"}
+
+
+@pytest.fixture(autouse=True)
+def _suppress_numpy_matmul_warnings():
+    with np.errstate(**MATMUL_ERRSTATE):
+        yield
+
+
 class TestClusteringPipelineIntegration:
     """Integration tests for clustering pipeline operations."""
 
     @pytest.fixture
     def sample_embeddings(self) -> np.ndarray:
         """Create sample embeddings for testing."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         # Create mock embeddings with 4 distinct clusters
         n_samples = 100
         n_features = 2048
 
         # Create 4 distinct clusters
-        cluster_centers = np.random.randn(4, n_features) * 2
+        cluster_centers = rng.normal(scale=0.5, size=(4, n_features))
         embeddings = []
         labels = []
 
         for i in range(4):
             # Generate samples for each cluster
-            cluster_samples = np.random.randn(25, n_features) * 0.5 + cluster_centers[i]
+            cluster_samples = (
+                rng.normal(scale=0.1, size=(25, n_features)) + cluster_centers[i]
+            )
             embeddings.append(cluster_samples)
             labels.extend([i] * 25)
 
-        embeddings = np.vstack(embeddings)
+        embeddings = np.vstack(embeddings).astype(np.float64)
+        embeddings -= embeddings.mean(axis=0, keepdims=True)
+        std = embeddings.std(axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        embeddings /= std
         labels = np.array(labels)
 
         return embeddings, labels
@@ -74,7 +89,9 @@ class TestClusteringPipelineIntegration:
 
         # Step 1: Dimensionality reduction with PCA
         pca = PCA(
-            n_components=config["pca_dimensions"], random_state=config["random_state"]
+            n_components=config["pca_dimensions"],
+            random_state=config["random_state"],
+            svd_solver="full",
         )
         embeddings_reduced = pca.fit_transform(embeddings)
 
@@ -147,7 +164,7 @@ class TestClusteringPipelineIntegration:
         embeddings, true_labels = sample_embeddings
 
         # Reduce dimensionality first
-        pca = PCA(n_components=50, random_state=42)
+        pca = PCA(n_components=50, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(embeddings)
 
         algorithms = ["kmeans", "gmm", "hdbscan"]
@@ -211,7 +228,9 @@ class TestClusteringPipelineIntegration:
                     embeddings.shape[0],
                     embeddings.shape[1],
                 )
-                reducer = PCA(n_components=n_components, random_state=42)
+                reducer = PCA(
+                    n_components=n_components, random_state=42, svd_solver="full"
+                )
                 embeddings_reduced = reducer.fit_transform(embeddings)
 
             # Validate reduced embeddings
@@ -252,7 +271,7 @@ class TestClusteringPipelineIntegration:
         embeddings, true_labels = sample_embeddings
 
         # Reduce dimensionality
-        pca = PCA(n_components=50, random_state=42)
+        pca = PCA(n_components=50, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(embeddings)
 
         # Create different clustering results
@@ -299,7 +318,7 @@ class TestClusteringPipelineIntegration:
         embeddings, true_labels = sample_embeddings
 
         # Reduce dimensionality for clustering
-        pca = PCA(n_components=50, random_state=42)
+        pca = PCA(n_components=50, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(embeddings)
 
         # Perform clustering
@@ -351,6 +370,7 @@ class TestClusteringPipelineIntegration:
             pca = PCA(
                 n_components=config["pca_dimensions"],
                 random_state=config["random_state"],
+                svd_solver="full",
             )
             embeddings_reduced = pca.fit_transform(embeddings)
 
@@ -373,7 +393,7 @@ class TestClusteringPipelineIntegration:
         embeddings, true_labels = sample_embeddings
 
         # Reduce dimensionality
-        pca = PCA(n_components=50, random_state=42)
+        pca = PCA(n_components=50, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(embeddings)
 
         # Time the clustering
@@ -412,7 +432,7 @@ class TestClusteringPipelineIntegration:
         embeddings, true_labels = sample_embeddings
 
         # Reduce dimensionality
-        pca = PCA(n_components=50, random_state=42)
+        pca = PCA(n_components=50, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(embeddings)
 
         # Perform clustering
@@ -479,7 +499,7 @@ class TestClusteringPipelineIntegration:
         embeddings, true_labels = sample_embeddings
 
         # Reduce dimensionality
-        pca = PCA(n_components=50, random_state=42)
+        pca = PCA(n_components=50, random_state=42, svd_solver="full")
         embeddings_reduced = pca.fit_transform(embeddings)
 
         n_clusters_list = [2, 3, 4, 5, 6]

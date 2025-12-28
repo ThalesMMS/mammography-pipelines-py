@@ -1,4 +1,4 @@
-"""Clustering utilities for the ResNet50_Test research project."""
+"""Clustering utilities for the mammography pipelines."""
 
 __version__ = "1.0.0"
 

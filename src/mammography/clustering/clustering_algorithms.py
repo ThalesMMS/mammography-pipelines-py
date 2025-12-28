@@ -39,6 +39,7 @@ import torch
 
 from ..models.embeddings.embedding_vector import EmbeddingVector
 from .clustering_result import ClusteringResult, create_clustering_result_from_algorithm
+from ..utils.numpy_warnings import suppress_numpy_matmul_warnings, resolve_pca_svd_solver
 
 # Configure logging for educational purposes
 logger = logging.getLogger(__name__)
@@ -219,6 +220,7 @@ class ClusteringAlgorithms:
         config.setdefault("evaluation_metrics", self.REQUIRED_METRICS)
         config.setdefault("seed", 42)
         config.setdefault("hyperparameters", {})
+        config.setdefault("pca_svd_solver", "auto")
 
         # Set algorithm-specific default hyperparameters
         algorithm = config["algorithm"]
@@ -345,12 +347,21 @@ class ClusteringAlgorithms:
 
             # Initialize PCA model if not already done
             if self.pca_model is None:
+                solver = resolve_pca_svd_solver(
+                    embedding_matrix.shape[0],
+                    embedding_matrix.shape[1],
+                    pca_dimensions,
+                    self.config.get("pca_svd_solver"),
+                )
                 self.pca_model = PCA(
-                    n_components=pca_dimensions, random_state=self.config["seed"]
+                    n_components=pca_dimensions,
+                    random_state=self.config["seed"],
+                    svd_solver=solver,
                 )
 
             # Fit PCA and transform embeddings
-            reduced_embeddings = self.pca_model.fit_transform(embedding_matrix)
+            with suppress_numpy_matmul_warnings():
+                reduced_embeddings = self.pca_model.fit_transform(embedding_matrix)
 
             # Log explained variance
             explained_variance_ratio = np.sum(self.pca_model.explained_variance_ratio_)
@@ -419,7 +430,8 @@ class ClusteringAlgorithms:
         """
         # Apply K-means
         kmeans = KMeans(**hyperparameters)
-        cluster_labels = kmeans.fit_predict(embeddings)
+        with suppress_numpy_matmul_warnings():
+            cluster_labels = kmeans.fit_predict(embeddings)
 
         # Get centroids
         centroids = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32)
@@ -447,15 +459,17 @@ class ClusteringAlgorithms:
         """
         # Apply GMM
         gmm = GaussianMixture(**hyperparameters)
-        cluster_labels = gmm.fit_predict(embeddings)
+        with suppress_numpy_matmul_warnings():
+            cluster_labels = gmm.fit_predict(embeddings)
 
         # Get centroids (means of components)
         centroids = torch.tensor(gmm.means_, dtype=torch.float32)
 
         # Get uncertainty scores (negative log-likelihood)
-        uncertainty_scores = torch.tensor(
-            -gmm.score_samples(embeddings), dtype=torch.float32
-        )
+        with suppress_numpy_matmul_warnings():
+            uncertainty_scores = torch.tensor(
+                -gmm.score_samples(embeddings), dtype=torch.float32
+            )
 
         logger.info(
             f"Applied GMM clustering with {hyperparameters['n_components']} components"
@@ -480,7 +494,8 @@ class ClusteringAlgorithms:
         """
         # Apply HDBSCAN
         hdbscan_clusterer = hdbscan.HDBSCAN(**hyperparameters)
-        cluster_labels = hdbscan_clusterer.fit_predict(embeddings)
+        with suppress_numpy_matmul_warnings():
+            cluster_labels = hdbscan_clusterer.fit_predict(embeddings)
 
         # Get uncertainty scores (outlier scores)
         uncertainty_scores = torch.tensor(
@@ -511,7 +526,8 @@ class ClusteringAlgorithms:
         """
         # Apply Agglomerative clustering
         agglomerative = AgglomerativeClustering(**hyperparameters)
-        cluster_labels = agglomerative.fit_predict(embeddings)
+        with suppress_numpy_matmul_warnings():
+            cluster_labels = agglomerative.fit_predict(embeddings)
 
         logger.info(
             f"Applied Agglomerative clustering with {hyperparameters['n_clusters']} clusters"
@@ -546,7 +562,10 @@ class ClusteringAlgorithms:
             # Compute Silhouette score
             if "silhouette" in self.config["evaluation_metrics"]:
                 try:
-                    metrics["silhouette"] = silhouette_score(embeddings, cluster_labels)
+                    with suppress_numpy_matmul_warnings():
+                        metrics["silhouette"] = silhouette_score(
+                            embeddings, cluster_labels
+                        )
                 except Exception as e:
                     logger.warning(f"Could not compute Silhouette score: {e!s}")
                     metrics["silhouette"] = -1.0
@@ -554,9 +573,10 @@ class ClusteringAlgorithms:
             # Compute Davies-Bouldin score
             if "davies_bouldin" in self.config["evaluation_metrics"]:
                 try:
-                    metrics["davies_bouldin"] = davies_bouldin_score(
-                        embeddings, cluster_labels
-                    )
+                    with suppress_numpy_matmul_warnings():
+                        metrics["davies_bouldin"] = davies_bouldin_score(
+                            embeddings, cluster_labels
+                        )
                 except Exception as e:
                     logger.warning(f"Could not compute Davies-Bouldin score: {e!s}")
                     metrics["davies_bouldin"] = float("inf")
@@ -564,9 +584,10 @@ class ClusteringAlgorithms:
             # Compute Calinski-Harabasz score
             if "calinski_harabasz" in self.config["evaluation_metrics"]:
                 try:
-                    metrics["calinski_harabasz"] = calinski_harabasz_score(
-                        embeddings, cluster_labels
-                    )
+                    with suppress_numpy_matmul_warnings():
+                        metrics["calinski_harabasz"] = calinski_harabasz_score(
+                            embeddings, cluster_labels
+                        )
                 except Exception as e:
                     logger.warning(f"Could not compute Calinski-Harabasz score: {e!s}")
                     metrics["calinski_harabasz"] = 0.0

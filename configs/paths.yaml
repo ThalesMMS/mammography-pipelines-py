@@ -12,6 +12,7 @@ embed:
   run_reduction: true
   run_clustering: true
   n_clusters: 4
+  pca_svd_solver: auto
   device: auto
 
 train-density:

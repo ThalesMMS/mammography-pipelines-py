@@ -52,6 +52,7 @@ DEFAULT_CONFIGS: dict[str, Path | None] = {
     "eval-export": None,
     "visualize": None,
     "embeddings-baselines": None,
+    "data-audit": None,
 }
 
 
@@ -156,6 +157,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Quantidade máxima de Grad-CAMs combinadas em cada collage (default: 4).",
     )
 
+    audit_parser = subparsers.add_parser(
+        "data-audit",
+        help="Audita o acervo DICOM e gera manifest/logs.",
+    )
+    _add_config_argument(
+        audit_parser,
+        "Inventario de arquivos DICOM e checagem de integridade/rotulos.",
+    )
+    audit_parser.add_argument(
+        "--archive",
+        type=Path,
+        default=Path("archive"),
+        help="Diretorio raiz com acessos DICOM (default: archive).",
+    )
+    audit_parser.add_argument(
+        "--csv",
+        type=Path,
+        default=Path("classificacao.csv"),
+        help="CSV com rotulos (default: classificacao.csv).",
+    )
+    audit_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path("data_manifest.json"),
+        help="Arquivo JSON resumido (default: data_manifest.json).",
+    )
+    audit_parser.add_argument(
+        "--audit-csv",
+        dest="audit_csv",
+        type=Path,
+        default=Path("outputs/embeddings_resnet50/data_audit.csv"),
+        help="CSV detalhado de auditoria (default: outputs/embeddings_resnet50/data_audit.csv).",
+    )
+    audit_parser.add_argument(
+        "--log",
+        type=Path,
+        default=Path("Article/assets/data_qc.log"),
+        help="Log textual para o artigo (default: Article/assets/data_qc.log).",
+    )
+
     # Visualization subcommand
     viz_parser = subparsers.add_parser(
         "visualize",
@@ -171,6 +212,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Caminho para features (.npy/.npz) ou diretório de run (com --from-run).",
     )
     viz_parser.add_argument(
+        "--labels",
+        type=Path,
+        help="CSV com rótulos (coluna raw_label/label/class).",
+    )
+    viz_parser.add_argument(
+        "--label-col",
+        dest="label_col",
+        default="raw_label",
+        help="Nome da coluna de rótulos (default: raw_label).",
+    )
+    viz_parser.add_argument(
+        "--predictions",
+        type=Path,
+        help="CSV com predições (true/pred) para matriz de confusão.",
+    )
+    viz_parser.add_argument(
+        "--history",
+        type=Path,
+        help="CSV/JSON com histórico de treino para curvas de aprendizado.",
+    )
+    viz_parser.add_argument(
         "--from-run",
         action="store_true",
         help="Trata --input como diretório de run e descobre artefatos automaticamente.",
@@ -181,6 +243,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("outputs/visualizations"),
         help="Diretório de saída para visualizações (default: outputs/visualizations).",
+    )
+    viz_parser.add_argument(
+        "--prefix",
+        default="",
+        help="Prefixo para nomes dos arquivos de saída.",
     )
     viz_parser.add_argument(
         "--report",
@@ -218,6 +285,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Gera heatmap de correlação de features.",
     )
     viz_parser.add_argument(
+        "--feature-heatmap",
+        action="store_true",
+        help="Gera heatmap clusterizado de features.",
+    )
+    viz_parser.add_argument(
         "--confusion-matrix",
         action="store_true",
         help="Gera heatmap de matriz de confusão (requer predictions).",
@@ -246,6 +318,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "--binary",
         action="store_true",
         help="Usa nomes de classes binários (Low/High Density).",
+    )
+    viz_parser.add_argument(
+        "--perplexity",
+        type=float,
+        default=30.0,
+        help="Perplexity para t-SNE (default: 30).",
+    )
+    viz_parser.add_argument(
+        "--tsne-iter",
+        dest="tsne_iter",
+        type=int,
+        default=1000,
+        help="Iterações do t-SNE (default: 1000).",
+    )
+    viz_parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Seed para reduções/plots (default: 42).",
+    )
+    viz_parser.add_argument(
+        "--pca-svd-solver",
+        dest="pca_svd_solver",
+        default="auto",
+        choices=["auto", "full", "randomized", "arpack"],
+        help="Solver do PCA (auto/full/randomized/arpack).",
     )
 
     wizard_parser = subparsers.add_parser(
@@ -423,6 +521,18 @@ def _run_passthrough(script_fragment: str, args: argparse.Namespace, forwarded: 
     subprocess.run(command, check=True, cwd=str(REPO_ROOT))
 
 
+def _run_module_passthrough(
+    module: str, args: argparse.Namespace, cmd_args: Sequence[str]
+) -> None:
+    """Invoke a python module with the provided arguments."""
+    command = [str(PYTHON), "-m", module, *cmd_args]
+    LOGGER.info("Executando: %s", _format_command(command))
+    if args.dry_run:
+        LOGGER.info("Dry-run habilitado; subprocesso não será iniciado.")
+        return
+    subprocess.run(command, check=True, cwd=str(REPO_ROOT))
+
+
 def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
     """Emit a short checklist of artifacts needed for evaluation/export."""
     config_args = _load_config_args(getattr(args, "config", None), args.command)
@@ -485,10 +595,20 @@ def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
     # Build command from parsed arguments
     if hasattr(args, "input") and args.input:
         cmd_args.extend(["--input", str(args.input)])
+    if hasattr(args, "labels") and args.labels:
+        cmd_args.extend(["--labels", str(args.labels)])
+        if hasattr(args, "label_col") and args.label_col:
+            cmd_args.extend(["--label-col", args.label_col])
+    if hasattr(args, "predictions") and args.predictions:
+        cmd_args.extend(["--predictions", str(args.predictions)])
+    if hasattr(args, "history") and args.history:
+        cmd_args.extend(["--history", str(args.history)])
     if hasattr(args, "from_run") and args.from_run:
         cmd_args.append("--from-run")
     if hasattr(args, "output") and args.output:
         cmd_args.extend(["--output", str(args.output)])
+    if hasattr(args, "prefix") and args.prefix:
+        cmd_args.extend(["--prefix", args.prefix])
     if hasattr(args, "report") and args.report:
         cmd_args.append("--report")
     if hasattr(args, "tsne") and args.tsne:
@@ -503,6 +623,8 @@ def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
         cmd_args.append("--compare-embeddings")
     if hasattr(args, "heatmap") and args.heatmap:
         cmd_args.append("--heatmap")
+    if hasattr(args, "feature_heatmap") and args.feature_heatmap:
+        cmd_args.append("--feature-heatmap")
     if hasattr(args, "confusion_matrix") and args.confusion_matrix:
         cmd_args.append("--confusion-matrix")
     if hasattr(args, "scatter_matrix") and args.scatter_matrix:
@@ -515,11 +637,37 @@ def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
         cmd_args.append("--learning-curves")
     if hasattr(args, "binary") and args.binary:
         cmd_args.append("--binary")
+    if hasattr(args, "perplexity") and args.perplexity is not None:
+        cmd_args.extend(["--perplexity", str(args.perplexity)])
+    if hasattr(args, "tsne_iter") and args.tsne_iter is not None:
+        cmd_args.extend(["--tsne-iter", str(args.tsne_iter)])
+    if hasattr(args, "seed") and args.seed is not None:
+        cmd_args.extend(["--seed", str(args.seed)])
+    if hasattr(args, "pca_svd_solver") and args.pca_svd_solver:
+        cmd_args.extend(["--pca-svd-solver", args.pca_svd_solver])
     
     # Add any forwarded arguments
     cmd_args.extend(forwarded)
     
     _run_passthrough("scripts/visualize.py", args, cmd_args)
+
+
+def _run_data_audit(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+    """Execute the data audit tool with assembled arguments."""
+    cmd_args: list[str] = []
+    cmd_args.extend(_load_config_args(getattr(args, "config", None), args.command))
+    if hasattr(args, "archive") and args.archive:
+        cmd_args.extend(["--archive", str(args.archive)])
+    if hasattr(args, "csv") and args.csv:
+        cmd_args.extend(["--csv", str(args.csv)])
+    if hasattr(args, "manifest") and args.manifest:
+        cmd_args.extend(["--manifest", str(args.manifest)])
+    if hasattr(args, "audit_csv") and args.audit_csv:
+        cmd_args.extend(["--audit-csv", str(args.audit_csv)])
+    if hasattr(args, "log") and args.log:
+        cmd_args.extend(["--log", str(args.log)])
+    cmd_args.extend(forwarded)
+    _run_module_passthrough("mammography.tools.data_audit", args, cmd_args)
 
 
 def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
@@ -569,6 +717,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_eval_guidance(args, forwarded)
         elif args.command == "report-pack":
             _run_report_pack(args, forwarded)
+        elif args.command == "data-audit":
+            _run_data_audit(args, forwarded)
         elif args.command == "visualize":
             _run_visualize(args, forwarded)
         elif args.command == "wizard":

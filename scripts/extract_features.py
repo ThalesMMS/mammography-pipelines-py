@@ -145,6 +145,12 @@ def main():
     parser.add_argument("--run-reduction", action="store_true", help="Atalho para PCA + t-SNE + UMAP")
     parser.add_argument("--run-clustering", action="store_true", help="Atalho para k-means")
     parser.add_argument("--pca", action="store_true")
+    parser.add_argument(
+        "--pca-svd-solver",
+        default="auto",
+        choices=["auto", "full", "randomized", "arpack"],
+        help="Solver do PCA (auto/full/randomized/arpack).",
+    )
     parser.add_argument("--tsne", action="store_true", help="Run t-SNE")
     parser.add_argument("--umap", action="store_true", help="Run UMAP")
     parser.add_argument("--cluster", dest="cluster_auto", action="store_true", help="Auto k-means (usa silhouette)")
@@ -257,7 +263,7 @@ def main():
     joined = pd.DataFrame(metadata)
     if args.pca and features.shape[0] > 1:
         logger.info("Running PCA...")
-        pca_2d = run_pca(features, 2, seed=args.seed)
+        pca_2d = run_pca(features, 2, seed=args.seed, svd_solver=args.pca_svd_solver)
         joined["pca_x"] = pca_2d[:, 0]
         joined["pca_y"] = pca_2d[:, 1]
         plot_scatter(joined, "pca_x", "pca_y", hue="raw_label", title="PCA by Label", out_path=os.path.join(outdir, "pca_label.png"))

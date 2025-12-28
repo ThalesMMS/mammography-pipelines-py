@@ -19,6 +19,7 @@ Use `--dataset <preset>` para preencher `--csv` e `--dicom-root` automaticamente
 - Augment: `--augment`, `--augment-vertical`, `--augment-color`, `--augment-rotation-deg`
 - Normalizacao: `--mean 0.485,0.456,0.406 --std 0.229,0.224,0.225`
 - Projecoes: `--run-reduction` (atalho para PCA/t-SNE/UMAP), `--run-clustering` (atalho para k-means)
+- PCA: `--pca-svd-solver auto|full|randomized|arpack` (em datasets grandes, `auto` tende a usar `randomized`)
 
 ## Receitas por dataset
 
@@ -116,6 +117,22 @@ mammography eda-cancer -- \
   --png-dir /path/to/rsna-256-pngs \
   --dicom-dir /path/to/rsna-dicoms \
   --outdir outputs/rsna_eda
+```
+
+## Auditoria e report-pack
+
+```bash
+mammography data-audit \
+  --archive archive \
+  --csv classificacao.csv \
+  --manifest data_manifest.json \
+  --audit-csv outputs/embeddings_resnet50/data_audit.csv \
+  --log Article/assets/data_qc.log
+
+mammography report-pack \
+  --run outputs/mammo_efficientnetb0_density/results_4 \
+  --assets-dir Article/assets \
+  --tex Article/sections/density_model.tex
 ```
 
 Use `mammography wizard` para montar comandos interativamente.

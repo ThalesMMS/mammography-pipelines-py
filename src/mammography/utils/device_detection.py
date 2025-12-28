@@ -1,4 +1,4 @@
-"""Device detection and configuration utilities for ResNet50_Test."""
+"""Device detection and configuration utilities for the mammography pipelines."""
 
 import logging
 import platform

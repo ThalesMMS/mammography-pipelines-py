@@ -105,7 +105,6 @@ mammography eda-cancer -- \
 - `scripts/`: Script entrypoints (embed, train, visualize, inference, augment, labeling, EDA).
 - `configs/`: YAML presets for datasets and training.
 - `Article/`: Scientific article and build assets.
-- `tools/`: Reporting/audit helpers (also available as `mammography.tools`).
 - `tests/`: Unit, integration, performance, and smoke tests.
 
 ## Scientific Article Workflow
@@ -113,7 +112,7 @@ mammography eda-cancer -- \
 The article lives in `Article/` and integrates with pipeline outputs via:
 
 - `mammography report-pack` (CLI) or `python -m mammography.tools.report_pack`
-- `python -m mammography.tools.data_audit` for dataset manifest/audit artifacts
+- `mammography data-audit` (CLI) or `python -m mammography.tools.data_audit`
 
 See `Article/README.md` for LaTeX build instructions.
 

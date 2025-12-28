@@ -24,28 +24,43 @@ from sklearn.mixture import GaussianMixture
 # from mammography.clustering.hdbscan_clusterer import HDBSCANClusterer
 
 
+MATMUL_ERRSTATE = {"divide": "ignore", "over": "ignore", "invalid": "ignore"}
+
+
+@pytest.fixture(autouse=True)
+def _suppress_numpy_matmul_warnings():
+    with np.errstate(**MATMUL_ERRSTATE):
+        yield
+
+
 class TestClusteringAlgorithms:
     """Unit tests for clustering algorithm functions."""
 
     @pytest.fixture
     def sample_data(self) -> np.ndarray:
         """Create sample data for testing."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         n_samples = 100
         n_features = 50
 
         # Create data with 4 distinct clusters
-        cluster_centers = np.random.randn(4, n_features) * 2
+        cluster_centers = rng.normal(scale=0.5, size=(4, n_features))
         data = []
         labels = []
 
         for i in range(4):
             # Generate samples for each cluster
-            cluster_samples = np.random.randn(25, n_features) * 0.5 + cluster_centers[i]
+            cluster_samples = (
+                rng.normal(scale=0.1, size=(25, n_features)) + cluster_centers[i]
+            )
             data.append(cluster_samples)
             labels.extend([i] * 25)
 
-        data = np.vstack(data)
+        data = np.vstack(data).astype(np.float64)
+        data -= data.mean(axis=0, keepdims=True)
+        std = data.std(axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        data /= std
         labels = np.array(labels)
 
         return data, labels
@@ -53,16 +68,21 @@ class TestClusteringAlgorithms:
     @pytest.fixture
     def sample_embeddings(self) -> np.ndarray:
         """Create sample embeddings for testing."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         n_samples = 100
         n_features = 2048
 
         # Create embeddings with some structure
-        embeddings = np.random.randn(n_samples, n_features)
+        embeddings = rng.normal(scale=0.5, size=(n_samples, n_features))
 
         # Add some structure to make clustering meaningful
-        for i in range(n_samples):
-            embeddings[i] += np.random.randn(n_features) * 0.1
+        embeddings += rng.normal(scale=0.05, size=embeddings.shape)
+
+        embeddings = embeddings.astype(np.float64)
+        embeddings -= embeddings.mean(axis=0, keepdims=True)
+        std = embeddings.std(axis=0, keepdims=True)
+        std[std == 0] = 1.0
+        embeddings /= std
 
         return embeddings
 
