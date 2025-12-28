@@ -8,7 +8,6 @@
 # Thales Matheus Mendonça Santos - November 2025
 #
 """Train EfficientNetB0/ResNet50 for breast density with optional caches and AMP."""
-import sys
 import os
 import argparse
 import json
@@ -23,8 +22,6 @@ from pathlib import Path
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
-# Add src to path if running from root
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from mammography.config import HP
 from mammography.utils.common import (

@@ -32,7 +32,7 @@ import torch
 import umap
 
 from ..clustering.clustering_result import ClusteringResult
-from ..io_dicom.mammography_image import MammographyImage
+from ..io.dicom import MammographyImage
 from ..models.embeddings.embedding_vector import EmbeddingVector
 from ..utils.numpy_warnings import suppress_numpy_matmul_warnings, resolve_pca_svd_solver
 

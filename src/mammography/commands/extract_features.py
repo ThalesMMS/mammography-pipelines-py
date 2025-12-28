@@ -8,7 +8,6 @@
 # Thales Matheus Mendonça Santos - November 2025
 #
 """Embedding extraction plus optional PCA/t-SNE/UMAP/clustering analysis."""
-import sys
 import os
 import argparse
 import json
@@ -20,8 +19,6 @@ import time
 from pathlib import Path
 from typing import Tuple
 
-# Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 import matplotlib
 matplotlib.use("Agg")

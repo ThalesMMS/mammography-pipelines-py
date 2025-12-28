@@ -17,6 +17,8 @@ import pytest
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 
+from tests.utils.dataset_sampling import sample_paths_by_extension
+
 # Import the modules we'll be testing (these will be implemented later)
 # from mammography.preprocess.pipeline import PreprocessingPipeline
 # from mammography.preprocess.image_processor import ImageProcessor
@@ -24,26 +26,15 @@ torch = pytest.importorskip("torch")
 # from mammography.preprocess.input_adapter import InputAdapter
 
 
+@pytest.fixture(scope="session")
+def sample_dicom_paths() -> List[Path]:
+    """Get 5% sampled DICOM paths from the archive dataset."""
+    archive_dir = Path("archive")
+    return sample_paths_by_extension(archive_dir, {".dcm", ".dicom"})
+
+
 class TestPreprocessingPipelineIntegration:
     """Integration tests for preprocessing pipeline operations."""
-
-    @pytest.fixture
-    def sample_dicom_paths(self) -> List[Path]:
-        """Get paths to sample DICOM files from archive."""
-        archive_dir = Path("archive")
-        dicom_files = []
-
-        if archive_dir.exists():
-            for patient_dir in archive_dir.iterdir():
-                if patient_dir.is_dir():
-                    for file_path in patient_dir.glob("*.dcm"):
-                        dicom_files.append(file_path)
-                        if len(dicom_files) >= 3:  # Limit to 3 files for testing
-                            break
-                if len(dicom_files) >= 3:
-                    break
-
-        return dicom_files
 
     @pytest.fixture
     def mock_pixel_array(self) -> np.ndarray:

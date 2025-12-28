@@ -30,7 +30,7 @@ from scipy import ndimage
 from skimage import morphology
 import torch
 
-from ..io_dicom.mammography_image import MammographyImage
+from ..io.dicom import MammographyImage
 from .preprocessed_tensor import (
     PreprocessedTensor,
     create_preprocessed_tensor_from_config,

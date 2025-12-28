@@ -10,16 +10,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 from PIL import Image
 from tqdm import tqdm
 import torchvision.transforms as T
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
-
-from mammography.utils.dicom_io import dicom_to_pil_rgb, is_dicom_path
+from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
 
 
 def parse_args() -> argparse.Namespace:

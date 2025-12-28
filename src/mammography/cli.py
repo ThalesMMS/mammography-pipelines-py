@@ -18,8 +18,8 @@ mammography wizard
 Compatibilidade:
 python -m mammography.cli embed -- --data_dir ./archive --csv_path classificacao.csv
 
-Unknown arguments are forwarded verbatim to the wrapped scripts, so existing
-CLI flags keep working. Use ``--dry-run`` to preview commands without
+Unknown arguments are forwarded verbatim to the internal command modules, so
+existing CLI flags keep working. Use ``--dry-run`` to preview commands without
 executing subprocesses.
 """
 
@@ -57,7 +57,7 @@ DEFAULT_CONFIGS: dict[str, Path | None] = {
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Define the CLI with subcommands that wrap the downstream scripts."""
+    """Define the CLI with subcommands that wrap the internal command modules."""
     parser = argparse.ArgumentParser(
         prog="mammography",
         description=(
@@ -93,20 +93,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     embed_parser = subparsers.add_parser(
         "embed",
-        help="Envolve extract_features.py para gerar embeddings.",
+        help="Extrai embeddings e opcionalmente executa reducao/clustering.",
     )
     _add_config_argument(
         embed_parser,
-        "Encaminha argumentos ao extract_features.py para embeddings.",
+        "Encaminha argumentos ao comando de extracao de embeddings.",
     )
 
     density_parser = subparsers.add_parser(
         "train-density",
-        help="Envolve scripts/train.py para treino de densidade.",
+        help="Treina modelos de densidade (EfficientNetB0/ResNet50).",
     )
     _add_config_argument(
         density_parser,
-        "Executa o treinamento EfficientNetB0; argumentos desconhecidos são encaminhados.",
+        "Executa o treinamento; argumentos desconhecidos sao encaminhados.",
     )
 
     eval_parser = subparsers.add_parser(
@@ -204,7 +204,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         viz_parser,
-        "Encaminha argumentos ao visualize.py para geração de gráficos.",
+        "Encaminha argumentos ao comando de visualizacao de embeddings.",
     )
     viz_parser.add_argument(
         "--input", "-i",
@@ -361,7 +361,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         infer_parser,
-        "Encaminha argumentos ao scripts/inference.py.",
+        "Encaminha argumentos ao comando de inferencia.",
     )
 
     augment_parser = subparsers.add_parser(
@@ -370,7 +370,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         augment_parser,
-        "Encaminha argumentos ao scripts/augment.py.",
+        "Encaminha argumentos ao comando de augmentacao.",
     )
 
     label_density_parser = subparsers.add_parser(
@@ -379,7 +379,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         label_density_parser,
-        "Encaminha argumentos ao scripts/label_density.py.",
+        "Encaminha argumentos ao rotulador de densidade.",
     )
 
     label_patches_parser = subparsers.add_parser(
@@ -388,7 +388,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         label_patches_parser,
-        "Encaminha argumentos ao scripts/label_patches.py.",
+        "Encaminha argumentos ao rotulador de patches.",
     )
 
     eda_parser = subparsers.add_parser(
@@ -397,7 +397,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         eda_parser,
-        "Encaminha argumentos ao scripts/eda_cancer.py.",
+        "Encaminha argumentos ao fluxo de EDA para cancer.",
     )
 
     baselines_parser = subparsers.add_parser(
@@ -406,7 +406,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(
         baselines_parser,
-        "Encaminha argumentos ao scripts/embeddings_baselines.py.",
+        "Encaminha argumentos ao comparativo de baselines.",
     )
 
     return parser
@@ -507,18 +507,11 @@ def _load_config_args(config_arg: Path | None, command: str) -> list[str]:
     return args
 
 
-def _run_passthrough(script_fragment: str, args: argparse.Namespace, forwarded: Sequence[str]) -> None:
-    """Invoke a downstream script, merging config-derived args with forwarded CLI tokens."""
-    script = (REPO_ROOT / script_fragment).resolve()
-    if not script.exists():
-        raise FileNotFoundError(f"Script não encontrado: {script}")
+def _run_command(module: str, args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+    """Invoke an internal command module, merging config-derived args with forwarded CLI tokens."""
     config_args = _load_config_args(getattr(args, "config", None), args.command)
-    command = [str(PYTHON), str(script), *config_args, *forwarded]
-    LOGGER.info("Executando: %s", _format_command(command))
-    if args.dry_run:
-        LOGGER.info("Dry-run habilitado; subprocesso não será iniciado.")
-        return
-    subprocess.run(command, check=True, cwd=str(REPO_ROOT))
+    cmd_args = [*config_args, *forwarded]
+    _run_module_passthrough(module, args, cmd_args)
 
 
 def _run_module_passthrough(
@@ -591,6 +584,7 @@ def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> 
 def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
     """Execute the visualization script with assembled arguments."""
     cmd_args: list[str] = []
+    cmd_args.extend(_load_config_args(getattr(args, "config", None), args.command))
     
     # Build command from parsed arguments
     if hasattr(args, "input") and args.input:
@@ -648,8 +642,8 @@ def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
     
     # Add any forwarded arguments
     cmd_args.extend(forwarded)
-    
-    _run_passthrough("scripts/visualize.py", args, cmd_args)
+
+    _run_module_passthrough("mammography.commands.visualize", args, cmd_args)
 
 
 def _run_data_audit(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
@@ -710,9 +704,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "embed":
-            _run_passthrough("scripts/extract_features.py", args, forwarded)
+            _run_command("mammography.commands.extract_features", args, forwarded)
         elif args.command == "train-density":
-            _run_passthrough("scripts/train.py", args, forwarded)
+            _run_command("mammography.commands.train", args, forwarded)
         elif args.command == "eval-export":
             _print_eval_guidance(args, forwarded)
         elif args.command == "report-pack":
@@ -726,17 +720,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             return wizard.run_wizard(dry_run=args.dry_run)
         elif args.command == "inference":
-            _run_passthrough("scripts/inference.py", args, forwarded)
+            _run_command("mammography.commands.inference", args, forwarded)
         elif args.command == "augment":
-            _run_passthrough("scripts/augment.py", args, forwarded)
+            _run_command("mammography.commands.augment", args, forwarded)
         elif args.command == "label-density":
-            _run_passthrough("scripts/label_density.py", args, forwarded)
+            _run_command("mammography.commands.label_density", args, forwarded)
         elif args.command == "label-patches":
-            _run_passthrough("scripts/label_patches.py", args, forwarded)
+            _run_command("mammography.commands.label_patches", args, forwarded)
         elif args.command == "eda-cancer":
-            _run_passthrough("scripts/eda_cancer.py", args, forwarded)
+            _run_command("mammography.commands.eda_cancer", args, forwarded)
         elif args.command == "embeddings-baselines":
-            _run_passthrough("scripts/embeddings_baselines.py", args, forwarded)
+            _run_command("mammography.commands.embeddings_baselines", args, forwarded)
         else:
             parser.error(f"Subcomando desconhecido: {args.command}")
         return 0

@@ -40,7 +40,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 # Import pipeline components
-from mammography.io_dicom.dicom_reader import DicomReader
+from mammography.io.dicom import DicomReader
 from mammography.preprocess.image_preprocessor import ImagePreprocessor
 
 # Configure logging

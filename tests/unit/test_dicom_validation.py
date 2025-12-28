@@ -16,9 +16,7 @@ np = pytest.importorskip("numpy")
 pydicom = pytest.importorskip("pydicom")
 
 # Import the modules we'll be testing (these will be implemented later)
-# from mammography.io_dicom.validator import DICOMValidator
-# from mammography.io_dicom.metadata_extractor import MetadataExtractor
-# from mammography.io_dicom.projection_inference import ProjectionInference
+# from mammography.io.dicom import DicomReader, MammographyImage
 
 
 def _save_dicom(dataset, path: str) -> None:

@@ -29,8 +29,6 @@ from typing import Dict, List, Optional, Any
 import numpy as np
 import pandas as pd
 
-# Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from mammography.vis.advanced import (
     plot_tsne_2d,

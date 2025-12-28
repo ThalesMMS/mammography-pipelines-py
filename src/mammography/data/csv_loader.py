@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Optional, Any, List, Sequence, Tuple, Dict
-from ..utils.dicom_io import is_dicom_path, DICOM_EXTS
+from ..io.dicom import DICOM_EXTS
 
 CACHE_AUTO_DISK_MAX = 6000
 CACHE_AUTO_MEMORY_MAX = 1000

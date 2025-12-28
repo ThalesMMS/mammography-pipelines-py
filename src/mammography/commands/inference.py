@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -19,13 +18,11 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
-
 from mammography.config import HP
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
 from mammography.models.nets import build_model
 from mammography.utils.common import resolve_device, configure_runtime, parse_float_list
-from mammography.utils.dicom_io import is_dicom_path
+from mammography.io.dicom import is_dicom_path
 
 
 def _iter_inputs(root: str) -> list[str]:

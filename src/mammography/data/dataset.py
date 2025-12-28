@@ -24,7 +24,7 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_F
 from torchvision.transforms.v2 import functional as tv_v2_F
 
-from ..utils.dicom_io import is_dicom_path, dicom_to_pil_rgb
+from ..io.dicom import dicom_to_pil_rgb, is_dicom_path
 
 LOGGER = logging.getLogger("mammography")
 

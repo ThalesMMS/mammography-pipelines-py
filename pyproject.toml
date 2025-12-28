@@ -1,4 +1,4 @@
-# PyProject configuration for ResNet50_test
+# PyProject configuration for mammography-pipelines
 # Educational Research Project - NOT for clinical use
 
 [build-system]
@@ -6,9 +6,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "resnet50-test"
+name = "mammography-pipelines"
 version = "1.0.0"
-description = "Breast Density Exploration via ResNet-50 Embeddings"
+description = "Mammography pipelines for breast density analysis"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -105,7 +105,6 @@ ignore = [
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/**/*.py" = ["S101", "TID252"]
-"scripts/**/*.py" = ["TID252"]
 
 [tool.ruff.isort]
 known-first-party = ["src"]
@@ -211,7 +210,7 @@ addopts = [
     "--cov=mammography.data",
     "--cov=mammography.models.nets",
     "--cov=mammography.training",
-    "--cov=mammography.utils.dicom_io",
+    "--cov=mammography.io.dicom",
     "--cov-report=term-missing",
     "--cov-report=html:htmlcov",
     "--cov-report=xml",

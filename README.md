@@ -75,7 +75,7 @@ The CLI is built around two core workflows plus utilities:
 - **`wizard`**: Interactive, step-by-step menu for the core workflows.
 - **`eda-cancer`**: RSNA Breast Cancer Detection exploratory pipeline (CSV/PNG/DICOM inputs).
 
-Common flags across the CLI and scripts:
+Common flags across the CLI:
 - `--outdir` for outputs
 - `--dicom-root` for DICOM roots
 - `--cache-mode` for dataset caching
@@ -89,7 +89,7 @@ See `CLI_CHEATSHEET.md` for command matrices and common recipes.
 
 ## RSNA (Cancer) EDA
 
-The `eda-cancer` subcommand wraps `scripts/eda_cancer.py` for the RSNA Breast Cancer Detection dataset.
+The `eda-cancer` subcommand runs the internal RSNA Breast Cancer Detection pipeline.
 
 ```bash
 mammography eda-cancer -- \
@@ -102,7 +102,7 @@ mammography eda-cancer -- \
 ## Repository Structure
 
 - `src/mammography/`: Main package (data, models, training, tools).
-- `scripts/`: Script entrypoints (embed, train, visualize, inference, augment, labeling, EDA).
+- `src/mammography/commands/`: Internal CLI command modules (invoked by `mammography`).
 - `configs/`: YAML presets for datasets and training.
 - `Article/`: Scientific article and build assets.
 - `tests/`: Unit, integration, performance, and smoke tests.

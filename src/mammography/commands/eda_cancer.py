@@ -696,7 +696,8 @@ try:
     if os.environ.get("RUN_DENSITY", "0") == "1":
         cmd = [
             sys.executable,
-            os.path.join(os.path.dirname(__file__), "train.py"),
+            "-m",
+            "mammography.commands.train",
             "--arch",
             "resnet50",
             "--classes",

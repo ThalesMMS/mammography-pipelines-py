@@ -39,7 +39,7 @@ COVERAGE_TARGETS = {
 # Module categories for coverage analysis
 MODULE_CATEGORIES = {
     "core_preprocessing": [
-        "src.io_dicom.dicom_reader",
+        "mammography/io/dicom.py",
         "src.preprocess.image_preprocessor",
         "src.models.embeddings.resnet50_extractor",
         "src.clustering.clustering_algorithms",

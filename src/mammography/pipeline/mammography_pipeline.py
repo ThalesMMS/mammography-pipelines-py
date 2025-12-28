@@ -33,8 +33,7 @@ import yaml
 from ..clustering.clustering_algorithms import ClusteringAlgorithms
 from ..clustering.clustering_result import ClusteringResult
 from ..eval.clustering_evaluator import ClusteringEvaluator
-from ..io_dicom.dicom_reader import DicomReader
-from ..io_dicom.mammography_image import MammographyImage
+from ..io.dicom import DicomReader, MammographyImage
 from ..models.embeddings.embedding_vector import EmbeddingVector
 from ..models.embeddings.resnet50_extractor import ResNet50Extractor
 from ..preprocess.image_preprocessor import ImagePreprocessor

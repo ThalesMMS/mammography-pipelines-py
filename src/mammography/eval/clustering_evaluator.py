@@ -28,7 +28,7 @@ import numpy as np
 import torch
 
 from ..clustering.clustering_result import ClusteringResult
-from ..io_dicom.mammography_image import MammographyImage
+from ..io.dicom import MammographyImage
 from ..models.embeddings.embedding_vector import EmbeddingVector
 
 # Configure logging for educational purposes

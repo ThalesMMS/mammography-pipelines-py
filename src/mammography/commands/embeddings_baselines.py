@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
@@ -29,16 +28,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC, SVC
 from tqdm import tqdm
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
-
-from mammography.utils.dicom_io import dicom_to_pil_rgb, is_dicom_path
+from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
 from mammography.utils.numpy_warnings import (
     suppress_numpy_matmul_warnings,
     resolve_pca_svd_solver,
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 CLASS_LABELS = {1, 2, 3, 4}
 
 

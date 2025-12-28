@@ -12,7 +12,7 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 
 ```
 ├── src/mammography/      # Biblioteca principal (data, models, training, tools)
-├── scripts/              # Entrypoints de execução (embed, train, visualize)
+├── src/mammography/commands/  # Comandos internos chamados pela CLI
 ├── configs/              # Presets YAML (paths, density)
 ├── Article/              # Artigo científico + assets + Makefile
 ├── tests/                # Unit, integration, smoke, performance
@@ -22,7 +22,7 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 
 ### 1) Embeddings (`embed`)
 
-- Script: `scripts/extract_features.py`
+- CLI: `mammography embed`
 - Entrada: CSV + DICOMs (`--csv`, `--dicom-root`)
 - Saída: `features.npy`, `metadata.csv`, projeções (PCA/t-SNE/UMAP) e clustering opcional
 - Cache: `--cache-mode` (`auto`, `disk`, `memory`, `tensor-*`)
@@ -31,20 +31,20 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 
 ### 1b) Baselines classicos (embeddings)
 
-- Script: `scripts/embeddings_baselines.py`
+- CLI: `mammography embeddings-baselines`
 - Entrada: `outputs/embeddings_resnet50/` com `features.npy` + `metadata.csv`
 - Saida: `outputs/embeddings_baselines/` com metricas e relatorio comparativo
 
 ### 2) Treinamento de Densidade (`train-density`)
 
-- Script: `scripts/train.py`
+- CLI: `mammography train-density`
 - Modelos: EfficientNetB0 / ResNet50
 - Opções: congelamento de backbone, pesos de classe, AMP, Grad-CAM, embeddings de validação
 - Saídas: métricas (`val_metrics.json`), histórico, predições, modelos e gráficos
 
 ### 3) Visualização (`visualize`)
 
-- Script: `scripts/visualize.py`
+- CLI: `mammography visualize`
 - Entrada: `features.npy`/`metadata.csv` ou diretório de run
 - Saídas: gráficos t-SNE, UMAP, heatmaps, learning curves, report completo
 
@@ -55,7 +55,7 @@ O subcomando `mammography wizard` oferece um menu interativo com passos guiados 
 
 ### 5) EDA RSNA (cancer)
 
-- Script: `scripts/eda_cancer.py`
+- CLI: `mammography eda-cancer`
 - Entrada: CSVs RSNA + PNGs 256x256 + DICOMs originais
 - Saida: visualizacoes e datasets balanceados (train/valid) no `--outdir`
 

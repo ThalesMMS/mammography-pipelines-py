@@ -13,35 +13,35 @@ from mammography import cli
 
 
 def test_cli_embed_routes_to_extract_features() -> None:
-    with patch.object(cli, "_run_passthrough") as mock_run:
+    with patch.object(cli, "_run_module_passthrough") as mock_run:
         exit_code = cli.main(["--dry-run", "embed"])
     assert exit_code == 0
     mock_run.assert_called_once()
-    assert mock_run.call_args[0][0] == "scripts/extract_features.py"
+    assert mock_run.call_args[0][0] == "mammography.commands.extract_features"
 
 
 def test_cli_train_routes_to_train_script() -> None:
-    with patch.object(cli, "_run_passthrough") as mock_run:
+    with patch.object(cli, "_run_module_passthrough") as mock_run:
         exit_code = cli.main(["--dry-run", "train-density"])
     assert exit_code == 0
     mock_run.assert_called_once()
-    assert mock_run.call_args[0][0] == "scripts/train.py"
+    assert mock_run.call_args[0][0] == "mammography.commands.train"
 
 
 def test_cli_visualize_routes_to_visualize_script() -> None:
-    with patch.object(cli, "_run_passthrough") as mock_run:
+    with patch.object(cli, "_run_module_passthrough") as mock_run:
         exit_code = cli.main(["--dry-run", "visualize", "--input", "x.npy", "--outdir", "outputs/vis"])
     assert exit_code == 0
     mock_run.assert_called_once()
-    assert mock_run.call_args[0][0] == "scripts/visualize.py"
+    assert mock_run.call_args[0][0] == "mammography.commands.visualize"
 
 
 def test_cli_embeddings_baselines_routes_to_script() -> None:
-    with patch.object(cli, "_run_passthrough") as mock_run:
+    with patch.object(cli, "_run_module_passthrough") as mock_run:
         exit_code = cli.main(["--dry-run", "embeddings-baselines"])
     assert exit_code == 0
     mock_run.assert_called_once()
-    assert mock_run.call_args[0][0] == "scripts/embeddings_baselines.py"
+    assert mock_run.call_args[0][0] == "mammography.commands.embeddings_baselines"
 
 
 def test_cli_data_audit_routes_to_tool() -> None:
