@@ -24,7 +24,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -171,7 +171,7 @@ def discover_run_artifacts(run_dir: Path) -> Dict[str, Optional[Path]]:
     return artifacts
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Generate visualizations from mammography pipeline outputs",
@@ -344,12 +344,12 @@ Examples:
         help="Logging level (default: INFO)",
     )
     
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main():
+def main(argv: Sequence[str] | None = None):
     """Main entry point for visualization CLI."""
-    args = parse_args()
+    args = parse_args(argv)
     logger = setup_logging(args.log_level)
     
     # Determine label names

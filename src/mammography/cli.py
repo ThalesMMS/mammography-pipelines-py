@@ -20,20 +20,22 @@ python -m mammography.cli embed -- --data_dir ./archive --csv_path classificacao
 
 Unknown arguments are forwarded verbatim to the internal command modules, so
 existing CLI flags keep working. Use ``--dry-run`` to preview commands without
-executing subprocesses.
+executing the internal handlers.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
+import inspect
 import json
 import logging
 import os
 import shlex
-import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 try:  # Optional dependency for YAML configs.
     import yaml  # type: ignore
@@ -42,9 +44,6 @@ except Exception:  # pragma: no cover - PyYAML is not guaranteed to exist.
 
 LOGGER = logging.getLogger("projeto")
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# Preserve the original sys.executable (even if it's a venv shim) so subprocesses reuse the same environment.
-PYTHON = Path(sys.executable)
-
 
 DEFAULT_CONFIGS: dict[str, Path | None] = {
     "embed": REPO_ROOT / "configs" / "paths.yaml",
@@ -69,7 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Exibe o comando planejado e evita executar subprocessos/loops pesados.",
+        help="Exibe o comando planejado e evita executar rotinas pesadas.",
     )
     parser.add_argument(
         "--log-level",
@@ -419,10 +418,56 @@ def _configure_logging(level: str) -> None:
 
 
 def _format_command(command: Sequence[str]) -> str:
-    """Format a subprocess command so it is easy to copy/paste/debug."""
-    if os.name == "nt":
-        return subprocess.list2cmdline(command)
-    return " ".join(shlex.quote(part) for part in command)
+    """Format a command preview so it is easy to copy/paste/debug."""
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+
+@contextmanager
+def _working_directory(path: Path) -> Iterator[Path]:
+    """Temporarily chdir to preserve legacy CLI behavior."""
+    current = Path.cwd()
+    os.chdir(path)
+    try:
+        yield current
+    finally:
+        os.chdir(current)
+
+
+def _resolve_entrypoint(module: str, entrypoint: str | None = None) -> Callable[..., Any]:
+    """Import a module and return its CLI entrypoint callable."""
+    module_obj = importlib.import_module(module)
+    if entrypoint:
+        handler = getattr(module_obj, entrypoint)
+    else:
+        handler = getattr(module_obj, "main", None) or getattr(module_obj, "run", None)
+    if not callable(handler):
+        raise AttributeError(f"Entrypoint não encontrado em {module}.")
+    return handler
+
+
+def _entrypoint_accepts_args(handler: Callable[..., Any]) -> bool:
+    """Detect if the entrypoint accepts a positional argv-like payload."""
+    try:
+        sig = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            return True
+    return bool(sig.parameters)
+
+
+def _invoke_entrypoint(handler: Callable[..., Any], cmd_args: Sequence[str]) -> int:
+    """Call a module entrypoint, forwarding argv when supported."""
+    if _entrypoint_accepts_args(handler):
+        result = handler(list(cmd_args))
+    else:
+        result = handler()
+    if result is None:
+        return 0
+    if isinstance(result, int) and not isinstance(result, bool):
+        return result
+    return 0
 
 
 def _read_config(path: Path) -> Any:
@@ -507,26 +552,36 @@ def _load_config_args(config_arg: Path | None, command: str) -> list[str]:
     return args
 
 
-def _run_command(module: str, args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+def _run_command(
+    module: str,
+    args: argparse.Namespace,
+    forwarded: Sequence[str],
+    entrypoint: str | None = None,
+) -> int:
     """Invoke an internal command module, merging config-derived args with forwarded CLI tokens."""
     config_args = _load_config_args(getattr(args, "config", None), args.command)
     cmd_args = [*config_args, *forwarded]
-    _run_module_passthrough(module, args, cmd_args)
+    return _run_module_passthrough(module, args, cmd_args, entrypoint=entrypoint)
 
 
 def _run_module_passthrough(
-    module: str, args: argparse.Namespace, cmd_args: Sequence[str]
-) -> None:
-    """Invoke a python module with the provided arguments."""
-    command = [str(PYTHON), "-m", module, *cmd_args]
-    LOGGER.info("Executando: %s", _format_command(command))
+    module: str,
+    args: argparse.Namespace,
+    cmd_args: Sequence[str],
+    entrypoint: str | None = None,
+) -> int:
+    """Invoke a module entrypoint in-process with the provided arguments."""
+    command = [module, *cmd_args]
+    LOGGER.info("Executando (in-process): %s", _format_command(command))
     if args.dry_run:
-        LOGGER.info("Dry-run habilitado; subprocesso não será iniciado.")
-        return
-    subprocess.run(command, check=True, cwd=str(REPO_ROOT))
+        LOGGER.info("Dry-run habilitado; comando não será executado.")
+        return 0
+    handler = _resolve_entrypoint(module, entrypoint=entrypoint)
+    with _working_directory(REPO_ROOT):
+        return _invoke_entrypoint(handler, cmd_args)
 
 
-def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
     """Emit a short checklist of artifacts needed for evaluation/export."""
     config_args = _load_config_args(getattr(args, "config", None), args.command)
     if config_args:
@@ -579,9 +634,10 @@ def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> 
                     )
                 except Exception as exc:
                     LOGGER.warning("Falha ao ler summary.json em %s: %s", summary_path, exc)
+    return 0
 
 
-def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
     """Execute the visualization script with assembled arguments."""
     cmd_args: list[str] = []
     cmd_args.extend(_load_config_args(getattr(args, "config", None), args.command))
@@ -643,10 +699,10 @@ def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
     # Add any forwarded arguments
     cmd_args.extend(forwarded)
 
-    _run_module_passthrough("mammography.commands.visualize", args, cmd_args)
+    return _run_module_passthrough("mammography.commands.visualize", args, cmd_args)
 
 
-def _run_data_audit(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+def _run_data_audit(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
     """Execute the data audit tool with assembled arguments."""
     cmd_args: list[str] = []
     cmd_args.extend(_load_config_args(getattr(args, "config", None), args.command))
@@ -661,10 +717,10 @@ def _run_data_audit(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
     if hasattr(args, "log") and args.log:
         cmd_args.extend(["--log", str(args.log)])
     cmd_args.extend(forwarded)
-    _run_module_passthrough("mammography.tools.data_audit", args, cmd_args)
+    return _run_module_passthrough("mammography.tools.data_audit", args, cmd_args)
 
 
-def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None:
+def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
     """Call the report_pack helper and normalize paths provided via CLI."""
     if forwarded:
         LOGGER.warning("Argumentos adicionais ignorados pelo report-pack: %s", " ".join(forwarded))
@@ -689,6 +745,7 @@ def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> None
         tex_path=tex_path,
         gradcam_limit=args.gradcam_limit,
     )
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -704,42 +761,45 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "embed":
-            _run_command("mammography.commands.extract_features", args, forwarded)
-        elif args.command == "train-density":
-            _run_command("mammography.commands.train", args, forwarded)
-        elif args.command == "eval-export":
-            _print_eval_guidance(args, forwarded)
-        elif args.command == "report-pack":
-            _run_report_pack(args, forwarded)
-        elif args.command == "data-audit":
-            _run_data_audit(args, forwarded)
-        elif args.command == "visualize":
-            _run_visualize(args, forwarded)
-        elif args.command == "wizard":
+            return _run_command("mammography.commands.extract_features", args, forwarded)
+        if args.command == "train-density":
+            return _run_command("mammography.commands.train", args, forwarded)
+        if args.command == "eval-export":
+            return _print_eval_guidance(args, forwarded)
+        if args.command == "report-pack":
+            return _run_report_pack(args, forwarded)
+        if args.command == "data-audit":
+            return _run_data_audit(args, forwarded)
+        if args.command == "visualize":
+            return _run_visualize(args, forwarded)
+        if args.command == "wizard":
             from mammography import wizard
 
             return wizard.run_wizard(dry_run=args.dry_run)
-        elif args.command == "inference":
-            _run_command("mammography.commands.inference", args, forwarded)
-        elif args.command == "augment":
-            _run_command("mammography.commands.augment", args, forwarded)
-        elif args.command == "label-density":
-            _run_command("mammography.commands.label_density", args, forwarded)
-        elif args.command == "label-patches":
-            _run_command("mammography.commands.label_patches", args, forwarded)
-        elif args.command == "eda-cancer":
-            _run_command("mammography.commands.eda_cancer", args, forwarded)
-        elif args.command == "embeddings-baselines":
-            _run_command("mammography.commands.embeddings_baselines", args, forwarded)
-        else:
-            parser.error(f"Subcomando desconhecido: {args.command}")
-        return 0
-    except FileNotFoundError as exc:
-        LOGGER.error("%s", exc)
+        if args.command == "inference":
+            return _run_command("mammography.commands.inference", args, forwarded)
+        if args.command == "augment":
+            return _run_command("mammography.commands.augment", args, forwarded)
+        if args.command == "label-density":
+            return _run_command("mammography.commands.label_density", args, forwarded)
+        if args.command == "label-patches":
+            return _run_command("mammography.commands.label_patches", args, forwarded)
+        if args.command == "eda-cancer":
+            return _run_command(
+                "mammography.commands.eda_cancer",
+                args,
+                forwarded,
+                entrypoint="run_density_classifier_cli",
+            )
+        if args.command == "embeddings-baselines":
+            return _run_command("mammography.commands.embeddings_baselines", args, forwarded)
+        parser.error(f"Subcomando desconhecido: {args.command}")
         return 1
-    except subprocess.CalledProcessError as exc:
-        LOGGER.error("Comando falhou (exit=%s)", exc.returncode)
-        return exc.returncode
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            LOGGER.error("%s", exc.code)
+            return 1
+        return 0 if exc.code is None else int(exc.code)
 
 
 if __name__ == "__main__":

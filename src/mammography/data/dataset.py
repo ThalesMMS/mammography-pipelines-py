@@ -327,37 +327,43 @@ class MammoDensityDataset(Dataset):
 
     def __getitem__(self, i: int):
         r = self.rows[i]
-        path = str(r["image_path"])
-        base_tensor = self._get_cached_tensor(path)
-        if base_tensor is None:
-            img = self._get_base_image(path)
-            base_tensor = self._convert_to_tensor(img)
-            if self.cache_mode in {"tensor-disk", "tensor-memmap"}:
-                self._materialize_tensor_cache(path, base_tensor)
-        
-        img = self._apply_transforms(base_tensor)
-        img = self._to_channels_last(img)
-        
-        y = r.get("professional_label")
-        if y is not None and not (isinstance(y, float) and np.isnan(y)):
-            y = int(y)
-            if self.label_mapper:
-                y = self.label_mapper(y)
-            else:
-                y = y - 1  # Default mapping 1..4 -> 0..3 for CrossEntropyLoss
-        else:
-            y = -1  # Keep alignment in the batch even when labels are missing
-        
-        embedding_tensor = None
-        if self.embedding_store:
-            embedding_tensor = self.embedding_store.lookup(r)
+        path = str(r.get("image_path", ""))
+        try:
+            if not path:
+                raise ValueError("image_path vazio")
+            base_tensor = self._get_cached_tensor(path)
+            if base_tensor is None:
+                img = self._get_base_image(path)
+                base_tensor = self._convert_to_tensor(img)
+                if self.cache_mode in {"tensor-disk", "tensor-memmap"}:
+                    self._materialize_tensor_cache(path, base_tensor)
 
-        meta = {
-            "path": path,
-            "accession": r.get("accession"),
-            "raw_label": r.get("professional_label"),
-        }
-        return img, y, meta, embedding_tensor
+            img = self._apply_transforms(base_tensor)
+            img = self._to_channels_last(img)
+
+            y = r.get("professional_label")
+            if y is not None and not pd.isna(y):
+                y = int(y)
+                if self.label_mapper:
+                    y = self.label_mapper(y)
+                else:
+                    y = y - 1  # Default mapping 1..4 -> 0..3 for CrossEntropyLoss
+            else:
+                y = -1  # Keep alignment in the batch even when labels are missing
+
+            embedding_tensor = None
+            if self.embedding_store:
+                embedding_tensor = self.embedding_store.lookup(r)
+
+            meta = {
+                "path": path,
+                "accession": r.get("accession"),
+                "raw_label": r.get("professional_label"),
+            }
+            return img, y, meta, embedding_tensor
+        except Exception as exc:
+            LOGGER.warning("Falha ao carregar amostra idx=%s path=%s: %s", i, path, exc)
+            return None
 
     @staticmethod
     def _convert_to_tensor(img: Image.Image) -> torch.Tensor:
@@ -392,8 +398,11 @@ class MammoDensityDataset(Dataset):
         tensor = tv_v2_F.normalize(tensor, self._norm_mean, self._norm_std)
         return tensor
 
-def mammo_collate(batch):
-    """Custom collate that keeps metadata as a list of dictionaries."""
+def robust_collate(batch):
+    """Collate that filters failed samples (None) before building the batch."""
+    batch = [item for item in batch if item is not None]
+    if not batch:
+        return None
     xs = torch.stack([b[0] for b in batch], dim=0)
     ys = torch.tensor([b[1] for b in batch], dtype=torch.long)
     meta = [b[2] for b in batch]
@@ -402,5 +411,10 @@ def mammo_collate(batch):
     embeddings = None
     if len(emb_list) == len(batch):
         embeddings = torch.stack(emb_list, dim=0)
-        
+
     return xs, ys, meta, embeddings
+
+
+def mammo_collate(batch):
+    """Custom collate that keeps metadata as a list of dictionaries."""
+    return robust_collate(batch)

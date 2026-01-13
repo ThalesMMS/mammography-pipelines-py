@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Sequence, Tuple
 
 
 import matplotlib
@@ -25,7 +25,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
 
-from mammography.config import HP
+from pydantic import ValidationError
+
+from mammography.config import HP, ExtractConfig
 from mammography.utils.common import (
     seed_everything,
     resolve_device,
@@ -51,7 +53,14 @@ def save_first_image_preview(dataset: MammoDensityDataset, out_dir: Path) -> Non
     """Persist a single decoded example to quickly verify loader correctness."""
     if len(dataset) == 0:
         return
-    img, _, meta, _ = dataset[0]
+    sample = None
+    for idx in range(len(dataset)):
+        sample = dataset[idx]
+        if sample is not None:
+            break
+    if sample is None:
+        return
+    img, _, meta, _ = sample
     out_dir.mkdir(parents=True, exist_ok=True)
     Image.fromarray(_tensor_to_uint8_image(img)).save(out_dir / "first_image_loaded.png")
 
@@ -59,10 +68,14 @@ def save_samples_grid(dataset: MammoDensityDataset, out_dir: Path, max_samples: 
     """Save a grid of sample thumbnails annotated with accession IDs."""
     if len(dataset) == 0:
         return
-    idxs = list(range(min(max_samples, len(dataset))))
     imgs: list[Tuple[np.ndarray, dict]] = []
-    for i in idxs:
-        img, _, meta, _ = dataset[i]
+    for i in range(len(dataset)):
+        if len(imgs) >= max_samples:
+            break
+        sample = dataset[i]
+        if sample is None:
+            continue
+        img, _, meta, _ = sample
         imgs.append((_tensor_to_uint8_image(img), meta))
     if not imgs:
         return
@@ -107,7 +120,7 @@ def resolve_loader_runtime(args, device: torch.device):
         return max(0, min(num_workers, os.cpu_count() or 0)), prefetch, persistent
     return num_workers, prefetch, persistent
 
-def main():
+def main(argv: Sequence[str] | None = None):
     parser = argparse.ArgumentParser(description="Extract embeddings + projections (EfficientNetB0/ResNet50)")
     parser.add_argument("--dataset", choices=sorted(DATASET_PRESETS.keys()), help="Atalho para datasets conhecidos (archive/mamografias/patches_completo)")
     parser.add_argument("--csv", required=False, help="Caminho do CSV ou diretório com featureS.txt")
@@ -154,7 +167,17 @@ def main():
     parser.add_argument("--cluster-k", type=int, default=0, help="Força K fixo (>=2) em k-means")
     parser.add_argument("--n-clusters", type=int, default=0, help="Alias para --cluster-k")
     parser.add_argument("--sample-grid", type=int, default=16, help="Número de exemplos na grade de pré-visualização")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    csv_path, dicom_root = resolve_paths_from_preset(args.csv, args.dataset, args.dicom_root)
+    try:
+        cfg = ExtractConfig.from_args(args, csv=csv_path, dicom_root=dicom_root)
+    except ValidationError as exc:
+        raise SystemExit(f"Config invalida: {exc}") from exc
+    csv_path = str(cfg.csv) if cfg.csv else None
+    dicom_root = str(cfg.dicom_root) if cfg.dicom_root else None
+    args.csv = csv_path
+    args.dicom_root = dicom_root
 
     if args.n_clusters and args.cluster_k <= 0:
         args.cluster_k = args.n_clusters
@@ -165,7 +188,6 @@ def main():
     if args.run_clustering and not args.cluster_auto and args.cluster_k <= 0:
         args.cluster_auto = True
     
-    csv_path, dicom_root = resolve_paths_from_preset(args.csv, args.dataset, args.dicom_root)
     if not csv_path:
         raise SystemExit("Informe --csv ou --dataset para localizar os dados.")
 

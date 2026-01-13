@@ -7,8 +7,17 @@
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
-"""Wrapper to launch the patch marking GUI from the repository root."""
-from mammography.apps.patch_marking.main import main
+"""Wrapper to launch the patch marking Streamlit UI."""
+from __future__ import annotations
+
+from typing import Sequence
+
+from mammography.apps.patch_marking.streamlit_app import run as run_streamlit
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return run_streamlit(argv)
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -25,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 try:
     import pydicom  # type: ignore
@@ -186,7 +186,7 @@ def _write_log(audits: list[AccessionAudit], log_path: Path) -> None:
     log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audita DICOMs no diretório archive/.")
     parser.add_argument("--archive", type=Path, default=Path("archive"))
     parser.add_argument("--csv", type=Path, default=Path("classificacao.csv"))
@@ -201,7 +201,7 @@ def main() -> int:
         type=Path,
         default=Path("Article/assets/data_qc.log"),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not args.archive.exists():
         print(f"Diretório não encontrado: {args.archive}", file=sys.stderr)

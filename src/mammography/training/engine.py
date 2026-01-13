@@ -25,6 +25,21 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import cm as mpl_cm
 
+
+def save_atomic(state: Dict[str, Any], filepath: Path | str) -> None:
+    """Atomically persist a checkpoint to avoid partial writes."""
+    target = Path(filepath)
+    tmp_path = Path(str(target) + ".tmp")
+    try:
+        torch.save(state, tmp_path)
+        os.replace(tmp_path, target)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -49,40 +64,68 @@ def train_one_epoch(
     for step, batch in enumerate(tqdm(loader, desc="Train", leave=False), 1):
         iter_start = time.perf_counter()
         data_wait = iter_start - last_step_end
-        
-        if len(batch) == 4:
-            x, y, _, extra_features = batch
-        else:
-            x, y, _ = batch
-            extra_features = None
-
-        x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
-        y_tensor = torch.tensor(y, dtype=torch.long, device=device)
-        mask = y_tensor >= 0
-        if not mask.any():
+        if batch is None:
+            last_step_end = time.perf_counter()
             continue
 
-        x = x[mask]
-        y_tensor = y_tensor[mask]
+        try:
+            if len(batch) == 4:
+                x, y, _, extra_features = batch
+            else:
+                x, y, _ = batch
+                extra_features = None
 
-        extra_tensor = None
-        if extra_features is not None:
-            extra_tensor = extra_features.to(device=device, non_blocking=True)
+            x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
+            y_tensor = torch.tensor(y, dtype=torch.long, device=device)
+            mask = y_tensor >= 0
+            if not mask.any():
+                last_step_end = time.perf_counter()
+                continue
 
-        optimizer.zero_grad(set_to_none=True)
+            x = x[mask]
+            y_tensor = y_tensor[mask]
 
-        # Use autocast+GradScaler when AMP is enabled to keep training stable.
-        with torch.autocast(device_type=device.type, enabled=amp_enabled):
-            logits = model(x, extra_tensor)
-            loss = loss_fn(logits, y_tensor)
+            extra_tensor = None
+            if extra_features is not None:
+                extra_tensor = extra_features.to(device=device, non_blocking=True)
 
-        if scaler:
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+            # Use autocast+GradScaler when AMP is enabled to keep training stable.
+            with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                logits = model(x, extra_tensor)
+                loss = loss_fn(logits, y_tensor)
+
+            if not torch.isfinite(loss).all():
+                logger.error("Loss nao finita detectada no passo %s; abortando treino.", step)
+                raise RuntimeError("Loss nao finita detectada; interrompendo treino.")
+
+            if scaler:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+        except torch.cuda.OutOfMemoryError:
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            logger.warning("OOM no batch %s. Pulando para evitar crash.", step)
+            optimizer.zero_grad(set_to_none=True)
+            last_step_end = time.perf_counter()
+            continue
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                logger.warning("OOM no batch %s. Pulando para evitar crash.", step)
+                optimizer.zero_grad(set_to_none=True)
+                last_step_end = time.perf_counter()
+                continue
+            raise
 
         iter_total = time.perf_counter() - iter_start
         last_step_end = time.perf_counter()
@@ -121,6 +164,8 @@ def validate(
     pred_rows: List[Dict[str, Any]] = []
 
     for batch in tqdm(loader, desc="Val", leave=False):
+        if batch is None:
+            continue
         if len(batch) == 4:
             x, y, metas, extra_features = batch
         else:
@@ -282,6 +327,8 @@ def extract_embeddings(
         handle = target_layer.register_forward_hook(hook_fn)
 
     for batch in tqdm(loader, desc="Embeddings", leave=False):
+        if batch is None:
+            continue
         if len(batch) == 4:
             x, _, metas, extra_features = batch
         else:

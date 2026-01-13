@@ -9,7 +9,19 @@ Consolidated mammography pipeline with a single CLI, modular Python package, and
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+# Recommended: reproducible install via uv lockfile
+pip install uv
+uv sync --frozen
+
+# Legacy (pip)
+# pip install -r requirements.txt
+```
+
+## Docker
+
+```bash
+docker build -t mammography-pipelines .
+docker run --rm -it -v "$PWD":/app -w /app mammography-pipelines
 ```
 
 ## Quick Start

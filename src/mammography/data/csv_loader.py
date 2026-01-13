@@ -7,10 +7,13 @@
 # Thales Matheus Mendonça Santos - November 2025
 #
 import os
-import pandas as pd
-import numpy as np
 from pathlib import Path
-from typing import Optional, Any, List, Sequence, Tuple, Dict
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+import pandera as pa
+
 from ..io.dicom import DICOM_EXTS
 
 CACHE_AUTO_DISK_MAX = 6000
@@ -20,6 +23,8 @@ DATASET_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
     "mamografias": {"csv": "mamografias", "dicom_root": None},
     "patches_completo": {"csv": "patches_completo", "dicom_root": None},
 }
+ALLOWED_DENSITY_LABELS = (1, 2, 3, 4, 5)
+VALID_IMAGE_EXTS = DICOM_EXTS + (".png", ".jpg", ".jpeg")
 
 def _find_first_dicom(folder: str) -> Optional[str]:
     """Return the first DICOM path found under the given folder (depth-first)."""
@@ -35,8 +40,8 @@ def _find_first_dicom(folder: str) -> Optional[str]:
     return dicoms[0] if dicoms else None
 
 def _coerce_density_label(val: Any) -> Optional[int]:
-    """Normalize label inputs to integers in {1, 2, 3, 4} when possible."""
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+    """Normalize label inputs to integers in {1, 2, 3, 4, 5} when possible."""
+    if val is None or pd.isna(val):
         return None
     if isinstance(val, str):
         s = val.strip().upper()
@@ -58,10 +63,107 @@ def _coerce_density_label(val: Any) -> Optional[int]:
 
 def _normalize_accession(value: Any) -> Optional[str]:
     """Trim and normalize accession strings, returning None for empty values."""
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    if value is None or pd.isna(value):
         return None
     text = str(value).strip()
     return text or None
+
+def _has_valid_image_ext(series: pd.Series) -> pd.Series:
+    """Validate file extensions against the allowed imaging formats."""
+    return series.astype(str).str.lower().str.endswith(VALID_IMAGE_EXTS)
+
+def _accession_is_valid(series: pd.Series) -> pd.Series:
+    """Ensure accession values are non-empty when provided."""
+    return series.isna() | series.astype(str).str.strip().str.len().gt(0)
+
+def _label_is_valid(value: Any) -> bool:
+    """Check if a label can be coerced into an allowed density class."""
+    if value is None or pd.isna(value):
+        return True
+    return _coerce_density_label(value) in ALLOWED_DENSITY_LABELS
+
+def _derive_accession_from_path(path: str) -> str:
+    """Fallback accession derived from the parent directory or filename."""
+    path_obj = Path(path)
+    parent = path_obj.parent.name
+    return parent or path_obj.stem
+
+IMAGE_PATH_CHECK = pa.Check(_has_valid_image_ext, name="image_path_ext")
+ACCESSION_CHECK = pa.Check(_accession_is_valid, name="accession_non_empty")
+LABEL_CHECK = pa.Check(_label_is_valid, element_wise=True, name="density_label_valid")
+
+def _label_column(required: bool = False) -> pa.Column:
+    return pa.Column(object, nullable=True, required=required, checks=LABEL_CHECK)
+
+def _accession_column(required: bool = False, nullable: Optional[bool] = None) -> pa.Column:
+    if nullable is None:
+        nullable = not required
+    return pa.Column(str, nullable=nullable, required=required, coerce=True, checks=ACCESSION_CHECK)
+
+CLASSIFICATION_SCHEMA = pa.DataFrameSchema(
+    {
+        "AccessionNumber": _accession_column(required=True, nullable=False),
+        "Classification": _label_column(required=True),
+    },
+    strict=False,
+)
+
+RAW_PATH_SCHEMA = pa.DataFrameSchema(
+    {
+        "image_path": pa.Column(
+            str,
+            nullable=False,
+            coerce=True,
+            checks=[
+                pa.Check.str_length(min_value=1),
+                IMAGE_PATH_CHECK,
+            ],
+        ),
+        "professional_label": _label_column(),
+        "density_label": _label_column(),
+        "label": _label_column(),
+        "y": _label_column(),
+        "AccessionNumber": _accession_column(),
+        "accession": _accession_column(),
+    },
+    strict=False,
+)
+
+DATASET_SCHEMA = pa.DataFrameSchema(
+    {
+        "image_path": pa.Column(
+            str,
+            nullable=False,
+            coerce=True,
+            checks=[
+                pa.Check.str_length(min_value=1),
+                IMAGE_PATH_CHECK,
+            ],
+        ),
+        "professional_label": pa.Column(
+            "Int64",
+            nullable=True,
+            coerce=True,
+            checks=pa.Check.isin(ALLOWED_DENSITY_LABELS, ignore_na=True),
+        ),
+        "accession": _accession_column(required=True, nullable=False),
+    },
+    strict=False,
+)
+
+PANDERA_ERRORS = (pa.errors.SchemaError, pa.errors.SchemaErrors)
+
+def _validate_schema(schema: pa.DataFrameSchema, df: pd.DataFrame, context: str) -> pd.DataFrame:
+    try:
+        return schema.validate(df, lazy=True)
+    except PANDERA_ERRORS as exc:
+        raise ValueError(f"Falha de validacao ({context}): {exc}") from exc
+
+def _try_schema(schema: pa.DataFrameSchema, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Exception]]:
+    try:
+        return schema.validate(df, lazy=True), None
+    except PANDERA_ERRORS as exc:
+        return None, exc
 
 def _find_best_data_dir(pref: Optional[str]) -> Optional[str]:
     """Try common typos so the CLI is more forgiving for frequently used paths."""
@@ -127,25 +229,28 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
     # Directory with featureS.txt (mammograms/patches)
     if os.path.isdir(csv_path):
         rows = _rows_from_features_dir(Path(csv_path))
-        return pd.DataFrame(rows)
+        return _validate_schema(DATASET_SCHEMA, pd.DataFrame(rows), "featureS.txt")
 
     df = pd.read_csv(csv_path)
 
-    # AccessionNumber + Classification format (DICOM root)
-    if {"AccessionNumber", "Classification"}.issubset(df.columns):
+    classification_df, classification_error = _try_schema(CLASSIFICATION_SCHEMA, df)
+    if classification_df is not None:
         if not dicom_root:
             raise ValueError("dicom_root é obrigatório para CSV com AccessionNumber/Classification.")
         dicom_root = _find_best_data_dir(dicom_root)
         rows = []
-        df["AccessionNumber"] = df["AccessionNumber"].astype(str).str.strip()
-        for _, r in df.iterrows():
-            lab = int(r["Classification"]) if pd.notna(r["Classification"]) else None
+        classification_df["AccessionNumber"] = classification_df["AccessionNumber"].apply(_normalize_accession)
+        classification_df["Classification"] = classification_df["Classification"].apply(_coerce_density_label)
+        for _, r in classification_df.iterrows():
+            lab = r["Classification"]
             if lab == 5 and exclude_class_5:
                 continue
-            acc = str(r.get("AccessionNumber", "")).strip()
+            acc = r.get("AccessionNumber")
+            if not acc:
+                continue
             folder = os.path.join(dicom_root, acc)
-            if not os.path.isdir(folder) and acc.isdigit():
-                padded = acc.zfill(6)
+            if not os.path.isdir(folder) and str(acc).isdigit():
+                padded = str(acc).zfill(6)
                 padded_folder = os.path.join(dicom_root, padded)
                 if os.path.isdir(padded_folder):
                     acc = padded
@@ -156,24 +261,42 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             if dcm is None:
                 continue
             rows.append({"accession": acc, "image_path": dcm, "professional_label": lab})
-        return pd.DataFrame(rows)
+        return _validate_schema(DATASET_SCHEMA, pd.DataFrame(rows), "classificacao.csv")
 
-    # Generic format with direct path
-    if "image_path" in df.columns:
+    path_df, path_error = _try_schema(RAW_PATH_SCHEMA, df)
+    if path_df is not None:
         label_col_candidates = ["density_label", "label", "y", "professional_label"]
-        lab_col = next((c for c in label_col_candidates if c in df.columns), None)
+        lab_col = next((c for c in label_col_candidates if c in path_df.columns), None)
         if lab_col is None:
-            df["professional_label"] = None
+            path_df["professional_label"] = None
         else:
-            df["professional_label"] = df[lab_col].apply(_coerce_density_label)
+            path_df["professional_label"] = path_df[lab_col].apply(_coerce_density_label)
 
-        if "AccessionNumber" in df.columns:
-            df["accession"] = df["AccessionNumber"].astype(str)
-        elif "accession" not in df.columns:
-            df["accession"] = [os.path.basename(os.path.dirname(p)) for p in df["image_path"]]
-        return df[["image_path", "professional_label", "accession"]]
+        accession_source = None
+        if "AccessionNumber" in path_df.columns:
+            accession_source = path_df["AccessionNumber"].apply(_normalize_accession)
+        elif "accession" in path_df.columns:
+            accession_source = path_df["accession"].apply(_normalize_accession)
+        fallback_accession = path_df["image_path"].apply(_derive_accession_from_path)
+        if accession_source is None:
+            accession_source = fallback_accession
+        path_df["accession"] = accession_source.fillna(fallback_accession)
+        keep_cols = ["image_path", "professional_label", "accession"]
+        for extra_col in ("patient_id", "PatientID"):
+            if extra_col in path_df.columns:
+                keep_cols.append(extra_col)
+        return _validate_schema(DATASET_SCHEMA, path_df[keep_cols], "image_path")
 
-    raise ValueError("CSV formato desconhecido ou faltando --dicom-root para CSV de classificação.")
+    detail = []
+    if classification_error:
+        detail.append(f"AccessionNumber/Classification: {classification_error}")
+    if path_error:
+        detail.append(f"image_path: {path_error}")
+    detail_text = " | ".join(detail) if detail else "schema desconhecido."
+    raise ValueError(
+        "CSV formato desconhecido ou faltando --dicom-root para CSV de classificação. "
+        f"Detalhes: {detail_text}"
+    )
 
 def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -> str:
     """Pick a cache strategy based on dataset size and whether paths point to DICOM files."""

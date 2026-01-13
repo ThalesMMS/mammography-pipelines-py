@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from typing import Sequence
 
 from PIL import Image
 from tqdm import tqdm
@@ -19,12 +20,12 @@ import torchvision.transforms as T
 from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Augment imagens em lote.")
     parser.add_argument("--source-dir", required=True, help="Diretorio de origem")
     parser.add_argument("--output-dir", required=True, help="Diretorio de saida")
     parser.add_argument("--num-augmentations", type=int, default=1, help="Augmentations por imagem")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _iter_images(root: str) -> list[str]:
@@ -38,8 +39,8 @@ def _iter_images(root: str) -> list[str]:
     return files
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     source_dir = args.source_dir
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

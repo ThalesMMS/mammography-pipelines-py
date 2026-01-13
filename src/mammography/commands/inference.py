@@ -11,14 +11,16 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from mammography.config import HP
+from pydantic import ValidationError
+
+from mammography.config import HP, InferenceConfig
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
 from mammography.models.nets import build_model
 from mammography.utils.common import resolve_device, configure_runtime, parse_float_list
@@ -46,7 +48,7 @@ def _strip_module_prefix(state_dict: dict) -> dict:
     return state_dict
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inferencia com checkpoint treinado.")
     parser.add_argument("--checkpoint", required=True, help="Caminho para o checkpoint (.pt)")
     parser.add_argument("--input", required=True, help="Arquivo ou diretorio de imagens/DICOM")
@@ -59,11 +61,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", action="store_true", help="Usa autocast em CUDA/MPS")
     parser.add_argument("--mean", help="Media de normalizacao (ex: 0.485,0.456,0.406)")
     parser.add_argument("--std", help="Std de normalizacao (ex: 0.229,0.224,0.225)")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
+    try:
+        InferenceConfig.from_args(args)
+    except ValidationError as exc:
+        raise SystemExit(f"Config invalida: {exc}") from exc
     inputs = _iter_inputs(args.input)
     if not inputs:
         raise SystemExit(f"Nenhum arquivo encontrado em {args.input}.")
@@ -131,6 +137,8 @@ def main() -> None:
 
     with torch.no_grad():
         for batch in loader:
+            if batch is None:
+                continue
             imgs, _, metas, _ = batch
             imgs = imgs.to(device)
             if use_amp:

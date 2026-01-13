@@ -5,7 +5,12 @@ This guide uses the consolidated CLI (`mammography`) backed by the modular packa
 ## 1) Install
 
 ```bash
-pip install -r requirements.txt
+# Recommended: reproducible install via uv lockfile
+pip install uv
+uv sync --frozen
+
+# Legacy (pip)
+# pip install -r requirements.txt
 ```
 
 ## 2) CLI Help

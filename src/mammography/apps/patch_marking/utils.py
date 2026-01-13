@@ -99,18 +99,21 @@ def backup_pngs(archive_path: str, patient_folders: list, project_root: str):
                 pass
 
 
-def cleanup_pngs(archive_path: str, patient_folders: list, project_root: str):
+def cleanup_pngs(archive_path: str, patient_folders: list, project_root: str, confirm: bool = False):
     """Remove all .png files from patient folders and reset annotations.csv."""
     print("\n--- Starting PNG cleanup and annotation CSV reset ---")
     total_files_removed = 0
     cleaned_folders = 0
 
-    confirm = _normalize_choice(
-        input("!! WARNING !! Remove ALL existing .png files in patient folders AND RESET 'annotations.csv'? (y/n): ").strip().lower()
-    )
-    if confirm not in ['y', 'yes']:
-        print("Cleanup cancelled.")
-        return False
+    if not confirm:
+        answer = _normalize_choice(
+            input(
+                "!! WARNING !! Remove ALL existing .png files in patient folders AND RESET 'annotations.csv'? (y/n): "
+            ).strip().lower()
+        )
+        if answer not in ['y', 'yes']:
+            print("Cleanup cancelled.")
+            return False
 
     print("Removing PNG files...")
     for folder_name in patient_folders:

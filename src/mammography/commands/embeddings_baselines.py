@@ -12,7 +12,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -259,7 +259,7 @@ def render_report(
     report_path.write_text("\n".join(rows), encoding="utf-8")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Baselines classicos (embeddings vs descritores).")
     parser.add_argument("--embeddings-dir", type=Path, default=Path("outputs/embeddings_resnet50"))
     parser.add_argument("--outdir", type=Path, default=Path("outputs/embeddings_baselines"))
@@ -271,11 +271,11 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "full", "randomized", "arpack"],
         help="Solver do PCA (auto/full/randomized/arpack).",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     X_embed, y, meta = load_embeddings(args.embeddings_dir)

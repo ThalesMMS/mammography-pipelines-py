@@ -42,6 +42,8 @@ class ResNet50FeatureExtractor(nn.Module):
         metadata = []
         
         for batch in tqdm(loader, desc="Extracting features"):
+            if batch is None:
+                continue
             if len(batch) >= 3:
                 imgs, _, metas = batch[0], batch[1], batch[2]
             else:

@@ -1,7 +1,10 @@
 numpy==2.2.6
 pandas==2.3.3
+pandera==0.20.1
+pydantic==2.11.2
 pillow==11.3.0
 matplotlib==3.10.6
+streamlit==1.41.1
 psutil==6.1.0
 pyyaml==6.0.2
 scikit-learn==1.7.2
