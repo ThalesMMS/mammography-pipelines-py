@@ -60,6 +60,7 @@ def train_one_epoch(
     logger = logging.getLogger("mammography")
     log_per_iter = logger.isEnabledFor(logging.DEBUG)
     last_step_end = time.perf_counter()
+    consecutive_ooms = 0
 
     for step, batch in enumerate(tqdm(loader, desc="Train", leave=False), 1):
         iter_start = time.perf_counter()
@@ -110,19 +111,30 @@ def train_one_epoch(
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
+            consecutive_ooms = 0
         except torch.cuda.OutOfMemoryError:
+            consecutive_ooms += 1
             if device.type == "cuda":
                 torch.cuda.empty_cache()
-            logger.warning("OOM no batch %s. Pulando para evitar crash.", step)
+            logger.warning("OOM no batch %s. Tentativa %s/5.", step, consecutive_ooms)
             optimizer.zero_grad(set_to_none=True)
+            if consecutive_ooms >= 5:
+                raise RuntimeError(
+                    "Abortando: 5 erros de memoria consecutivos. Reduza o --batch-size."
+                )
             last_step_end = time.perf_counter()
             continue
         except RuntimeError as exc:
             if "out of memory" in str(exc).lower():
+                consecutive_ooms += 1
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
-                logger.warning("OOM no batch %s. Pulando para evitar crash.", step)
+                logger.warning("OOM no batch %s. Tentativa %s/5.", step, consecutive_ooms)
                 optimizer.zero_grad(set_to_none=True)
+                if consecutive_ooms >= 5:
+                    raise RuntimeError(
+                        "Abortando: 5 erros de memoria consecutivos. Reduza o --batch-size."
+                    )
                 last_step_end = time.perf_counter()
                 continue
             raise

@@ -9,6 +9,9 @@
 #
 """Train EfficientNetB0/ResNet50 for breast density with optional caches and AMP."""
 import os
+import signal
+import sys
+import hashlib
 import argparse
 import json
 import logging
@@ -35,6 +38,7 @@ from mammography.utils.common import (
     setup_logging,
     increment_path,
     parse_float_list,
+    get_reproducibility_info,
 )
 from mammography.data.csv_loader import (
     load_dataset_dataframe,
@@ -159,6 +163,47 @@ def get_label_mapper(mode):
             return y - 1 # Fallback
         return mapper
     return None # Default 1..4 -> 0..3
+
+
+def get_file_hash(path: str) -> str:
+    if not path or not os.path.exists(path):
+        return "unknown"
+    try:
+        return hashlib.md5(Path(path).read_bytes()).hexdigest()
+    except Exception:
+        return "unknown"
+
+
+class GracefulKiller:
+    def __init__(self) -> None:
+        self.kill_now = False
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+
+    def exit_gracefully(self, signum, frame) -> None:
+        print("\n[INFO] Sinal de interrupcao recebido! Terminando epoch atual antes de sair...")
+        self.kill_now = True
+
+
+def _find_resume_checkpoint(outdir: str) -> Path | None:
+    base = Path(outdir)
+    direct = base / "checkpoint.pt"
+    if direct.exists():
+        return direct
+    if base.exists():
+        candidates = []
+        for results_path in base.glob("results*"):
+            if not results_path.is_dir():
+                continue
+            ckpt = results_path / "checkpoint.pt"
+            if ckpt.exists():
+                candidates.append(ckpt)
+        if candidates:
+            try:
+                return max(candidates, key=lambda p: p.stat().st_mtime)
+            except Exception:
+                return candidates[0]
+    return None
 
 
 def _parse_class_weights(raw: str, num_classes: int):
@@ -542,6 +587,11 @@ def build_param_groups(model: torch.nn.Module, arch: str, lr_head: float, lr_bac
 def main(argv: Sequence[str] | None = None):
     args = parse_args(argv)
 
+    checkpoint_path = _find_resume_checkpoint(args.outdir)
+    if checkpoint_path and not args.resume_from:
+        print(f"[INFO] Checkpoint encontrado em {checkpoint_path}. Retomando automaticamente.")
+        args.resume_from = str(checkpoint_path)
+
     csv_path, dicom_root = resolve_paths_from_preset(args.csv, args.dataset, args.dicom_root)
     try:
         cfg = TrainConfig.from_args(args, csv=csv_path, dicom_root=dicom_root)
@@ -571,6 +621,7 @@ def main(argv: Sequence[str] | None = None):
 
     device = resolve_device(args.device)
     configure_runtime(device, args.deterministic, args.allow_tf32)
+    killer = GracefulKiller()
 
     # Load Data
     df = load_dataset_dataframe(
@@ -834,21 +885,26 @@ def main(argv: Sequence[str] | None = None):
             logger.warning("Checkpoint sem metadados; retomando apenas pesos do modelo.")
         if resume_epoch < 1:
             resume_epoch = 1
-        if resume_epoch > args.epochs:
-            logger.warning(
-                "Checkpoint epoch %s >= epochs solicitadas (%s); nenhum epoch sera executado.",
-                resume_epoch - 1,
-                args.epochs,
-            )
+    if resume_epoch > args.epochs:
+        logger.warning(
+            "Checkpoint epoch %s >= epochs solicitadas (%s); nenhum epoch sera executado.",
+            resume_epoch - 1,
+            args.epochs,
+        )
+    repro_info = get_reproducibility_info()
     summary_payload = {
         "run_id": outdir_path.name,
         "seed": args.seed,
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "reproducibility": repro_info,
         "arch": args.arch,
         "classes": args.classes,
         "dataset": args.dataset,
         "csv": str(csv_path),
         "dicom_root": str(dicom_root) if dicom_root else None,
+        "data_hashes": {
+            "csv": get_file_hash(str(csv_path)),
+        },
         "embeddings_dir": args.embeddings_dir,
         "outdir": outdir,
         "outdir_root": str(outdir_root),
@@ -1037,6 +1093,10 @@ def main(argv: Sequence[str] | None = None):
             "top_k": top_k,
         }
         save_atomic(checkpoint_state, checkpoint_path)
+
+        if killer.kill_now:
+            print("[INFO] Estado salvo com sucesso. Encerrando execucao.")
+            sys.exit(0)
 
         if args.early_stop_patience and patience_ctr >= args.early_stop_patience:
             logger.info(f"Early stopping ativado após {patience_ctr} épocas sem melhoria.")

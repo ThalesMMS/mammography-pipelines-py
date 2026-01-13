@@ -7,9 +7,12 @@
 # Thales Matheus Mendonça Santos - November 2025
 #
 import os
+import sys
 import logging
 import random
 import re
+import subprocess
+from datetime import datetime
 from typing import Optional, List
 import numpy as np
 import torch
@@ -138,3 +141,21 @@ def parse_float_list(raw: Optional[str], expected_len: Optional[int] = None, nam
     if expected_len is not None and len(values) != expected_len:
         raise ValueError(f"{name} deve ter {expected_len} valores, recebido {len(values)}.")
     return values
+
+
+def get_reproducibility_info() -> dict:
+    """Captura hash do commit, status sujo e linha de comando."""
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
+        status = subprocess.check_output(["git", "status", "--porcelain"]).decode("ascii").strip()
+        is_dirty = bool(status)
+    except Exception:
+        commit, is_dirty = "unknown", False
+
+    return {
+        "git_commit": commit,
+        "git_dirty": is_dirty,
+        "command_line": " ".join(sys.argv),
+        "cwd": os.getcwd(),
+        "timestamp": datetime.now().isoformat(),
+    }

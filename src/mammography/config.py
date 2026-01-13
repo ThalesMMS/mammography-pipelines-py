@@ -144,23 +144,14 @@ class TrainConfig(BaseConfig):
     save_val_preds: bool = False
     export_val_embeddings: bool = False
 
-    @field_validator("csv")
+    @field_validator("csv", "dicom_root")
     @classmethod
-    def _validate_csv(cls, value: Optional[Path]) -> Optional[Path]:
-        if value is None:
-            return value
-        if not value.exists():
-            raise ValueError(f"csv_path nao encontrado: {value}")
-        return value
-
-    @field_validator("dicom_root")
-    @classmethod
-    def _validate_dicom_root(cls, value: Optional[Path]) -> Optional[Path]:
+    def _check_path_exists(cls, value: Optional[Path]) -> Optional[Path]:
         if value is None:
             return value
         value = _normalize_dir_hint(value)
         if not value.exists():
-            raise ValueError(f"dicom_root nao encontrado: {value}")
+            raise ValueError(f"Caminho critico nao encontrado: {value}")
         return value
 
     @field_validator("embeddings_dir")

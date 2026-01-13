@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -167,6 +168,10 @@ class MammoDensityDataset(Dataset):
         self.rotation_deg = float(rotation_deg)
         self._norm_mean = mean or [0.485, 0.456, 0.406]
         self._norm_std = std or [0.229, 0.224, 0.225]
+        self._failure_count = 0
+        self._failure_threshold = max(5, int(len(self.rows) * 0.05))
+        self._consecutive_failures = 0
+        self.quarantine_log: list[dict[str, Any]] = []
         if len(self._norm_mean) != len(self._norm_std):
             raise ValueError("mean e std devem ter o mesmo tamanho.")
         if len(self._norm_mean) != 3:
@@ -360,10 +365,38 @@ class MammoDensityDataset(Dataset):
                 "accession": r.get("accession"),
                 "raw_label": r.get("professional_label"),
             }
+            if self._consecutive_failures > 0:
+                self._consecutive_failures = 0
             return img, y, meta, embedding_tensor
         except Exception as exc:
+            self._failure_count += 1
+            self._consecutive_failures += 1
+            self.quarantine_log.append(
+                {
+                    "index": i,
+                    "path": path,
+                    "error": str(exc),
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+            if self._consecutive_failures >= 20:
+                raise RuntimeError(
+                    "CRITICO: 20 falhas consecutivas de I/O. "
+                    f"Verifique montagem/disco. Erro recente: {exc}"
+                )
+            if self._failure_count > self._failure_threshold:
+                raise RuntimeError(
+                    f"Taxa de falha excedeu limite ({self._failure_threshold}). Veja logs."
+                )
             LOGGER.warning("Falha ao carregar amostra idx=%s path=%s: %s", i, path, exc)
             return None
+
+    def dump_quarantine(self, output_dir: Path) -> None:
+        if not self.quarantine_log:
+            return
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(self.quarantine_log).to_csv(output_dir / "data_quarantine.csv", index=False)
 
     @staticmethod
     def _convert_to_tensor(img: Image.Image) -> torch.Tensor:
