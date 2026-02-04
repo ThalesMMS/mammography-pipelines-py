@@ -1,0 +1,6 @@
+# Legacy install path. Prefer "uv sync --frozen" with uv.lock for reproducibility.
+-r requirements-base.txt
+torch==2.8.0; python_version < "3.14"
+torch==2.9.1; python_version >= "3.14"
+torchvision==0.23.0; python_version < "3.14"
+torchvision==0.24.1; python_version >= "3.14"

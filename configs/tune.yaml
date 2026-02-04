@@ -1,0 +1,46 @@
+# Default hyperparameter search space configuration for Optuna tuning.
+# This YAML defines the search space for automated hyperparameter optimization.
+# Use with: mammo tune --config configs/tune.yaml --n-trials <budget>
+
+description: |
+  Default search space for EfficientNetB0 density classification.
+  Covers learning rates, batch size, and training schedule parameters.
+
+parameters:
+  # Learning rate for classifier head (log scale)
+  lr:
+    type: float
+    low: 0.00001
+    high: 0.001
+    log: true
+
+  # Learning rate for backbone (log scale, typically 10x smaller than head)
+  backbone_lr:
+    type: float
+    low: 0.000001
+    high: 0.0001
+    log: true
+
+  # Batch size (powers of 2 for GPU efficiency)
+  batch_size:
+    type: categorical
+    choices: [8, 16, 32]
+
+  # Number of warmup epochs
+  warmup_epochs:
+    type: int
+    low: 0
+    high: 5
+    step: 1
+
+  # Early stopping patience
+  early_stop_patience:
+    type: int
+    low: 3
+    high: 10
+    step: 1
+
+  # Whether to unfreeze last backbone block
+  unfreeze_last_block:
+    type: categorical
+    choices: [true, false]

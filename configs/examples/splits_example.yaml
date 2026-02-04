@@ -1,0 +1,110 @@
+# Example configuration demonstrating the three dataset split modes
+# This file shows how to configure training with different split strategies
+
+# =============================================================================
+# EXAMPLE 1: AUTO MODE (Automatic Random Split)
+# =============================================================================
+# Use this mode when you want the pipeline to automatically split your data
+# randomly based on specified fractions.
+#
+# To use this configuration:
+#   python -m train --config configs/examples/splits_example.yaml
+#
+# Relevant parameters for auto mode:
+#   - split_mode: auto
+#   - val_frac: fraction of data for validation (0.0 to 1.0)
+#   - test_frac: fraction of data for testing (0.0 to 1.0)
+#   - train_csv, val_csv, test_csv: should be null
+# =============================================================================
+
+seed: 42
+img_size: 512
+batch_size: 16
+epochs: 30
+arch: efficientnet_b0
+classes: density
+lr: 0.0001
+backbone_lr: 0.00001
+device: auto
+
+# AUTO mode configuration
+split_mode: auto
+val_frac: 0.2      # 20% of data for validation
+test_frac: 0.1     # 10% of data for testing (remaining 70% for training)
+train_csv: null
+val_csv: null
+test_csv: null
+kfold_n_splits: 5
+
+class_weights: auto
+sampler_weighted: true
+warmup_epochs: 2
+amp: true
+augment: true
+unfreeze_last_block: true
+early_stop_patience: 5
+
+# =============================================================================
+# EXAMPLE 2: CSV MODE (Pre-defined Splits from CSV Files)
+# =============================================================================
+# Use this mode when you have pre-defined train/val/test splits in CSV files.
+# Uncomment and modify the configuration below to use CSV mode.
+#
+# To use CSV mode, change the above configuration to:
+#   split_mode: csv
+#   val_frac: 0.0
+#   test_frac: 0.0
+#   train_csv: data/splits/train.csv
+#   val_csv: data/splits/val.csv
+#   test_csv: data/splits/test.csv  # optional, can be null
+#   kfold_n_splits: 5  # ignored in csv mode
+#
+# CSV file format should contain at minimum an 'image_path' column.
+# Example CSV content:
+#   image_path,label
+#   /path/to/image1.png,0
+#   /path/to/image2.png,1
+# =============================================================================
+
+# =============================================================================
+# EXAMPLE 3: K-FOLD MODE (Cross-Validation)
+# =============================================================================
+# Use this mode for k-fold cross-validation. The pipeline will automatically
+# create k different train/val splits and train k models.
+#
+# To use k-fold mode, change the above configuration to:
+#   split_mode: kfold
+#   val_frac: 0.0      # ignored in kfold mode
+#   test_frac: 0.1     # optional test set held out before k-fold split
+#   train_csv: null
+#   val_csv: null
+#   test_csv: null
+#   kfold_n_splits: 5  # number of folds (typically 5 or 10)
+#
+# In k-fold mode:
+#   - Data is divided into k equal-sized folds
+#   - Each fold serves as validation set once while others are training
+#   - If test_frac > 0, a test set is held out before creating folds
+#   - Results are typically averaged across all k folds
+# =============================================================================
+
+notes: |
+  This example configuration demonstrates three ways to split your dataset:
+
+  1. AUTO mode: Automatic random splitting based on val_frac and test_frac
+     - Best for: Quick experiments, initial model development
+     - Pros: Simple, no need to prepare split files
+     - Cons: Different splits each run (unless seed is fixed)
+
+  2. CSV mode: Use pre-defined splits from CSV files
+     - Best for: Reproducible experiments, standardized benchmarks
+     - Pros: Full control over splits, reproducible across runs
+     - Cons: Requires preparing CSV files in advance
+
+  3. K-FOLD mode: Cross-validation with k different train/val splits
+     - Best for: Model evaluation, hyperparameter tuning, small datasets
+     - Pros: Better performance estimates, uses all data for training
+     - Cons: Trains k models (more time/compute intensive)
+
+  To switch between modes, simply change split_mode and the relevant parameters.
+  The CLI will validate that you've provided the correct parameters for each mode.

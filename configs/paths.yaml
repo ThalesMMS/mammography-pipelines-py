@@ -1,0 +1,22 @@
+# Default locations consumed by the mammography CLI when no flag is provided.
+# Each section is expanded into CLI flags for the respective subcommand.
+embed:
+  dataset: archive
+  csv: ./classificacao.csv
+  dicom_root: ./archive
+  outdir: ./outputs/embeddings_resnet50
+  arch: resnet50
+  classes: multiclass
+  batch_size: 32
+  layer_name: avgpool
+  run_reduction: true
+  run_clustering: true
+  n_clusters: 4
+  pca_svd_solver: auto
+  device: auto
+
+train-density:
+  dataset: archive
+  csv: ./classificacao.csv
+  dicom_root: ./archive
+  outdir: ./outputs/mammo_efficientnetb0_density

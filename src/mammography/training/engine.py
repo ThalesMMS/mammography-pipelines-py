@@ -1,0 +1,663 @@
+#
+# engine.py
+# mammography-pipelines
+#
+# Training/validation utilities for the density models, including Grad-CAM, metrics, and embedding extraction.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
+import os
+import time
+import logging
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from pathlib import Path
+from PIL import Image
+from torch.amp.grad_scaler import GradScaler
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from typing import Optional, Dict, Any, List, Tuple, Union
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, cohen_kappa_score, roc_auc_score
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib import cm as mpl_cm
+
+
+def save_atomic(
+    state: Dict[str, Any],
+    filepath: Union[Path, str],
+    normalization_stats: Optional[Dict[str, Any]] = None
+) -> None:
+    """Atomically persist a checkpoint to avoid partial writes.
+
+    Args:
+        state: Checkpoint state dictionary to save
+        filepath: Path where checkpoint should be saved
+        normalization_stats: Optional normalization statistics to include in checkpoint
+                           for inference consistency
+    """
+    target = Path(filepath)
+    tmp_path = Path(str(target) + ".tmp")
+    try:
+        # Include normalization stats if provided
+        if normalization_stats is not None:
+            state = {**state, "normalization_stats": normalization_stats}
+        torch.save(state, tmp_path)
+        os.replace(tmp_path, target)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+def train_one_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    loss_fn: Optional[nn.Module] = None,
+    scaler: Optional[GradScaler] = None,
+    amp_enabled: bool = False,
+) -> Tuple[float, float]:
+    """One epoch of supervised training with optional AMP and extra tabular features."""
+    model.train()
+    if loss_fn is None:
+        loss_fn = nn.CrossEntropyLoss()
+    losses = []
+    correct = 0
+    total = 0
+    
+    logger = logging.getLogger("mammography")
+    log_per_iter = logger.isEnabledFor(logging.DEBUG)
+    last_step_end = time.perf_counter()
+    consecutive_ooms = 0
+
+    for step, batch in enumerate(tqdm(loader, desc="Train", leave=False), 1):
+        iter_start = time.perf_counter()
+        data_wait = iter_start - last_step_end
+        if batch is None:
+            last_step_end = time.perf_counter()
+            continue
+
+        try:
+            if len(batch) == 4:
+                x, y, _, extra_features = batch
+            else:
+                x, y, _ = batch
+                extra_features = None
+
+            x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
+            # Use as_tensor to handle both tensor and array inputs efficiently
+            if isinstance(y, torch.Tensor):
+                y_tensor = y.to(device=device, dtype=torch.long)
+            else:
+                y_tensor = torch.as_tensor(y, dtype=torch.long, device=device)
+            mask = y_tensor >= 0
+            if not mask.any():
+                last_step_end = time.perf_counter()
+                continue
+
+            x = x[mask]
+            y_tensor = y_tensor[mask]
+
+            extra_tensor = None
+            if extra_features is not None:
+                extra_tensor = extra_features.to(device=device, non_blocking=True)
+                extra_tensor = extra_tensor[mask]
+
+            optimizer.zero_grad(set_to_none=True)
+
+            # Use autocast+GradScaler when AMP is enabled to keep training stable.
+            with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                logits = model(x, extra_tensor)
+                loss = loss_fn(logits, y_tensor)
+
+            if not torch.isfinite(loss).all():
+                logger.error("Loss nao finita detectada no passo %s; abortando treino.", step)
+                raise RuntimeError("Loss nao finita detectada; interrompendo treino.")
+
+            if scaler:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+            consecutive_ooms = 0
+        except torch.cuda.OutOfMemoryError:
+            consecutive_ooms += 1
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            logger.warning("OOM no batch %s. Tentativa %s/5.", step, consecutive_ooms)
+            optimizer.zero_grad(set_to_none=True)
+            if consecutive_ooms >= 5:
+                raise RuntimeError(
+                    "Abortando: 5 erros de memoria consecutivos. Reduza o --batch-size."
+                )
+            last_step_end = time.perf_counter()
+            continue
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                consecutive_ooms += 1
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                logger.warning("OOM no batch %s. Tentativa %s/5.", step, consecutive_ooms)
+                optimizer.zero_grad(set_to_none=True)
+                if consecutive_ooms >= 5:
+                    raise RuntimeError(
+                        "Abortando: 5 erros de memoria consecutivos. Reduza o --batch-size."
+                    )
+                last_step_end = time.perf_counter()
+                continue
+            raise
+
+        iter_total = time.perf_counter() - iter_start
+        last_step_end = time.perf_counter()
+
+        if log_per_iter:
+            logger.debug(f"iter={step} | wait={data_wait*1e3:.2f}ms | total={iter_total*1e3:.2f}ms")
+
+        losses.append(loss.item())
+        pred = logits.detach().float().argmax(dim=1)
+        correct += (pred == y_tensor).sum().item()
+        total += y_tensor.numel()
+        
+    acc = correct / max(1, total)
+    return float(np.mean(losses) if losses else 0.0), acc
+
+@torch.no_grad()
+def validate(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    amp_enabled: bool = False,
+    loss_fn: Optional[nn.Module] = None,
+    collect_preds: bool = False,
+    gradcam: bool = False,
+    gradcam_dir: Optional[Path] = None,
+    gradcam_limit: int = 4,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Validation loop that returns metrics plus optional per-sample predictions/Grad-CAMs."""
+    model.eval()
+    all_y = []
+    all_p = []
+    all_prob = []
+    rows = []
+    losses: List[float] = []
+    gradcam_saved = 0
+    pred_rows: List[Dict[str, Any]] = []
+
+    for batch in tqdm(loader, desc="Val", leave=False):
+        if batch is None:
+            continue
+        if len(batch) == 4:
+            x, y, metas, extra_features = batch
+        else:
+            x, y, metas = batch
+            extra_features = None
+
+        x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
+        # Use as_tensor to handle both tensor and array inputs efficiently
+        if isinstance(y, torch.Tensor):
+            y_tensor = y.to(device=device, dtype=torch.long)
+        else:
+            y_tensor = torch.as_tensor(y, dtype=torch.long, device=device)
+        mask = y_tensor >= 0
+        if not mask.any():
+            continue
+        x = x[mask]
+        y_tensor = y_tensor[mask]
+        # Convert mask to CPU numpy array for safe indexing
+        mask_cpu = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
+        metas = [m for idx, m in enumerate(metas) if mask_cpu[idx]]
+        extra_tensor = None
+        if extra_features is not None:
+            extra_tensor = extra_features.to(device=device, non_blocking=True)
+            extra_tensor = extra_tensor[mask]
+
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            logits = model(x, extra_tensor)
+            if loss_fn is not None:
+                losses.append(float(loss_fn(logits, y_tensor).item()))
+
+        logits = logits.float()
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        pred = logits.argmax(dim=1).cpu().numpy()
+
+        all_prob.append(probs)
+        all_p.append(pred)
+        all_y.append(y_tensor.cpu().numpy())
+        rows.extend(list(metas))
+
+        if collect_preds:
+            for i, m in enumerate(metas):
+                row = {
+                    "path": m.get("path"),
+                    "accession": m.get("accession"),
+                    "raw_label": m.get("raw_label"),
+                    "y_true": int(y_tensor[i].item()),
+                    "y_pred": int(pred[i]),
+                    "probs": probs[i].tolist(),
+                }
+                pred_rows.append(row)
+        if gradcam and gradcam_dir is not None and gradcam_saved < gradcam_limit:
+            # Convert numpy predictions to tensor on correct device
+            pred_tensor = torch.as_tensor(pred, dtype=torch.long, device=device)
+            gradcam_saved += _save_gradcam_batch(model, x, pred_tensor, metas, gradcam_dir, gradcam_saved, device)
+
+    if not all_prob:
+        return {"acc": 0.0, "loss": float(np.mean(losses)) if losses else 0.0}, pred_rows
+
+    y_true = np.concatenate(all_y).astype(int)
+    y_pred = np.concatenate(all_p).astype(int)
+    prob = np.concatenate(all_prob, axis=0)
+
+    num_classes = prob.shape[1]
+
+    # Label adjustment for metrics (assuming 4 classes = 1..4, 2 classes = 0..1)
+    if num_classes == 4:
+        y_true_mapped = y_true + 1
+        y_pred_mapped = y_pred + 1
+        labels = [1, 2, 3, 4]
+    else:
+        y_true_mapped = y_true
+        y_pred_mapped = y_pred
+        labels = list(range(num_classes))
+
+    acc = accuracy_score(y_true_mapped, y_pred_mapped)
+
+    kappa_q = 0.0
+    if num_classes > 1:
+        try:
+            kappa_q = cohen_kappa_score(y_true_mapped, y_pred_mapped, weights='quadratic')
+        except Exception:
+            pass
+
+    auc_ovr = None
+    if num_classes > 1:
+        try:
+            if num_classes == 2:
+                auc_ovr = roc_auc_score(y_true, prob[:, 1])
+            else:
+                auc_ovr = roc_auc_score(pd.get_dummies(y_true), prob, multi_class='ovr')
+        except Exception:
+            pass
+
+    cm_np = confusion_matrix(y_true_mapped, y_pred_mapped, labels=labels)
+    cm = cm_np.tolist()
+    report = classification_report(y_true_mapped, y_pred_mapped, labels=labels, output_dict=True, zero_division=0)
+    macro_f1 = float(report.get("macro avg", {}).get("f1-score", 0.0))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        recalls = np.diag(cm_np) / cm_np.sum(axis=1)
+    recalls = np.nan_to_num(recalls, nan=0.0)
+    bal_acc = float(np.mean(recalls)) if num_classes > 0 else None
+    chance = 1.0 / float(num_classes) if num_classes > 1 else 0.0
+    bal_acc_adj = None
+    if bal_acc is not None and num_classes > 1:
+        denom = 1.0 - chance
+        bal_acc_adj = float((bal_acc - chance) / denom) if denom > 0 else 0.0
+
+    out_rows = []
+    for i, m in enumerate(rows):
+        pr = prob[i]
+        row_data = {
+            **m,
+            "y_true": int(y_true_mapped[i]),
+            "y_pred": int(y_pred_mapped[i]),
+        }
+        for c_idx in range(num_classes):
+            row_data[f"p_class_{c_idx}"] = float(pr[c_idx])
+        out_rows.append(row_data)
+
+    metrics = {
+        "acc": acc,
+        "kappa_quadratic": kappa_q,
+        "auc_ovr": auc_ovr,
+        "macro_f1": macro_f1,
+        "bal_acc": bal_acc,
+        "bal_acc_adj": bal_acc_adj,
+        "confusion_matrix": cm,
+        "classification_report": report,
+        "loss": float(np.mean(losses)) if losses else None,
+        "val_rows": out_rows,
+    }
+    return metrics, pred_rows
+
+@torch.no_grad()
+def extract_embeddings(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    amp_enabled: bool = False,
+    layer_name: Optional[str] = None,
+) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+    """Register a forward hook to capture pooled CNN embeddings for each batch."""
+    model.eval()
+    feats: List[np.ndarray] = []
+    rows: List[Dict[str, Any]] = []
+    buffer: List[np.ndarray] = []
+
+    def hook_fn(module, inp, out):
+        v = out.detach().float().cpu().numpy()
+        v = v.reshape(v.shape[0], -1)
+        buffer.append(v)
+
+    # Try to register a hook on the requested layer (by name) or default avgpool.
+    target_layer = None
+    if layer_name:
+        target_layer = dict(model.named_modules()).get(layer_name)
+        if target_layer is None:
+            logging.getLogger("mammography").warning("Layer %s nao encontrado; usando avgpool.", layer_name)
+    if target_layer is None:
+        if hasattr(model, "avgpool"):
+            target_layer = model.avgpool
+        elif hasattr(model, "backbone") and hasattr(model.backbone, "avgpool"):
+            target_layer = model.backbone.avgpool
+
+    handle = None
+    if target_layer:
+        handle = target_layer.register_forward_hook(hook_fn)
+
+    for batch in tqdm(loader, desc="Embeddings", leave=False):
+        if batch is None:
+            continue
+        if len(batch) == 4:
+            x, _, metas, extra_features = batch
+        else:
+            x, _, metas = batch
+            extra_features = None
+            
+        x = x.to(device=device, non_blocking=True, memory_format=torch.channels_last)
+        extra_tensor = None
+        if extra_features is not None:
+            extra_tensor = extra_features.to(device=device, non_blocking=True)
+            
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            _ = model(x, extra_tensor)
+            
+        if buffer:
+            feat = np.concatenate(buffer, axis=0)
+            buffer.clear()
+            feats.append(feat)
+        rows.extend(list(metas))
+
+    if handle is not None:
+        handle.remove()
+
+    if not feats:
+        return np.zeros((0, 0)), []
+
+    return np.concatenate(feats, axis=0), rows
+
+
+def _save_gradcam_batch(
+    model: nn.Module,
+    x: torch.Tensor,
+    preds: torch.Tensor,
+    metas: List[Dict[str, Any]],
+    out_dir: Path,
+    already: int,
+    device: torch.device,
+) -> int:
+    """Generate Grad-CAM heatmaps for a small batch and persist blended overlays."""
+    try:
+        target_layer = None
+        if hasattr(model, "layer4"):
+            target_layer = model.layer4[-1]
+        elif hasattr(model, "features"):
+            target_layer = model.features[-1]
+        if target_layer is None:
+            return 0
+
+        activations: List[torch.Tensor] = []
+        gradients: List[torch.Tensor] = []
+
+        def fwd_hook(_, __, output):
+            activations.append(output.detach())
+
+        def bwd_hook(_, grad_in, grad_out):
+            gradients.append(grad_out[0].detach())
+
+        handle_fwd = target_layer.register_forward_hook(fwd_hook)
+        handle_bwd = target_layer.register_full_backward_hook(bwd_hook)
+
+        out = model(x)
+        class_idxs = preds.detach()
+        selected = out.gather(1, class_idxs.unsqueeze(1)).sum()
+        model.zero_grad()
+        selected.backward()
+
+        handle_fwd.remove()
+        handle_bwd.remove()
+
+        if not activations or not gradients:
+            return 0
+        act = activations[0]
+        grad = gradients[0]
+        weights = grad.mean(dim=(2, 3), keepdim=True)
+        cam = (weights * act).sum(dim=1, keepdim=True)
+        cam = torch.relu(cam)
+        cam = torch.nn.functional.interpolate(cam, size=x.shape[-2:], mode="bilinear", align_corners=False)
+        cam = cam.squeeze(1)
+        cam = (cam - cam.min(dim=1, keepdim=True)[0].min(dim=2, keepdim=True)[0]) / (cam.max(dim=1, keepdim=True)[0].max(dim=2, keepdim=True)[0] + 1e-6)
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        saved = 0
+        for i in range(min(len(metas), cam.shape[0])):
+            heatmap = cam[i].detach().cpu().numpy()
+            img = x[i].detach().cpu()
+            img = img.permute(1, 2, 0).numpy()
+            img = (img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])).clip(0, 1)
+            heatmap = np.uint8(255 * heatmap)
+            heatmap_img = Image.fromarray(heatmap).resize((img.shape[1], img.shape[0]))
+            heatmap_img = heatmap_img.convert("RGBA")
+            base = Image.fromarray(np.uint8(img * 255))
+            base = base.convert("RGBA")
+            blended = Image.blend(base, heatmap_img, alpha=0.35)
+            fname = out_dir / f"gradcam_{already + saved}_{metas[i].get('accession','sample')}.png"
+            blended.save(fname)
+            saved += 1
+        return saved
+    except Exception as exc:
+        logging.getLogger("mammography").warning("Grad-CAM falhou: %s", exc)
+        return 0
+
+
+def plot_history(history: List[Dict[str, Any]], outdir: Path) -> None:
+    """Persist training curves to CSV/PNG so notebooks and LaTeX can consume them."""
+    if not history:
+        return
+    df = pd.DataFrame(history)
+    outdir.mkdir(parents=True, exist_ok=True)
+    df.to_csv(outdir / "train_history.csv", index=False)
+    try:
+        fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+        ax[0].plot(df["epoch"], df["train_loss"], label="train")
+        ax[0].plot(df["epoch"], df["val_loss"], label="val")
+        ax[0].set_title("Loss")
+        ax[0].legend()
+        ax[1].plot(df["epoch"], df["train_acc"], label="train")
+        ax[1].plot(df["epoch"], df["val_acc"], label="val")
+        ax[1].set_title("Accuracy")
+        ax[1].legend()
+        fig.tight_layout()
+        fig.savefig(outdir / "train_history.png", dpi=150)
+        plt.close(fig)
+    except Exception:
+        logging.getLogger("mammography").debug("Plot de history falhou; salvando apenas CSV.")
+
+
+def save_predictions(pred_rows: List[Dict[str, Any]], outdir: Path) -> None:
+    """Write per-sample validation predictions when the caller opts in."""
+    if not pred_rows:
+        return
+    pd.DataFrame(pred_rows).to_csv(outdir / "val_predictions.csv", index=False)
+
+def save_metrics_figure(metrics: Dict[str, Any], out_path: str) -> None:
+    """Render confusion matrix and per-class precision/recall/F1 to a single PNG."""
+    try:
+        cm_data = np.array(metrics.get("confusion_matrix", []), dtype=float)
+        report = metrics.get("classification_report", {})
+
+        if cm_data.size == 0:
+            return
+
+        classes = [str(k) for k in report.keys() if k not in ("accuracy", "macro avg", "weighted avg")]
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        # Matrix
+        ax = axes[0]
+        cax = ax.imshow(cm_data, interpolation='nearest', cmap=mpl_cm.Blues)
+        ax.set_title('Confusion Matrix')
+        fig.colorbar(cax, ax=ax)
+        tick_marks = np.arange(len(classes))
+        ax.set_xticks(tick_marks)
+        ax.set_xticklabels(classes)
+        ax.set_yticks(tick_marks)
+        ax.set_yticklabels(classes)
+
+        thresh = cm_data.max() / 2.
+        for i, j in np.ndindex(cm_data.shape):
+            ax.text(j, i, format(int(cm_data[i, j]), 'd'),
+                     horizontalalignment="center",
+                     color="white" if cm_data[i, j] > thresh else "black")
+
+        # Metrics
+        ax = axes[1]
+        # Simple bar plot of precision/recall/f1 per class
+        precisions = [report[c]['precision'] for c in classes]
+        recalls = [report[c]['recall'] for c in classes]
+        f1s = [report[c]['f1-score'] for c in classes]
+
+        x = np.arange(len(classes))
+        width = 0.25
+
+        ax.bar(x - width, precisions, width, label='Precision')
+        ax.bar(x, recalls, width, label='Recall')
+        ax.bar(x + width, f1s, width, label='F1')
+
+        ax.set_ylabel('Score')
+        ax.set_title('Metrics per Class')
+        ax.set_xticks(x)
+        ax.set_xticklabels(classes)
+        ax.legend()
+
+        plt.tight_layout()
+        plt.savefig(out_path)
+        plt.close(fig)
+    except Exception as e:
+        logging.getLogger("mammography").warning(f"Failed to save metrics figure: {e}")
+
+
+def plot_view_comparison(
+    cc_metrics: Optional[Dict[str, Any]],
+    mlo_metrics: Optional[Dict[str, Any]],
+    ensemble_metrics: Optional[Dict[str, Any]],
+    out_path: Union[Path, str]
+) -> None:
+    """Create visualization comparing CC vs MLO vs Ensemble metrics.
+
+    Args:
+        cc_metrics: Metrics dictionary from CC view model validation
+        mlo_metrics: Metrics dictionary from MLO view model validation
+        ensemble_metrics: Metrics dictionary from ensemble validation
+        out_path: Path where the comparison figure should be saved
+    """
+    try:
+        # Collect available models and their metrics
+        models = []
+        metrics_data = []
+
+        if cc_metrics is not None:
+            models.append("CC")
+            metrics_data.append(cc_metrics)
+        if mlo_metrics is not None:
+            models.append("MLO")
+            metrics_data.append(mlo_metrics)
+        if ensemble_metrics is not None:
+            models.append("Ensemble")
+            metrics_data.append(ensemble_metrics)
+
+        if not models:
+            logging.getLogger("mammography").warning("No metrics provided for view comparison")
+            return
+
+        # Extract key metrics for comparison
+        metric_names = ["acc", "macro_f1", "bal_acc", "kappa_quadratic"]
+        metric_labels = ["Accuracy", "Macro F1", "Balanced Acc", "Kappa (Quadratic)"]
+
+        # Create figure with subplots
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        # Left plot: Bar chart comparing key metrics
+        ax = axes[0]
+        x = np.arange(len(metric_names))
+        width = 0.25
+
+        for i, (model_name, metrics) in enumerate(zip(models, metrics_data)):
+            values = []
+            for metric_name in metric_names:
+                val = metrics.get(metric_name)
+                if val is None:
+                    values.append(0.0)
+                else:
+                    values.append(float(val))
+
+            offset = (i - len(models) / 2 + 0.5) * width
+            ax.bar(x + offset, values, width, label=model_name)
+
+        ax.set_ylabel('Score')
+        ax.set_title('View-Specific Model Comparison')
+        ax.set_xticks(x)
+        ax.set_xticklabels(metric_labels, rotation=15, ha='right')
+        ax.legend()
+        ax.set_ylim([0, 1.05])
+        ax.grid(axis='y', alpha=0.3)
+
+        # Right plot: AUC comparison if available
+        ax = axes[1]
+        auc_values = []
+        auc_models = []
+
+        for model_name, metrics in zip(models, metrics_data):
+            auc = metrics.get("auc_ovr")
+            if auc is not None:
+                auc_values.append(float(auc))
+                auc_models.append(model_name)
+
+        if auc_values:
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c'][:len(auc_models)]
+            bars = ax.bar(auc_models, auc_values, color=colors, alpha=0.7)
+            ax.set_ylabel('AUC-OVR Score')
+            ax.set_title('AUC Comparison Across Views')
+            ax.set_ylim([0, 1.05])
+            ax.grid(axis='y', alpha=0.3)
+
+            # Add value labels on bars
+            for bar, val in zip(bars, auc_values):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{val:.3f}',
+                       ha='center', va='bottom', fontweight='bold')
+        else:
+            ax.text(0.5, 0.5, 'AUC not available',
+                   ha='center', va='center', transform=ax.transAxes,
+                   fontsize=12, style='italic')
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=150)
+        plt.close(fig)
+
+        logging.getLogger("mammography").info(f"View comparison plot saved to {out_path}")
+    except Exception as e:
+        logging.getLogger("mammography").warning(f"Failed to create view comparison plot: {e}")

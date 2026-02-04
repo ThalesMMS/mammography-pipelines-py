@@ -1,0 +1,89 @@
+# View-Specific Model Training Configuration
+# This YAML demonstrates view-specific training for mammography density classification.
+# Trains separate models for CC (craniocaudal) and MLO (mediolateral oblique) views,
+# with optional ensemble prediction combining both views.
+#
+# Use with: mammography train --dataset archive --view-specific-training --ensemble-method average
+
+description: |
+  View-specific training configuration for mammography density classification.
+  Addresses the finding that different mammography views (CC vs MLO) may have
+  different predictive characteristics. Training separate models per view can
+  capture view-specific patterns and improve overall accuracy.
+
+# View-specific training parameters
+view_specific_training:
+  # Enable view-specific training (trains separate models for each view)
+  enabled: true
+
+  # Name of the column in CSV that contains view information
+  # Common options: "ImageLaterality", "ViewPosition", "view"
+  view_column: "view"
+
+  # List of views to train models for
+  # Standard mammography views are CC (craniocaudal) and MLO (mediolateral oblique)
+  views_to_train:
+    - "CC"
+    - "MLO"
+
+  # Ensemble method for combining predictions from view-specific models
+  # Options:
+  #   - "none": No ensemble, keep models separate (for per-view analysis)
+  #   - "average": Simple average of prediction probabilities (recommended)
+  #   - "weighted": Weighted average based on validation performance
+  #   - "max": Take maximum probability across views
+  ensemble_method: "average"
+
+# Standard training hyperparameters (same as regular training)
+model:
+  architecture: "efficientnet_b0"  # or "resnet50"
+  classes: "density"               # BI-RADS density classification (A-D)
+  pretrained: true                 # Use ImageNet pretrained weights
+
+training:
+  epochs: 20
+  batch_size: 16
+  learning_rate: 0.0001
+  backbone_lr: 0.00001            # Lower LR for pretrained backbone
+  warmup_epochs: 2
+  early_stop_patience: 5
+  unfreeze_last_block: true
+
+# Output structure when view-specific training is enabled:
+# outputs/
+#   run_name_CC/                   # CC view model
+#     checkpoints/
+#       best_model_cc.pt
+#       checkpoint_cc.pt
+#     metrics/
+#       val_metrics_cc.json
+#       best_metrics_cc.json
+#   run_name_MLO/                  # MLO view model
+#     checkpoints/
+#       best_model_mlo.pt
+#       checkpoint_mlo.pt
+#     metrics/
+#       val_metrics_mlo.json
+#       best_metrics_mlo.json
+#   run_name/                      # Main directory
+#     metrics/
+#       ensemble_metrics.json      # Combined ensemble metrics
+#       view_comparison.png        # Visualization comparing views
+
+# Example usage:
+# mammography train \
+#   --csv classificacao.csv \
+#   --dicom-root archive \
+#   --outdir outputs/view_specific_density \
+#   --view-specific-training \
+#   --view-column ImageLaterality \
+#   --views CC,MLO \
+#   --ensemble-method average \
+#   --epochs 20 \
+#   --batch-size 16 \
+#   --arch efficientnet_b0
+
+# Use cases:
+# 1. Compare CC vs MLO predictive power: Use ensemble_method="none" and analyze per-view metrics
+# 2. Improve overall accuracy: Use ensemble_method="average" to combine both views
+# 3. Production deployment: Train view-specific models for inference with real clinical workflow
