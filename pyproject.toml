@@ -31,6 +31,7 @@ dependencies = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     "torchaudio>=2.0.0",
+    "timm>=0.9.0",
     "pydicom>=2.4.0",
     "Pillow>=9.5.0",
     "nibabel>=5.1.0",
@@ -58,14 +59,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Install with: pip install -e ".[dev]"
+# Required for: running tests with coverage, linting, type checking, formatting
 dev = [
     "pytest>=7.4.0",
-    "pytest-cov>=4.1.0",
+    "pytest-cov>=4.1.0",  # Required for coverage reporting
     "pytest-mock>=3.11.0",
     "black>=23.7.0",
     "ruff>=0.0.280",
     "mypy>=1.5.0",
     "pre-commit>=3.3.0",
+    "interrogate>=1.5.0",  # Docstring coverage enforcement
 ]
 docs = [
     "sphinx>=7.1.0",
@@ -179,6 +183,7 @@ module = [
     "torch.*",
     "torchvision.*",
     "torchaudio.*",
+    "timm.*",
     "pydicom.*",
     "PIL.*",
     "nibabel.*",
@@ -214,19 +219,16 @@ addopts = [
     "--tb=short",
     "--strict-markers",
     "--strict-config",
-    "--cov=mammography.analysis",
-    "--cov=mammography.cli",
-    "--cov=mammography.data",
-    "--cov=mammography.models.nets",
-    "--cov=mammography.training",
-    "--cov=mammography.io.dicom",
-    "--cov-report=term-missing",
-    "--cov-report=html:htmlcov",
-    "--cov-report=xml",
-    "--cov-fail-under=50",
     "--durations=10",
     "--maxfail=5",
 ]
+# Coverage configuration removed from default addopts to avoid requiring pytest-cov
+# for basic test runs. To run tests with coverage, use:
+#   pytest --cov=mammography --cov-report=term-missing --cov-report=html:htmlcov --cov-fail-under=50
+# Or install pytest-cov and use the coverage profile:
+#   pytest --cov=mammography.analysis --cov=mammography.cli --cov=mammography.data \
+#          --cov=mammography.models.nets --cov=mammography.training --cov=mammography.io.dicom \
+#          --cov-report=term-missing --cov-report=html:htmlcov --cov-report=xml --cov-fail-under=50
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",
@@ -283,3 +285,22 @@ norecursedirs = [
 junit_family = "xunit2"
 junit_logging = "all"
 junit_log_passing_tests = true
+
+# Interrogate configuration
+[tool.interrogate]
+# Minimum docstring coverage required (90% target)
+fail-under = 90
+# Verbose output showing what is missing
+verbose = 2
+# Exclude __init__.py files (typically just imports)
+ignore-init-method = true
+ignore-init-module = true
+# Exclude test files
+exclude = ["tests", "docs", "build", "dist", "*.egg-info", ".tox", ".venv", "venv"]
+# Color output in terminal
+color = true
+# Generate badge for documentation
+generate-badge = "docs/source/_static"
+badge-format = "svg"
+# Style: sphinx (more lenient, matches our Sphinx Napoleon config)
+style = "sphinx"

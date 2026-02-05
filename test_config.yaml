@@ -1,0 +1,12 @@
+# Minimal config for end-to-end test with mamografias dataset
+embed:
+  dataset: mamografias
+  data_dir: ./mamografias
+  outdir: ./test_outputs/e2e_embeddings
+  arch: resnet50
+  classes: multiclass
+  batch_size: 8
+  layer_name: avgpool
+  run_reduction: false
+  run_clustering: false
+  device: cpu

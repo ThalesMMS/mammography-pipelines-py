@@ -1,19 +1,52 @@
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 from mammography.config import HP
 from mammography.data.csv_loader import DATASET_PRESETS
+from mammography.data.format_detection import (
+    detect_dataset_format,
+    validate_format,
+    suggest_preprocessing,
+)
+from mammography.utils.smart_defaults import SmartDefaults
+from mammography.utils.wizard_helpers import (
+    ask_choice_with_help,
+    ask_float_with_help,
+    ask_int_with_help,
+    ask_optional_with_help,
+    ask_with_help,
+    ask_yes_no_with_help,
+    print_help,
+)
 
 
 @dataclass
 class WizardCommand:
     label: str
     argv: list[str]
+
+
+def _print_progress(current: int, total: int, section: str = "") -> None:
+    """
+    Print progress indicator for wizard steps.
+
+    Args:
+        current: Current step number (1-indexed)
+        total: Total number of steps
+        section: Optional section description
+    """
+    progress_text = f"\n{'='*60}\nPasso {current} de {total}"
+    if section:
+        progress_text += f": {section}"
+    progress_text += f"\n{'='*60}"
+    print(progress_text)
 
 
 def _ask_choice(title: str, options: Sequence[str], default: int = 0) -> int:
@@ -89,6 +122,135 @@ def _ask_extra_args() -> list[str]:
     return shlex.split(raw) if raw else []
 
 
+def _validate_dataset_path(path: str, expected_type: str | None = None) -> bool:
+    """
+    Validate dataset path and show format detection results.
+
+    Args:
+        path: Path to validate (file or directory)
+        expected_type: Expected dataset type (archive, mamografias, patches_completo, custom)
+
+    Returns:
+        True if user wants to proceed, False if validation failed and user wants to retry
+    """
+    if not path:
+        print("\nERRO: Caminho vazio fornecido.")
+        return False
+
+    path_obj = Path(path)
+
+    # Check if path exists
+    if not path_obj.exists():
+        print(f"\nERRO: Caminho nao encontrado: {path}")
+        print("\nSugestoes:")
+        print("  - Verifique se o caminho esta correto")
+        print("  - Use caminho absoluto ou relativo valido")
+        print("  - Verifique se tem permissoes de leitura")
+
+        # Try to provide helpful suggestions based on path
+        parent = path_obj.parent
+        if parent.exists():
+            print(f"\nDiretorio pai existe: {parent}")
+            similar = [
+                str(p.name)
+                for p in parent.iterdir()
+                if path_obj.stem.lower() in p.name.lower()
+            ]
+            if similar:
+                print(f"Arquivos/diretorios similares encontrados: {', '.join(similar)}")
+
+        return False
+
+    # For CSV files, just check if they're files
+    if path_obj.suffix.lower() in {".csv", ".tsv", ".txt"}:
+        if not path_obj.is_file():
+            print(f"\nERRO: Caminho existe mas nao e um arquivo: {path}")
+            return False
+        print(f"\n✓ Arquivo encontrado: {path}")
+        return True
+
+    # For directories, run format detection
+    if not path_obj.is_dir():
+        print(f"\nAVISO: Caminho existe mas nao e um diretorio: {path}")
+        if _ask_yes_no("Prosseguir mesmo assim?", False):
+            return True
+        return False
+
+    print(f"\n→ Detectando formato do dataset em: {path}")
+
+    try:
+        # Run format detection
+        fmt = detect_dataset_format(str(path))
+
+        # Display detection results
+        print(f"\nFormato detectado:")
+        print(f"  Tipo: {fmt.dataset_type}")
+        print(f"  Formato de imagem: {fmt.image_format}")
+        print(f"  Total de imagens: {fmt.image_count}")
+
+        if fmt.csv_path:
+            print(f"  Metadata: {fmt.csv_path}")
+        if fmt.dicom_root:
+            print(f"  DICOM root: {fmt.dicom_root}")
+
+        if fmt.format_counts:
+            print(f"\n  Distribuicao de formatos:")
+            for ext, count in fmt.format_counts.items():
+                percentage = (count / fmt.image_count * 100) if fmt.image_count > 0 else 0
+                print(f"    {ext}: {count} ({percentage:.1f}%)")
+
+        # Run validation and show warnings
+        warnings = validate_format(fmt)
+        if warnings:
+            print(f"\n⚠ Avisos de validacao ({len(warnings)}):")
+            for i, warning in enumerate(warnings[:5], 1):  # Show first 5 warnings
+                print(f"  {i}. {warning}")
+            if len(warnings) > 5:
+                print(f"  ... e mais {len(warnings) - 5} avisos")
+
+        # Check if detected type matches expected type
+        if expected_type and expected_type != "custom" and fmt.dataset_type != expected_type:
+            print(
+                f"\n⚠ AVISO: Tipo detectado ({fmt.dataset_type}) difere do esperado ({expected_type})"
+            )
+
+        # Show preprocessing suggestions if any issues found
+        if warnings or fmt.image_count == 0:
+            suggestions = suggest_preprocessing(fmt)
+            if suggestions:
+                print(f"\nSugestoes de preprocessamento:")
+                for i, suggestion in enumerate(suggestions[:3], 1):  # Show first 3
+                    print(f"  {i}. {suggestion}")
+                if len(suggestions) > 3:
+                    print(f"  ... e mais {len(suggestions) - 3} sugestoes")
+
+        # Critical errors - don't allow proceeding
+        if fmt.image_count == 0:
+            print("\nERRO CRITICO: Nenhuma imagem encontrada no dataset.")
+            print("Nao e possivel prosseguir com dataset vazio.")
+            return False
+
+        # Ask user if they want to proceed despite warnings
+        if warnings:
+            if not _ask_yes_no("\nProsseguir mesmo com avisos?", True):
+                return False
+
+        print("\n✓ Validacao concluida")
+        return True
+
+    except ValueError as exc:
+        print(f"\nERRO: {exc}")
+        return False
+    except Exception as exc:
+        print(f"\nERRO inesperado durante validacao: {exc!r}")
+        print("\nSugestoes:")
+        print("  - Verifique se o diretorio tem permissoes de leitura")
+        print("  - Verifique se o diretorio contem imagens validas")
+        if _ask_yes_no("Prosseguir mesmo assim?", False):
+            return True
+        return False
+
+
 def _run_command(cmd: WizardCommand, dry_run: bool) -> int:
     print("\nResumo do comando:")
     print(f"  {cmd.label}")
@@ -113,16 +275,60 @@ def _dataset_prompt() -> tuple[list[str], str | None, str | None]:
     dicom_root = None
     if selection != "custom":
         args.extend(["--dataset", selection])
-    if selection == "archive":
-        csv_path = _ask_string("CSV (classificacao.csv)", "classificacao.csv")
-        dicom_root = _ask_string("Diretorio DICOM", "archive")
-    elif selection in {"mamografias", "patches_completo"}:
-        csv_path = _ask_string("Diretorio com featureS.txt", selection)
-    else:
-        csv_path = _ask_string("CSV ou diretorio com featureS.txt")
-        dicom_root = _ask_string("Diretorio DICOM (opcional)", "")
-        if not dicom_root:
-            dicom_root = None
+
+    # Loop until valid paths are provided
+    while True:
+        if selection == "archive":
+            csv_path = _ask_string("CSV (classificacao.csv)", "classificacao.csv")
+            dicom_root = _ask_string("Diretorio DICOM", "archive")
+
+            # Validate CSV path
+            if csv_path and not _validate_dataset_path(csv_path, None):
+                if not _ask_yes_no("Tentar novamente com outro caminho?", True):
+                    break
+                continue
+
+            # Validate DICOM root directory
+            if dicom_root and not _validate_dataset_path(dicom_root, "archive"):
+                if not _ask_yes_no("Tentar novamente com outro caminho?", True):
+                    break
+                continue
+
+            # Both paths validated successfully
+            break
+
+        elif selection in {"mamografias", "patches_completo"}:
+            csv_path = _ask_string("Diretorio com featureS.txt", selection)
+
+            # Validate directory path
+            if csv_path and not _validate_dataset_path(csv_path, selection):
+                if not _ask_yes_no("Tentar novamente com outro caminho?", True):
+                    break
+                continue
+
+            # Path validated successfully
+            break
+
+        else:  # custom
+            csv_path = _ask_string("CSV ou diretorio com featureS.txt")
+            dicom_root = _ask_string("Diretorio DICOM (opcional)", "")
+            if not dicom_root:
+                dicom_root = None
+
+            # Validate CSV/directory path
+            if csv_path and not _validate_dataset_path(csv_path, "custom"):
+                if not _ask_yes_no("Tentar novamente com outro caminho?", True):
+                    break
+                continue
+
+            # Validate DICOM root if provided
+            if dicom_root and not _validate_dataset_path(dicom_root, None):
+                if not _ask_yes_no("Tentar novamente com outro caminho?", True):
+                    break
+                continue
+
+            # Paths validated successfully
+            break
 
     if csv_path:
         args.extend(["--csv", csv_path])
@@ -136,22 +342,39 @@ def _build_cli_command(subcommand: str, args: Iterable[str]) -> list[str]:
 
 
 def _wizard_train() -> WizardCommand:
+    # Determine total steps: 1=dataset, 2=basic config, 3=advanced (optional)
+    total_steps = 3
+    current_step = 1
+
+    _print_progress(current_step, total_steps, "Selecao de Dataset e Config")
     args = _ask_config_args()
     dataset_args, _, _ = _dataset_prompt()
     args.extend(dataset_args)
 
-    arch_idx = _ask_choice("Arquitetura:", ["efficientnet_b0", "resnet50"], default=0)
+    # Initialize SmartDefaults for hardware-aware recommendations
+    smart_defaults = SmartDefaults()
+    print(f"\n→ Hardware detectado: {smart_defaults.device_type.upper()}")
+    print(f"  (Recomendacoes baseadas no hardware serao sugeridas)")
+
+    current_step += 1
+    _print_progress(current_step, total_steps, "Configuracao Basica")
+    arch_idx = ask_choice_with_help("Arquitetura:", ["efficientnet_b0", "resnet50"], param_name="arch", default=0)
     arch = ["efficientnet_b0", "resnet50"][arch_idx]
-    class_idx = _ask_choice("Classes:", ["density (A-D)", "binary (AB vs CD)", "multiclass (A-D)"], default=0)
+    class_idx = ask_choice_with_help("Classes:", ["density (A-D)", "binary (AB vs CD)", "multiclass (A-D)"], param_name="classes", default=0)
     classes = ["density", "binary", "multiclass"][class_idx]
 
-    outdir = _ask_string("Outdir", "outputs/mammo_efficientnetb0_density")
-    epochs = _ask_int("Epocas", HP.EPOCHS)
-    batch_size = _ask_int("Batch size", HP.BATCH_SIZE)
-    img_size = _ask_int("Img size", HP.IMG_SIZE)
-    device = _ask_string("Device (auto/cuda/mps/cpu)", HP.DEVICE)
-    cache_mode = _ask_string("Cache mode", HP.CACHE_MODE)
-    pretrained = _ask_yes_no("Usar pesos pretrained?", True)
+    outdir = ask_with_help("Outdir", param_name="outdir", default="outputs/mammo_efficientnetb0_density")
+    epochs = ask_int_with_help("Epocas", param_name="epochs", default=HP.EPOCHS)
+
+    # Get smart defaults based on hardware and task
+    img_size = ask_int_with_help("Img size", param_name="img_size", default=HP.IMG_SIZE)
+    smart_batch_size = smart_defaults.get_batch_size(task="train", image_size=img_size)
+    batch_size = ask_int_with_help("Batch size", param_name="batch_size", default=smart_batch_size)
+
+    device = ask_with_help("Device (auto/cuda/mps/cpu)", param_name="device", default=HP.DEVICE)
+    smart_cache_mode = smart_defaults.get_cache_mode()
+    cache_mode = ask_with_help("Cache mode", param_name="cache_mode", default=smart_cache_mode)
+    pretrained = ask_yes_no_with_help("Usar pesos pretrained?", param_name="pretrained", default=True)
 
     args.extend(
         [
@@ -177,91 +400,93 @@ def _wizard_train() -> WizardCommand:
         args.append("--no-pretrained")
 
     if _ask_yes_no("Configurar opcoes avancadas?", False):
-        include_class_5 = _ask_yes_no("Incluir classe 5?", False)
+        current_step += 1
+        _print_progress(current_step, total_steps, "Opcoes Avancadas")
+        include_class_5 = ask_yes_no_with_help("Incluir classe 5?", param_name="include_class_5", default=False)
         if include_class_5:
             args.append("--include-class-5")
 
-        cache_dir = _ask_optional("Cache dir")
+        cache_dir = ask_optional_with_help("Cache dir", param_name="cache_dir")
         if cache_dir:
             args.extend(["--cache-dir", cache_dir])
 
-        embeddings_dir = _ask_optional("Embeddings (diretorio)")
+        embeddings_dir = ask_optional_with_help("Embeddings (diretorio)", param_name="embeddings_dir")
         if embeddings_dir:
             args.extend(["--embeddings-dir", embeddings_dir])
 
-        seed = _ask_int("Seed", HP.SEED)
+        seed = ask_int_with_help("Seed", param_name="seed", default=HP.SEED)
         args.extend(["--seed", str(seed)])
-        val_frac = _ask_float("Val frac", HP.VAL_FRAC)
+        val_frac = ask_float_with_help("Val frac", param_name="val_frac", default=HP.VAL_FRAC)
         args.extend(["--val-frac", str(val_frac)])
 
-        if not _ask_yes_no("Garantir todas as classes no val?", True):
+        if not ask_yes_no_with_help("Garantir todas as classes no val?", param_name="split_ensure_all_classes", default=True):
             args.append("--no-split-ensure-all-classes")
-        split_max_tries = _ask_int("Split max tries", 200)
+        split_max_tries = ask_int_with_help("Split max tries", param_name="split_max_tries", default=200)
         args.extend(["--split-max-tries", str(split_max_tries)])
 
-        if not _ask_yes_no("Ativar augmentations?", True):
+        if not ask_yes_no_with_help("Ativar augmentations?", param_name="augment", default=True):
             args.append("--no-augment")
         else:
-            if _ask_yes_no("Flip vertical?", False):
+            if ask_yes_no_with_help("Flip vertical?", param_name="augment_vertical", default=False):
                 args.append("--augment-vertical")
-            if _ask_yes_no("Color jitter?", False):
+            if ask_yes_no_with_help("Color jitter?", param_name="augment_color", default=False):
                 args.append("--augment-color")
-            rotation_deg = _ask_float("Rotacao (graus)", 5.0)
+            rotation_deg = ask_float_with_help("Rotacao (graus)", param_name="augment_rotation_deg", default=5.0)
             if rotation_deg != 5.0:
                 args.extend(["--augment-rotation-deg", str(rotation_deg)])
 
         if _ask_yes_no("Normalizacao customizada?", False):
-            mean = _ask_string("Mean (ex: 0.485,0.456,0.406)", "0.485,0.456,0.406")
-            std = _ask_string("Std (ex: 0.229,0.224,0.225)", "0.229,0.224,0.225")
+            mean = ask_with_help("Mean (ex: 0.485,0.456,0.406)", param_name="mean", default="0.485,0.456,0.406")
+            std = ask_with_help("Std (ex: 0.229,0.224,0.225)", param_name="std", default="0.229,0.224,0.225")
             args.extend(["--mean", mean, "--std", std])
 
-        class_choice = _ask_choice("Class weights:", ["auto", "none", "manual"], default=0)
+        class_choice = ask_choice_with_help("Class weights:", ["auto", "none", "manual"], param_name="class_weights", default=0)
         if class_choice == 2:
             weights = _ask_string("Pesos (ex: 1.0,0.8,1.2,1.0)")
             args.extend(["--class-weights", weights])
         else:
             args.extend(["--class-weights", ["auto", "none"][class_choice]])
         if class_choice == 0:
-            alpha = _ask_float("Class weights alpha", 1.0)
+            alpha = ask_float_with_help("Class weights alpha", param_name="class_weights_alpha", default=1.0)
             if alpha != 1.0:
                 args.extend(["--class-weights-alpha", str(alpha)])
 
-        if _ask_yes_no("Usar sampler ponderado?", True):
+        if ask_yes_no_with_help("Usar sampler ponderado?", param_name="sampler_weighted", default=True):
             args.append("--sampler-weighted")
-            sampler_alpha = _ask_float("Sampler alpha", 1.0)
+            sampler_alpha = ask_float_with_help("Sampler alpha", param_name="sampler_alpha", default=1.0)
             if sampler_alpha != 1.0:
                 args.extend(["--sampler-alpha", str(sampler_alpha)])
 
-        if _ask_yes_no("Treinar todo o backbone?", False):
+        if ask_yes_no_with_help("Treinar todo o backbone?", param_name="train_backbone", default=False):
             args.append("--train-backbone")
         else:
-            if _ask_yes_no("Descongelar ultimo bloco?", True):
+            if ask_yes_no_with_help("Descongelar ultimo bloco?", param_name="unfreeze_last_block", default=True):
                 args.append("--unfreeze-last-block")
             else:
                 args.append("--no-unfreeze-last-block")
 
-        lr = _ask_float("Learning rate", HP.LR)
-        backbone_lr = _ask_float("Backbone LR", HP.BACKBONE_LR)
-        weight_decay = _ask_float("Weight decay", 1e-4)
+        lr = ask_float_with_help("Learning rate", param_name="lr", default=HP.LR)
+        backbone_lr = ask_float_with_help("Backbone LR", param_name="backbone_lr", default=HP.BACKBONE_LR)
+        weight_decay = ask_float_with_help("Weight decay", param_name="weight_decay", default=1e-4)
         args.extend(["--lr", str(lr), "--backbone-lr", str(backbone_lr), "--weight-decay", str(weight_decay)])
 
-        warmup_epochs = _ask_int("Warmup epochs", HP.WARMUP_EPOCHS)
+        warmup_epochs = ask_int_with_help("Warmup epochs", param_name="warmup_epochs", default=HP.WARMUP_EPOCHS)
         args.extend(["--warmup-epochs", str(warmup_epochs)])
 
-        early_stop_patience = _ask_int("Early stop patience (0 = off)", HP.EARLY_STOP_PATIENCE)
+        early_stop_patience = ask_int_with_help("Early stop patience (0 = off)", param_name="early_stop_patience", default=HP.EARLY_STOP_PATIENCE)
         args.extend(["--early-stop-patience", str(early_stop_patience)])
-        early_stop_min_delta = _ask_float("Early stop min delta", HP.EARLY_STOP_MIN_DELTA)
+        early_stop_min_delta = ask_float_with_help("Early stop min delta", param_name="early_stop_min_delta", default=HP.EARLY_STOP_MIN_DELTA)
         args.extend(["--early-stop-min-delta", str(early_stop_min_delta)])
 
-        scheduler_idx = _ask_choice("Scheduler:", ["auto", "none", "plateau", "cosine", "step"], default=0)
+        scheduler_idx = ask_choice_with_help("Scheduler:", ["auto", "none", "plateau", "cosine", "step"], param_name="scheduler", default=0)
         scheduler = ["auto", "none", "plateau", "cosine", "step"][scheduler_idx]
         if scheduler != "auto":
             args.extend(["--scheduler", scheduler])
         if scheduler == "plateau":
-            lr_patience = _ask_int("LR reduce patience", HP.LR_REDUCE_PATIENCE)
-            lr_factor = _ask_float("LR reduce factor", HP.LR_REDUCE_FACTOR)
-            lr_min = _ask_float("LR reduce min lr", HP.LR_REDUCE_MIN_LR)
-            lr_cooldown = _ask_int("LR reduce cooldown", HP.LR_REDUCE_COOLDOWN)
+            lr_patience = ask_int_with_help("LR reduce patience", param_name="lr_reduce_patience", default=HP.LR_REDUCE_PATIENCE)
+            lr_factor = ask_float_with_help("LR reduce factor", param_name="lr_reduce_factor", default=HP.LR_REDUCE_FACTOR)
+            lr_min = ask_float_with_help("LR reduce min lr", param_name="lr_reduce_min_lr", default=HP.LR_REDUCE_MIN_LR)
+            lr_cooldown = ask_int_with_help("LR reduce cooldown", param_name="lr_reduce_cooldown", default=HP.LR_REDUCE_COOLDOWN)
             args.extend(
                 [
                     "--lr-reduce-patience",
@@ -275,53 +500,54 @@ def _wizard_train() -> WizardCommand:
                 ]
             )
         elif scheduler == "cosine":
-            min_lr = _ask_float("Scheduler min lr", HP.LR_REDUCE_MIN_LR)
+            min_lr = ask_float_with_help("Scheduler min lr", param_name="scheduler_min_lr", default=HP.LR_REDUCE_MIN_LR)
             args.extend(["--scheduler-min-lr", str(min_lr)])
         elif scheduler == "step":
-            step_size = _ask_int("Scheduler step size", 5)
-            gamma = _ask_float("Scheduler gamma", 0.5)
+            step_size = ask_int_with_help("Scheduler step size", param_name="scheduler_step_size", default=5)
+            gamma = ask_float_with_help("Scheduler gamma", param_name="scheduler_gamma", default=0.5)
             args.extend(["--scheduler-step-size", str(step_size), "--scheduler-gamma", str(gamma)])
 
-        num_workers = _ask_int("Num workers", HP.NUM_WORKERS)
+        smart_num_workers = smart_defaults.get_num_workers(task="train")
+        num_workers = ask_int_with_help("Num workers", param_name="num_workers", default=smart_num_workers)
         args.extend(["--num-workers", str(num_workers)])
-        prefetch_factor = _ask_int("Prefetch factor (0 = off)", HP.PREFETCH_FACTOR)
+        prefetch_factor = ask_int_with_help("Prefetch factor (0 = off)", param_name="prefetch_factor", default=HP.PREFETCH_FACTOR)
         args.extend(["--prefetch-factor", str(prefetch_factor)])
-        if not _ask_yes_no("Persistent workers?", HP.PERSISTENT_WORKERS):
+        if not ask_yes_no_with_help("Persistent workers?", param_name="persistent_workers", default=HP.PERSISTENT_WORKERS):
             args.append("--no-persistent-workers")
-        if not _ask_yes_no("Loader heuristics?", HP.LOADER_HEURISTICS):
+        if not ask_yes_no_with_help("Loader heuristics?", param_name="loader_heuristics", default=HP.LOADER_HEURISTICS):
             args.append("--no-loader-heuristics")
 
-        if _ask_yes_no("Habilitar AMP?", False):
+        if ask_yes_no_with_help("Habilitar AMP?", param_name="amp", default=False):
             args.append("--amp")
-        if _ask_yes_no("Ativar torch.compile?", False):
+        if ask_yes_no_with_help("Ativar torch.compile?", param_name="torch_compile", default=False):
             args.append("--torch-compile")
-        if _ask_yes_no("Ativar fused optimizer?", False):
+        if ask_yes_no_with_help("Ativar fused optimizer?", param_name="fused_optim", default=False):
             args.append("--fused-optim")
-        if _ask_yes_no("Salvar predicoes de validacao?", False):
+        if ask_yes_no_with_help("Salvar predicoes de validacao?", param_name="save_val_preds", default=False):
             args.append("--save-val-preds")
 
-        if _ask_yes_no("Salvar Grad-CAM?", False):
+        if ask_yes_no_with_help("Salvar Grad-CAM?", param_name="gradcam", default=False):
             args.append("--gradcam")
-            gradcam_limit = _ask_int("Grad-CAM limit", 4)
+            gradcam_limit = ask_int_with_help("Grad-CAM limit", param_name="gradcam_limit", default=4)
             args.extend(["--gradcam-limit", str(gradcam_limit)])
-        if _ask_yes_no("Exportar embeddings de validacao?", False):
+        if ask_yes_no_with_help("Exportar embeddings de validacao?", param_name="export_val_embeddings", default=False):
             args.append("--export-val-embeddings")
 
-        subset = _ask_int("Subset (0 = desativado)", 0)
+        subset = ask_int_with_help("Subset (0 = desativado)", param_name="subset", default=0)
         if subset > 0:
             args.extend(["--subset", str(subset)])
 
-        if _ask_yes_no("Habilitar profiler?", False):
+        if ask_yes_no_with_help("Habilitar profiler?", param_name="profile", default=False):
             args.append("--profile")
-            profile_dir = _ask_string("Profile dir", "outputs/profiler")
+            profile_dir = ask_with_help("Profile dir", param_name="profile_dir", default="outputs/profiler")
             args.extend(["--profile-dir", profile_dir])
 
-        if _ask_yes_no("Deterministic?", HP.DETERMINISTIC):
+        if ask_yes_no_with_help("Deterministic?", param_name="deterministic", default=HP.DETERMINISTIC):
             args.append("--deterministic")
-        if not _ask_yes_no("Permitir TF32?", HP.ALLOW_TF32):
+        if not ask_yes_no_with_help("Permitir TF32?", param_name="allow_tf32", default=HP.ALLOW_TF32):
             args.append("--no-allow-tf32")
 
-        log_level = _ask_string("Log level", HP.LOG_LEVEL)
+        log_level = ask_with_help("Log level", param_name="log_level", default=HP.LOG_LEVEL)
         args.extend(["--log-level", log_level])
 
     args.extend(_ask_extra_args())
@@ -359,21 +585,45 @@ def _wizard_quick_train() -> WizardCommand:
 
 
 def _wizard_embed() -> WizardCommand:
+    # Determine total steps: 1=dataset, 2=basic config, 3=advanced (optional)
+    total_steps = 3
+    current_step = 1
+
+    _print_progress(current_step, total_steps, "Selecao de Dataset e Config")
     args = _ask_config_args()
     dataset_args, _, _ = _dataset_prompt()
     args.extend(dataset_args)
 
-    arch_idx = _ask_choice("Arquitetura:", ["resnet50", "efficientnet_b0"], default=0)
+    # Initialize SmartDefaults for hardware-aware recommendations
+    smart_defaults = SmartDefaults()
+    print(f"\n→ Hardware detectado: {smart_defaults.device_type.upper()}")
+    print(f"  (Recomendacoes baseadas no hardware serao sugeridas)")
+
+    current_step += 1
+    _print_progress(current_step, total_steps, "Configuracao Basica")
+    arch_idx = ask_choice_with_help(
+        "Arquitetura:", ["resnet50", "efficientnet_b0"], param_name="arch", default=0
+    )
     arch = ["resnet50", "efficientnet_b0"][arch_idx]
-    class_idx = _ask_choice("Classes:", ["multiclass (A-D)", "binary (AB vs CD)", "density (A-D)"], default=0)
+    class_idx = ask_choice_with_help(
+        "Classes:",
+        ["multiclass (A-D)", "binary (AB vs CD)", "density (A-D)"],
+        param_name="classes",
+        default=0,
+    )
     classes = ["multiclass", "binary", "density"][class_idx]
 
-    outdir = _ask_string("Outdir", "outputs/features")
-    batch_size = _ask_int("Batch size", 32)
-    img_size = _ask_int("Img size", HP.IMG_SIZE)
-    device = _ask_string("Device (auto/cuda/mps/cpu)", HP.DEVICE)
-    cache_mode = _ask_string("Cache mode", HP.CACHE_MODE)
-    pretrained = _ask_yes_no("Usar pesos pretrained?", True)
+    outdir = ask_with_help("Outdir", param_name="outdir", default="outputs/features")
+
+    # Get smart defaults based on hardware and task
+    img_size = ask_int_with_help("Img size", param_name="img_size", default=HP.IMG_SIZE)
+    smart_batch_size = smart_defaults.get_batch_size(task="embed", image_size=img_size)
+    batch_size = ask_int_with_help("Batch size", param_name="batch_size", default=smart_batch_size)
+
+    device = ask_with_help("Device (auto/cuda/mps/cpu)", param_name="device", default=HP.DEVICE)
+    smart_cache_mode = smart_defaults.get_cache_mode()
+    cache_mode = ask_with_help("Cache mode", param_name="cache_mode", default=smart_cache_mode)
+    pretrained = ask_yes_no_with_help("Usar pesos pretrained?", param_name="pretrained", default=True)
 
     args.extend(
         [
@@ -397,36 +647,57 @@ def _wizard_embed() -> WizardCommand:
         args.append("--no-pretrained")
 
     if _ask_yes_no("Configurar opcoes avancadas?", False):
-        include_class_5 = _ask_yes_no("Incluir classe 5?", False)
+        current_step += 1
+        _print_progress(current_step, total_steps, "Opcoes Avancadas")
+        include_class_5 = ask_yes_no_with_help(
+            "Incluir classe 5?", param_name="include_class_5", default=False
+        )
         if include_class_5:
             args.append("--include-class-5")
 
-        seed = _ask_int("Seed", HP.SEED)
+        seed = ask_int_with_help("Seed", param_name="seed", default=HP.SEED)
         args.extend(["--seed", str(seed)])
-        if _ask_yes_no("Deterministic?", HP.DETERMINISTIC):
+        if ask_yes_no_with_help(
+            "Deterministic?", param_name="deterministic", default=HP.DETERMINISTIC
+        ):
             args.append("--deterministic")
-        if not _ask_yes_no("Permitir TF32?", HP.ALLOW_TF32):
+        if not ask_yes_no_with_help(
+            "Permitir TF32?", param_name="allow_tf32", default=HP.ALLOW_TF32
+        ):
             args.append("--no-allow-tf32")
 
-        num_workers = _ask_int("Num workers", HP.NUM_WORKERS)
+        smart_num_workers = smart_defaults.get_num_workers(task="embed")
+        num_workers = ask_int_with_help(
+            "Num workers", param_name="num_workers", default=smart_num_workers
+        )
         args.extend(["--num-workers", str(num_workers)])
-        prefetch_factor = _ask_int("Prefetch factor (0 = off)", HP.PREFETCH_FACTOR)
+        prefetch_factor = ask_int_with_help(
+            "Prefetch factor (0 = off)", param_name="prefetch_factor", default=HP.PREFETCH_FACTOR
+        )
         args.extend(["--prefetch-factor", str(prefetch_factor)])
-        if not _ask_yes_no("Persistent workers?", HP.PERSISTENT_WORKERS):
+        if not ask_yes_no_with_help(
+            "Persistent workers?", param_name="persistent_workers", default=HP.PERSISTENT_WORKERS
+        ):
             args.append("--no-persistent-workers")
-        if not _ask_yes_no("Loader heuristics?", HP.LOADER_HEURISTICS):
+        if not ask_yes_no_with_help(
+            "Loader heuristics?", param_name="loader_heuristics", default=HP.LOADER_HEURISTICS
+        ):
             args.append("--no-loader-heuristics")
 
         if _ask_yes_no("Normalizacao customizada?", False):
-            mean = _ask_string("Mean (ex: 0.485,0.456,0.406)", "0.485,0.456,0.406")
-            std = _ask_string("Std (ex: 0.229,0.224,0.225)", "0.229,0.224,0.225")
+            mean = ask_with_help(
+                "Mean (ex: 0.485,0.456,0.406)", param_name="mean", default="0.485,0.456,0.406"
+            )
+            std = ask_with_help(
+                "Std (ex: 0.229,0.224,0.225)", param_name="std", default="0.229,0.224,0.225"
+            )
             args.extend(["--mean", mean, "--std", std])
 
-        layer_name = _ask_string("Layer name (avgpool)", "avgpool")
+        layer_name = ask_with_help("Layer name (avgpool)", param_name="layer_name", default="avgpool")
         if layer_name and layer_name != "avgpool":
             args.extend(["--layer-name", layer_name])
 
-        if _ask_yes_no("Usar AMP?", False):
+        if ask_yes_no_with_help("Usar AMP?", param_name="amp", default=False):
             args.append("--amp")
         if _ask_yes_no("Salvar joined.csv?", False):
             args.append("--save-csv")
@@ -445,9 +716,10 @@ def _wizard_embed() -> WizardCommand:
                 args.append("--umap")
 
         if wants_pca:
-            solver_idx = _ask_choice(
+            solver_idx = ask_choice_with_help(
                 "Solver do PCA:",
                 ["auto", "full", "randomized", "arpack"],
+                param_name="pca_svd_solver",
                 default=0,
             )
             args.extend(
@@ -456,18 +728,18 @@ def _wizard_embed() -> WizardCommand:
 
         if _ask_yes_no("Atalho de clustering (k-means auto)?", False):
             args.append("--run-clustering")
-            cluster_k = _ask_int("K fixo (0 = auto)", 0)
+            cluster_k = ask_int_with_help("K fixo (0 = auto)", param_name="cluster_k", default=0)
             if cluster_k >= 2:
                 args.extend(["--cluster-k", str(cluster_k)])
         elif _ask_yes_no("Executar clustering?", False):
             args.append("--cluster")
-            cluster_k = _ask_int("K fixo (0 = auto)", 0)
+            cluster_k = ask_int_with_help("K fixo (0 = auto)", param_name="cluster_k", default=0)
             if cluster_k >= 2:
                 args.extend(["--cluster-k", str(cluster_k)])
-        sample_grid = _ask_int("Sample grid", 16)
+        sample_grid = ask_int_with_help("Sample grid", param_name="sample_grid", default=16)
         args.extend(["--sample-grid", str(sample_grid)])
 
-        log_level = _ask_string("Log level", HP.LOG_LEVEL)
+        log_level = ask_with_help("Log level", param_name="log_level", default=HP.LOG_LEVEL)
         args.extend(["--log-level", log_level])
 
     args.extend(_ask_extra_args())

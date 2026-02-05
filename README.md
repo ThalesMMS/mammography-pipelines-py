@@ -26,6 +26,8 @@ docker run --rm -it -v "$PWD":/app -w /app mammography-pipelines
 
 ## Quick Start
 
+The CLI features **automatic dataset format detection** - simply point to your dataset directory and the system will detect image formats (DICOM/PNG/JPEG) and metadata structure automatically.
+
 ```bash
 # Show CLI help
 mammography --help
@@ -33,8 +35,14 @@ mammography --help
 # Interactive wizard
 mammography wizard
 
-# Embeddings
+# Embeddings with auto-detection (default)
 mammography embed -- \
+  --csv mamografias \
+  --outdir outputs/embeddings_resnet50
+
+# Manual configuration (disable auto-detection)
+mammography embed -- \
+  --no-auto-detect \
   --csv classificacao.csv \
   --dicom-root archive \
   --outdir outputs/embeddings_resnet50
@@ -44,10 +52,9 @@ mammography embeddings-baselines -- \
   --embeddings-dir outputs/embeddings_resnet50 \
   --outdir outputs/embeddings_baselines
 
-# Treinamento de densidade
+# Treinamento de densidade (auto-detection enabled by default)
 mammography train-density -- \
-  --csv classificacao.csv \
-  --dicom-root archive \
+  --csv mamografias \
   --outdir outputs/mammo_efficientnetb0_density \
   --epochs 8 \
   --arch resnet50
@@ -188,11 +195,29 @@ The CLI is built around two core workflows plus utilities:
 - **`eda-cancer`**: RSNA Breast Cancer Detection exploratory pipeline (CSV/PNG/DICOM inputs).
 
 Common flags across the CLI:
+- `--auto-detect` (default: True) - automatic dataset format detection
+- `--no-auto-detect` - disable auto-detection for manual configuration
 - `--outdir` for outputs
 - `--dicom-root` for DICOM roots
 - `--cache-mode` for dataset caching
 
-Dataset presets:
+### Dataset Format Auto-Detection
+
+The CLI automatically detects dataset structure and format (enabled by default):
+
+**Supported formats:**
+- DICOM (.dcm, .dicom) with AccessionNumber structure
+- PNG/JPEG images in subdirectories or root
+- Metadata: `classificacao.csv`, `featureS.txt` (per-subdirectory or root), custom CSV/TSV
+
+**Features:**
+- Auto-configures data loaders based on detected format
+- Validates dataset structure and warns about issues
+- Suggests preprocessing flags based on format (cache mode, normalization, etc.)
+- Backward compatible with manual presets
+
+**Manual Dataset Presets:**
+You can override auto-detection with manual presets:
 - `archive`: DICOMs + `classificacao.csv`
 - `mamografias`: PNGs por subpasta com `featureS.txt`
 - `patches_completo`: PNGs na raiz com `featureS.txt`
@@ -268,17 +293,50 @@ See `Article/README.md` for LaTeX build instructions.
 
 ## Testing
 
-Some tests require local datasets (DICOM archives, RSNA folders). For dataset-free smoke checks, run:
+The project uses **pytest** with comprehensive test coverage across unit, integration, contract, and performance tests. For detailed testing documentation, see **[docs/TESTING.md](docs/TESTING.md)**.
+
+### Quick Start
 
 ```bash
-python -m pytest \
-  tests/unit/test_dicom_validation.py \
-  tests/unit/test_dimensionality_reduction.py \
-  tests/unit/test_evaluation_metrics.py \
-  tests/unit/test_clustering_algorithms.py \
-  tests/test_cache_mode.py \
-  tests/test_dataset_transforms.py
+# Run all tests
+pytest
+
+# Run fast tests only (excludes slow/gpu markers)
+pytest -m "not slow and not gpu"
+
+# Run specific test categories
+pytest tests/unit                    # Unit tests only
+pytest tests/integration             # Integration tests only
+
+# Run with coverage report
+pytest --cov=mammography --cov-report=term-missing
+
+# Generate HTML coverage report
+pytest --cov=mammography --cov-report=html
+# Open htmlcov/index.html in browser
 ```
+
+### Test Markers
+
+Use markers to filter tests by category:
+
+```bash
+pytest -m unit              # Unit tests
+pytest -m integration       # Integration tests
+pytest -m preprocessing     # Preprocessing tests
+pytest -m "not slow"        # Exclude slow tests
+pytest -m "not gpu"         # Exclude GPU tests
+```
+
+### Dataset-Free Smoke Tests
+
+Some tests require local datasets (DICOM archives, RSNA folders). For dataset-free smoke checks:
+
+```bash
+pytest tests/integration/test_smoke_workflows.py
+```
+
+See [docs/TESTING.md](docs/TESTING.md) for complete documentation on test patterns, fixtures, custom assertions, and contribution guidelines.
 
 ## Disclaimer
 
