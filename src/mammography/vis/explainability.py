@@ -238,7 +238,8 @@ class GradCAMExplainer:
         metas: Optional[List[Dict[str, Any]]] = None,
         prefix: str = "gradcam",
         alpha: float = 0.35,
-        colormap: str = "jet"
+        colormap: str = "jet",
+        index_offset: int = 0,
     ) -> int:
         """
         Save GradCAM overlays for a batch of images.
@@ -251,6 +252,7 @@ class GradCAMExplainer:
             prefix: Filename prefix for saved images
             alpha: Blending factor for overlay
             colormap: Matplotlib colormap name
+            index_offset: Offset applied to the batch index for stable filenames
 
         Returns:
             Number of images successfully saved
@@ -261,11 +263,12 @@ class GradCAMExplainer:
         saved = 0
         for i in range(x.shape[0]):
             try:
-                identifier = f"sample_{i}"
+                global_index = index_offset + i
+                identifier = f"sample_{global_index}"
                 if metas and i < len(metas):
                     identifier = metas[i].get("accession", identifier)
 
-                fname = output_dir / f"{prefix}_{i}_{identifier}.png"
+                fname = output_dir / f"{prefix}_{global_index}_{identifier}.png"
                 self.save_overlay(x[i], heatmaps[i], fname, alpha=alpha, colormap=colormap)
                 saved += 1
             except Exception as exc:
@@ -321,16 +324,23 @@ class ViTAttentionVisualizer:
         self.model = model
         self.device = device if device is not None else next(model.parameters()).device
         self.attention_layer_idx = attention_layer_idx
+        self.attention_weights: List[torch.Tensor] = []
+        self._hooks_registered = False
+        self.handle = None
+
+        vit_model = model
+        if not hasattr(vit_model, "encoder") and hasattr(vit_model, "backbone"):
+            vit_model = vit_model.backbone
 
         # Validate ViT architecture
-        if not hasattr(model, "encoder"):
+        if not hasattr(vit_model, "encoder"):
             raise ValueError(
                 "Model does not appear to be a Vision Transformer. "
                 "Expected 'encoder' attribute (torchvision ViT architecture)."
             )
 
         # Locate target attention layer
-        self.encoder_layers = model.encoder.layers
+        self.encoder_layers = vit_model.encoder.layers
         if abs(attention_layer_idx) > len(self.encoder_layers):
             raise ValueError(
                 f"attention_layer_idx {attention_layer_idx} out of range. "
@@ -338,8 +348,6 @@ class ViTAttentionVisualizer:
             )
 
         self.target_layer = self.encoder_layers[attention_layer_idx]
-        self.attention_weights: List[torch.Tensor] = []
-        self._hooks_registered = False
 
     def _register_hooks(self):
         """Register forward hook on attention layer to capture attention weights."""
@@ -355,11 +363,12 @@ class ViTAttentionVisualizer:
         def self_attn_hook(module, input, output):
             # torchvision ViT self_attention returns (output, attention_weights)
             # attention_weights shape: (B, num_heads, N, N) where N = num_patches + 1
-            if isinstance(output, tuple) and len(output) == 2:
+            if isinstance(output, tuple) and len(output) == 2 and output[1] is not None:
                 self.attention_weights.append(output[1].detach())
 
         # Access self_attention module in the encoder layer
         if hasattr(self.target_layer, "self_attention"):
+            self._ensure_attention_weights(self.target_layer.self_attention)
             self.handle = self.target_layer.self_attention.register_forward_hook(self_attn_hook)
             self._hooks_registered = True
         else:
@@ -367,9 +376,25 @@ class ViTAttentionVisualizer:
 
     def _remove_hooks(self):
         """Remove registered hooks."""
-        if self._hooks_registered:
+        if getattr(self, "_hooks_registered", False) and getattr(self, "handle", None) is not None:
             self.handle.remove()
             self._hooks_registered = False
+
+    def _ensure_attention_weights(self, attention_module: nn.Module) -> None:
+        if not isinstance(attention_module, nn.MultiheadAttention):
+            return
+        if getattr(attention_module, "_mammography_force_weights", False):
+            return
+
+        original_forward = attention_module.forward
+
+        def forward_with_weights(*args: Any, **kwargs: Any):
+            kwargs["need_weights"] = True
+            kwargs["average_attn_weights"] = False
+            return original_forward(*args, **kwargs)
+
+        setattr(attention_module, "forward", forward_with_weights)
+        setattr(attention_module, "_mammography_force_weights", True)
 
     def _clear_buffers(self):
         """Clear attention weight buffers."""
@@ -519,7 +544,8 @@ class ViTAttentionVisualizer:
         metas: Optional[List[Dict[str, Any]]] = None,
         prefix: str = "vit_attention",
         alpha: float = 0.35,
-        colormap: str = "viridis"
+        colormap: str = "viridis",
+        index_offset: int = 0,
     ) -> int:
         """
         Save attention map overlays for a batch of images.
@@ -532,6 +558,7 @@ class ViTAttentionVisualizer:
             prefix: Filename prefix for saved images
             alpha: Blending factor for overlay
             colormap: Matplotlib colormap name
+            index_offset: Offset applied to the batch index for stable filenames
 
         Returns:
             Number of images successfully saved
@@ -542,11 +569,12 @@ class ViTAttentionVisualizer:
         saved = 0
         for i in range(x.shape[0]):
             try:
-                identifier = f"sample_{i}"
+                global_index = index_offset + i
+                identifier = f"sample_{global_index}"
                 if metas and i < len(metas):
                     identifier = metas[i].get("accession", identifier)
 
-                fname = output_dir / f"{prefix}_{i}_{identifier}.png"
+                fname = output_dir / f"{prefix}_{global_index}_{identifier}.png"
                 self.save_overlay(x[i], attention_maps[i], fname, alpha=alpha, colormap=colormap)
                 saved += 1
             except Exception as exc:

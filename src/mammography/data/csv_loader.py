@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-import pandera as pa
+try:
+    import pandera as pa
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    from mammography.utils import pandera_fallback as pa
 import pydicom
 
 from ..io.dicom import DICOM_EXTS
@@ -582,6 +585,13 @@ def load_multiple_csvs(csv_paths: Dict[str, str], dicom_root: Optional[str] = No
 
 def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -> str:
     """Pick a cache strategy based on dataset size and whether paths point to DICOM files."""
+    override = os.environ.get("MAMMO_CACHE_MODE")
+    if override:
+        override_value = override.strip().lower()
+        allowed = {"none", "memory", "disk", "tensor-disk", "tensor-memmap", "auto"}
+        if override_value in allowed:
+            return override_value
+        logger.warning("Cache mode override invalido (%s). Ignorando.", override)
     mode = (requested_mode or "none").lower()
     if mode != "auto":
         return mode

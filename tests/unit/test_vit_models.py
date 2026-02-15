@@ -30,6 +30,22 @@ def test_build_vit_b_16_without_download(monkeypatch) -> None:
     assert any(p.requires_grad for p in model.classifier.parameters())
 
 
+def test_build_vit_alias_without_download(monkeypatch) -> None:
+    called = {"count": 0}
+
+    def fake_vit(weights=None):
+        called["count"] += 1
+        return torchvision.models.vit_b_16(weights=None)
+
+    monkeypatch.setattr(nets, "vit_b_16", fake_vit)
+
+    model = nets.build_model("vit", num_classes=3, train_backbone=False, unfreeze_last_block=True, pretrained=False)
+    x = torch.randn(1, 3, 224, 224)
+    y = model(x)
+    assert y.shape == (1, 3)
+    assert called["count"] == 1
+
+
 def test_build_vit_b_32_without_download(monkeypatch) -> None:
     monkeypatch.setattr(
         nets,

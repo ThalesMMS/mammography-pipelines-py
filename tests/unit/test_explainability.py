@@ -127,6 +127,17 @@ class MockViTModel(nn.Module):
         return self.heads.head(cls_token)
 
 
+class MockViTWrapper(nn.Module):
+    """Wrapper exposing a backbone attribute with ViT encoder layers."""
+
+    def __init__(self, backbone: nn.Module) -> None:
+        super().__init__()
+        self.backbone = backbone
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x)
+
+
 class MockSelfAttention(nn.Module):
     """Mock self-attention module that returns attention weights."""
 
@@ -151,6 +162,33 @@ class MockSelfAttention(nn.Module):
         out = self.proj(x)
 
         return out, attn_weights
+
+
+class MockSelfAttentionNoWeights(nn.Module):
+    """Mock self-attention module that returns None for attention weights."""
+
+    def __init__(self, embed_dim: int = 768) -> None:
+        super().__init__()
+        self.proj = nn.Linear(embed_dim, embed_dim)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return self.proj(x), None
+
+
+class MockViTNoWeightsModel(MockViTModel):
+    """Mock Vision Transformer that does not return attention weights."""
+
+    def _create_mock_encoder_layer(self) -> nn.Module:
+        layer = nn.Module()
+        layer.self_attention = MockSelfAttentionNoWeights()
+        layer.mlp = nn.Sequential(
+            nn.Linear(768, 3072),
+            nn.GELU(),
+            nn.Linear(3072, 768)
+        )
+        layer.ln_1 = nn.LayerNorm(768)
+        layer.ln_2 = nn.LayerNorm(768)
+        return layer
 
 
 def test_gradcam_explainer_resnet_single_image() -> None:
@@ -296,6 +334,35 @@ def test_vit_attention_visualizer_batch() -> None:
     assert attn_map.shape == (4, 224, 224)
     assert attn_map.min() >= 0.0
     assert attn_map.max() <= 1.0
+
+
+def test_vit_attention_visualizer_wrapper_backbone() -> None:
+    backbone = MockViTModel(num_classes=4, num_layers=2)
+    backbone.eval()
+    model = MockViTWrapper(backbone)
+    model.eval()
+
+    visualizer = ViTAttentionVisualizer(model, attention_layer_idx=-1, device="cpu")
+
+    x = torch.randn(2, 3, 224, 224)
+    attn_map = visualizer.generate_attention_map(x, use_cls_token=True)
+
+    assert attn_map.shape == (2, 224, 224)
+    assert attn_map.min() >= 0.0
+    assert attn_map.max() <= 1.0
+
+
+def test_vit_attention_visualizer_missing_weights() -> None:
+    model = MockViTNoWeightsModel(num_classes=4, num_layers=2)
+    model.eval()
+
+    visualizer = ViTAttentionVisualizer(model, device="cpu")
+
+    x = torch.randn(2, 3, 224, 224)
+    attn_map = visualizer.generate_attention_map(x)
+
+    assert attn_map.shape == (2, 224, 224)
+    assert torch.all(attn_map == 0)
 
 
 def test_vit_attention_visualizer_head_reduction() -> None:

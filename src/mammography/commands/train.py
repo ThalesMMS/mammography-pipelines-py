@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import time
+import shlex
 from datetime import datetime, timezone
 from typing import Any, Sequence, Optional, Tuple, List, Dict
 import torch
@@ -29,7 +30,10 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 
-from pydantic import ValidationError
+try:
+    from pydantic import ValidationError
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    from mammography.utils.pydantic_fallback import ValidationError
 
 from mammography.config import HP, TrainConfig
 from mammography.utils.common import (
@@ -60,6 +64,46 @@ from mammography.training.engine import (
     save_predictions,
     save_atomic,
 )
+
+_BOOL_TRUE = {"1", "true", "yes", "y", "on"}
+_BOOL_FALSE = {"0", "false", "no", "n", "off"}
+
+
+def _parse_bool_literal(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in _BOOL_TRUE:
+        return True
+    if normalized in _BOOL_FALSE:
+        return False
+    return None
+
+
+def _normalize_bool_flags(argv: Optional[Sequence[str]]) -> list[str] | None:
+    """Normalize '--flag true/false' tokens to argparse-compatible bool flags."""
+    if argv is None:
+        return None
+    normalized: list[str] = []
+    bool_flags = {
+        "--sampler-weighted": ("--sampler-weighted", "--no-sampler-weighted"),
+        "--unfreeze-last-block": ("--unfreeze-last-block", "--no-unfreeze-last-block"),
+        "--augment": ("--augment", "--no-augment"),
+    }
+    idx = 0
+    while idx < len(argv):
+        token = argv[idx]
+        mapping = bool_flags.get(token)
+        if mapping and idx + 1 < len(argv):
+            literal = _parse_bool_literal(argv[idx + 1])
+            if literal is not None:
+                normalized.append(mapping[0] if literal else mapping[1])
+                idx += 2
+                continue
+        normalized.append(token)
+        idx += 1
+    return normalized
+
 
 def parse_args(argv: Optional[Sequence[str]] = None):
     """Define and parse CLI arguments for the density training script."""
@@ -121,7 +165,7 @@ def parse_args(argv: Optional[Sequence[str]] = None):
     parser.add_argument("--amp", action="store_true", help="Habilita autocast + GradScaler em CUDA/MPS")
     parser.add_argument("--class-weights", default=HP.CLASS_WEIGHTS, help="auto/none ou lista (ex: 1.0,0.8,1.2,1.0)")
     parser.add_argument("--class-weights-alpha", type=float, default=1.0, help="Expoente para class_weights auto")
-    parser.add_argument("--sampler-weighted", action="store_true", default=HP.SAMPLER_WEIGHTED)
+    parser.add_argument("--sampler-weighted", action=argparse.BooleanOptionalAction, default=HP.SAMPLER_WEIGHTED)
     parser.add_argument("--sampler-alpha", type=float, default=1.0, help="Expoente para sampler ponderado")
     parser.add_argument("--train-backbone", action=argparse.BooleanOptionalAction, default=HP.TRAIN_BACKBONE)
     parser.add_argument("--unfreeze-last-block", action=argparse.BooleanOptionalAction, default=HP.UNFREEZE_LAST_BLOCK)
@@ -163,7 +207,27 @@ def parse_args(argv: Optional[Sequence[str]] = None):
     parser.add_argument("--save-val-preds", action="store_true")
     parser.add_argument("--export-val-embeddings", action="store_true")
     parser.add_argument("--export-figures", help="Formatos de exportacao para figuras publicacao (ex: png,pdf,svg)")
+    parser.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Arquivo CSV do registry local",
+    )
+    parser.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Arquivo Markdown do registry local",
+    )
+    parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Nao atualizar registry local apos o treino",
+    )
 
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = _normalize_bool_flags(argv)
     return parser.parse_args(argv)
 
 def get_label_mapper(mode):
@@ -400,14 +464,25 @@ def _patient_ids_from_dicom(
     return _ids_for(train_df), _ids_for(val_df)
 
 
-def _assert_no_patient_leakage(train_patients: set[str], val_patients: set[str]) -> None:
+def _assert_no_patient_leakage(
+    train_patients: set[str],
+    val_patients: set[str],
+    *,
+    strict: bool = True,
+    logger: logging.Logger | None = None,
+) -> None:
     intersec = train_patients.intersection(val_patients)
-    if intersec:
-        sample = sorted(intersec)[:3]
-        raise RuntimeError(
-            "CRITICO: vazamento de dados detectado! "
-            f"{len(intersec)} pacientes aparecem em train e val (ex: {sample})."
-        )
+    if not intersec:
+        return
+    sample = sorted(intersec)[:3]
+    message = (
+        "CRITICO: vazamento de dados detectado! "
+        f"{len(intersec)} pacientes aparecem em train e val (ex: {sample})."
+    )
+    if strict:
+        raise RuntimeError(message)
+    warn_logger = logger or logging.getLogger("mammography")
+    warn_logger.warning("%s Prosseguindo porque split_mode=random.", message)
 
 
 class ExperimentTracker:
@@ -517,6 +592,47 @@ def _init_tracker(
         return ExperimentTracker("local", None, run)
 
     raise SystemExit(f"Tracker invalido: {tracker}")
+
+
+def _maybe_register_training_run(
+    *,
+    args: argparse.Namespace,
+    outdir_root: Path,
+    command: str,
+    logger: logging.Logger,
+) -> str | None:
+    if getattr(args, "no_registry", False):
+        logger.info("Registry local desativado (--no-registry).")
+        return None
+    if getattr(args, "view_specific_training", False):
+        logger.info("Registry local ignorado para treino view-specific.")
+        return None
+    run_name = getattr(args, "tracker_run_name", None) or ""
+    if not run_name:
+        logger.info("Registry local ignorado: --tracker-run-name nao informado.")
+        return None
+    try:
+        from mammography.tools import train_registry
+    except Exception as exc:
+        logger.warning("Falha ao importar train_registry: %s", exc)
+        return None
+    try:
+        run_id = train_registry.register_training_run(
+            outdir=outdir_root,
+            dataset=args.dataset or "",
+            workflow="train-density",
+            run_name=run_name,
+            command=command,
+            registry_csv=args.registry_csv,
+            registry_md=args.registry_md,
+            tracking_uri=args.tracker_uri or None,
+            experiment=args.tracker_project or None,
+        )
+    except Exception as exc:
+        logger.warning("Falha ao registrar no registry local: %s", exc)
+        return None
+    logger.info("Registry atualizado (run_name=%s, run_id=%s).", run_name, run_id)
+    return run_id
 
 
 def _parse_export_formats(raw: Optional[str]) -> list[str]:
@@ -678,13 +794,59 @@ def resolve_loader_runtime(args, device: torch.device):
     num_workers = args.num_workers
     prefetch = args.prefetch_factor if args.prefetch_factor and args.prefetch_factor > 0 else None
     persistent = args.persistent_workers
+    override_workers = os.environ.get("MAMMO_NUM_WORKERS")
+    if override_workers:
+        try:
+            num_workers = max(0, int(override_workers))
+        except ValueError:
+            logging.getLogger("mammography").warning(
+                "MAMMO_NUM_WORKERS invalido (%s). Usando valor de linha de comando.",
+                override_workers,
+            )
     if not args.loader_heuristics:
         return num_workers, prefetch, persistent
+    if num_workers == 0:
+        return 0, prefetch, False
     if device.type == "mps":
         return 0, prefetch, False
     if device.type == "cpu":
         return max(0, min(num_workers, os.cpu_count() or 0)), prefetch, persistent
     return num_workers, prefetch, persistent
+
+
+def _build_dataloader(
+    dataset: torch.utils.data.Dataset,
+    *,
+    shuffle: bool,
+    sampler: Optional[torch.utils.data.Sampler],
+    dl_kwargs: dict[str, Any],
+    logger: logging.Logger,
+) -> DataLoader:
+    try:
+        return DataLoader(
+            dataset,
+            shuffle=shuffle,
+            sampler=sampler,
+            **dl_kwargs,
+        )
+    except PermissionError as exc:
+        if dl_kwargs.get("num_workers", 0) == 0:
+            raise
+        logger.warning(
+            "Falha ao iniciar DataLoader com num_workers=%s (%s). Repetindo com num_workers=0.",
+            dl_kwargs.get("num_workers"),
+            exc,
+        )
+        safe_kwargs = dict(dl_kwargs)
+        safe_kwargs["num_workers"] = 0
+        safe_kwargs["persistent_workers"] = False
+        safe_kwargs.pop("prefetch_factor", None)
+        return DataLoader(
+            dataset,
+            shuffle=shuffle,
+            sampler=sampler,
+            **safe_kwargs,
+        )
 
 def _resolve_head_module(model: torch.nn.Module, arch: str) -> Optional[torch.nn.Module]:
     if arch == "resnet50":
@@ -742,7 +904,28 @@ def build_param_groups(model: torch.nn.Module, arch: str, lr_head: float, lr_bac
     return params
 
 def main(argv: Optional[Sequence[str]] = None):
+    argv_list = list(argv) if argv is not None else sys.argv[1:]
     args = parse_args(argv)
+
+    override_subset = os.environ.get("MAMMO_SUBSET")
+    if override_subset and not args.subset:
+        try:
+            args.subset = max(0, int(override_subset))
+        except ValueError:
+            logging.getLogger("mammography").warning(
+                "MAMMO_SUBSET invalido (%s). Usando valor de linha de comando.",
+                override_subset,
+            )
+
+    override_epochs = os.environ.get("MAMMO_EPOCHS")
+    if override_epochs:
+        try:
+            args.epochs = max(1, int(override_epochs))
+        except ValueError:
+            logging.getLogger("mammography").warning(
+                "MAMMO_EPOCHS invalido (%s). Usando valor de linha de comando.",
+                override_epochs,
+            )
 
     checkpoint_path = _find_resume_checkpoint(args.outdir)
     if checkpoint_path and not args.resume_from:
@@ -916,7 +1099,12 @@ def main(argv: Optional[Sequence[str]] = None):
         else:
             train_patients, val_patients = _patient_ids_from_dicom(train_df, val_df, logger)
             test_patients = set()
-    _assert_no_patient_leakage(train_patients, val_patients)
+    _assert_no_patient_leakage(
+        train_patients,
+        val_patients,
+        strict=args.split_mode != "random",
+        logger=logger,
+    )
     if test_patients:
         # Also check for train/test and val/test leakage
         train_test_intersec = train_patients.intersection(test_patients)
@@ -1083,16 +1271,19 @@ def main(argv: Optional[Sequence[str]] = None):
         if prefetch is not None and nw > 0:
             dl_kwargs["prefetch_factor"] = prefetch
 
-        train_loader = DataLoader(
+        train_loader = _build_dataloader(
             train_ds,
             shuffle=sampler is None,
             sampler=sampler,
-            **dl_kwargs,
+            dl_kwargs=dl_kwargs,
+            logger=logger,
         )
-        val_loader = DataLoader(
+        val_loader = _build_dataloader(
             val_ds,
             shuffle=False,
-            **dl_kwargs,
+            sampler=None,
+            dl_kwargs=dl_kwargs,
+            logger=logger,
         )
 
         # Model
@@ -1602,17 +1793,23 @@ def main(argv: Optional[Sequence[str]] = None):
                 std=std,
             )
 
-            full_val_loader = DataLoader(
-                full_val_ds,
-                batch_size=args.batch_size,
-                shuffle=False,
-                num_workers=nw,
-                persistent_workers=bool(persistent and nw > 0),
-                pin_memory=device.type == "cuda",
-                collate_fn=mammo_collate,
-            )
+            full_dl_kwargs = {
+                "batch_size": args.batch_size,
+                "num_workers": nw,
+                "persistent_workers": bool(persistent and nw > 0),
+                "pin_memory": device.type == "cuda",
+                "collate_fn": mammo_collate,
+            }
             if prefetch is not None and nw > 0:
-                full_val_loader.prefetch_factor = prefetch
+                full_dl_kwargs["prefetch_factor"] = prefetch
+
+            full_val_loader = _build_dataloader(
+                full_val_ds,
+                shuffle=False,
+                sampler=None,
+                dl_kwargs=full_dl_kwargs,
+                logger=logger,
+            )
 
             # Group validation samples by patient for ensemble evaluation
             logger.info("Agrupando amostras de validacao por paciente para ensemble...")
@@ -1641,13 +1838,14 @@ def main(argv: Optional[Sequence[str]] = None):
                 len(complete_patients), ", ".join(sorted(required_views)), len(patient_samples)
             )
 
+            all_y = []
+            all_p = []
+            all_prob = []
+
             if len(complete_patients) == 0:
                 logger.warning("Nenhum paciente com todas as views; nao e possivel avaliar ensemble.")
             else:
                 # Evaluate ensemble on patients with all views
-                all_y = []
-                all_p = []
-                all_prob = []
 
                 with torch.no_grad():
                     for patient_id, view_samples in tqdm(complete_patients.items(), desc="Ensemble Val", leave=False):
@@ -1714,6 +1912,15 @@ def main(argv: Optional[Sequence[str]] = None):
 
                 acc = accuracy_score(all_y, all_p)
                 kappa = cohen_kappa_score(all_y, all_p, weights="quadratic")
+                labels = list(range(num_classes))
+                cm = confusion_matrix(all_y, all_p, labels=labels)
+                report = classification_report(
+                    all_y,
+                    all_p,
+                    labels=labels,
+                    output_dict=True,
+                    zero_division=0,
+                )
 
                 try:
                     all_prob_concat = np.concatenate(all_prob, axis=0)
@@ -1726,22 +1933,71 @@ def main(argv: Optional[Sequence[str]] = None):
                     "kappa_quadratic": float(kappa),
                     "auc_ovr": float(auc),
                     "num_samples": len(all_y),
+                    "macro_f1": float(report.get("macro avg", {}).get("f1-score", 0.0)),
+                    "confusion_matrix": cm.tolist(),
+                    "classification_report": report,
                 }
 
                 logger.info(
                     "Ensemble Metrics | Acc: %.4f | Kappa: %.4f | AUC: %.4f (n=%d)",
                     acc, kappa, auc, len(all_y)
                 )
-
-                # Save ensemble metrics
-                ensemble_metrics_dir = outdir_path / "metrics"
-                ensemble_metrics_dir.mkdir(parents=True, exist_ok=True)
-                with open(ensemble_metrics_dir / "ensemble_metrics.json", "w", encoding="utf-8") as f:
-                    json.dump(ensemble_metrics, f, indent=2, default=str)
-
-                logger.info("Metricas de ensemble salvas em %s", ensemble_metrics_dir / "ensemble_metrics.json")
             else:
-                logger.warning("Nenhuma predicao de ensemble gerada; pulando metricas.")
+                logger.warning("Nenhuma predicao de ensemble gerada; gerando metricas vazias.")
+                labels = [str(i) for i in range(num_classes)]
+                empty_report = {
+                    label: {"precision": 0.0, "recall": 0.0, "f1-score": 0.0, "support": 0}
+                    for label in labels
+                }
+                empty_report["accuracy"] = 0.0
+                empty_report["macro avg"] = {
+                    "precision": 0.0,
+                    "recall": 0.0,
+                    "f1-score": 0.0,
+                    "support": 0,
+                }
+                empty_report["weighted avg"] = {
+                    "precision": 0.0,
+                    "recall": 0.0,
+                    "f1-score": 0.0,
+                    "support": 0,
+                }
+                ensemble_metrics = {
+                    "acc": 0.0,
+                    "kappa_quadratic": 0.0,
+                    "auc_ovr": 0.0,
+                    "num_samples": 0,
+                    "macro_f1": 0.0,
+                    "confusion_matrix": np.zeros((num_classes, num_classes), dtype=int).tolist(),
+                    "classification_report": empty_report,
+                }
+
+            # Save ensemble metrics
+            ensemble_metrics_dir = outdir_path / "metrics"
+            ensemble_metrics_dir.mkdir(parents=True, exist_ok=True)
+            with open(ensemble_metrics_dir / "ensemble_metrics.json", "w", encoding="utf-8") as f:
+                json.dump(ensemble_metrics, f, indent=2, default=str)
+            save_metrics_figure(ensemble_metrics, str(ensemble_metrics_dir / "ensemble_metrics.png"))
+
+            if export_formats:
+                base_name = "ensemble_metrics"
+                for fmt in export_formats:
+                    _save_metrics_figure_format(
+                        ensemble_metrics,
+                        str(outdir_path / "figures" / f"{base_name}.{fmt}"),
+                    )
+
+            logger.info("Metricas de ensemble salvas em %s", ensemble_metrics_dir / "ensemble_metrics.json")
+
+    command = "mammography train-density"
+    if argv_list:
+        command = f"{command} {shlex.join(argv_list)}"
+    _maybe_register_training_run(
+        args=args,
+        outdir_root=outdir_root,
+        command=command,
+        logger=logger,
+    )
 
 if __name__ == "__main__":
     main()

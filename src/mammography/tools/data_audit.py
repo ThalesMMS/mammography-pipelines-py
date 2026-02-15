@@ -133,6 +133,7 @@ def _write_manifest(audits: list[AccessionAudit], csv_map: dict[str, str], out_p
     coverage = Counter(a.classification or "missing" for a in audits)
     total_readable = sum(a.readable_count for a in audits)
     total_files = sum(a.dicom_count for a in audits)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "total_accessions": len(audits),

@@ -47,12 +47,12 @@ mammography embed -- \
   --dicom-root archive \
   --outdir outputs/embeddings_resnet50
 
-# Baselines classicos (embeddings)
+# Classical baselines (embeddings)
 mammography embeddings-baselines -- \
   --embeddings-dir outputs/embeddings_resnet50 \
   --outdir outputs/embeddings_baselines
 
-# Treinamento de densidade (auto-detection enabled by default)
+# Density training (auto-detection enabled by default)
 mammography train-density -- \
   --csv mamografias \
   --outdir outputs/mammo_efficientnetb0_density \
@@ -219,8 +219,8 @@ The CLI automatically detects dataset structure and format (enabled by default):
 **Manual Dataset Presets:**
 You can override auto-detection with manual presets:
 - `archive`: DICOMs + `classificacao.csv`
-- `mamografias`: PNGs por subpasta com `featureS.txt`
-- `patches_completo`: PNGs na raiz com `featureS.txt`
+- `mamografias`: PNGs per subdirectory with `featureS.txt`
+- `patches_completo`: PNGs at root with `featureS.txt`
 
 See `CLI_CHEATSHEET.md` for command matrices and common recipes.
 
@@ -238,40 +238,10 @@ mammography eda-cancer -- \
 
 ## DICOM Caching and Lazy Loading
 
-The pipeline now includes **efficient DICOM loading** with lazy loading and intelligent caching to dramatically reduce memory usage and improve loading times:
+The pipeline supports lazy DICOM loading (deferring pixel data until access) and LRU caching
+for repeated reads. Available cache modes: `auto`, `memory`, `disk`, `tensor-disk`, `tensor-memmap`.
 
-- **Lazy Loading**: Defers pixel data loading until needed, reducing memory usage by 50%+
-- **LRU Caching**: Caches frequently accessed DICOM files in memory with configurable size
-- **Disk Persistence**: Save and restore cache state across sessions
-- **Zero Breaking Changes**: Fully backward compatible with existing code
-
-### Quick Start
-
-```python
-from mammography.io import DicomReader, DicomLRUCache
-
-# Enable lazy loading (defers pixel data until accessed)
-reader = DicomReader(lazy_load=True)
-ds = reader.read("path/to/mammogram.dcm")
-
-# Access metadata without loading pixel data
-patient_id = ds.PatientID  # Fast, no pixel loading
-
-# Pixel data loads on first access
-pixels = ds.pixel_array  # Loading happens here
-
-# Or use LRU cache for repeated access
-cache = DicomLRUCache(max_size=100, cache_dir="./dicom_cache")
-ds = cache.get("path/to/mammogram.dcm")
-print(f"Cache hit rate: {cache.hit_rate:.2%}")
-```
-
-**Performance Improvements** (validated by benchmarks):
-- Memory reduction: ≥50% for metadata-only operations
-- Loading time reduction: ≥80% for cached files
-- Cache miss overhead: <5%
-
-See [`docs/dicom_caching.md`](docs/dicom_caching.md) for comprehensive usage guide, examples, and performance tuning.
+See [`docs/dicom_caching.md`](docs/dicom_caching.md) for usage details, API examples, and performance benchmarks.
 
 ## Repository Structure
 
@@ -340,4 +310,4 @@ See [docs/TESTING.md](docs/TESTING.md) for complete documentation on test patter
 
 ## Disclaimer
 
-⚠️ This is an educational research project. It must NOT be used for clinical or medical diagnostic purposes.
+DISCLAIMER: This is an educational research project. It must NOT be used for clinical or medical diagnostic purposes.

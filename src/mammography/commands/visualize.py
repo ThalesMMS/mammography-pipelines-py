@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -50,6 +51,7 @@ from mammography.utils.numpy_warnings import (
     suppress_numpy_matmul_warnings,
     resolve_pca_svd_solver,
 )
+from mammography.tools import visualization_registry
 
 BIRADS_NAMES = {
     0: "BI-RADS A",
@@ -345,7 +347,46 @@ Examples:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO)",
     )
-    
+
+    registry_group = parser.add_argument_group("Registry")
+    registry_group.add_argument(
+        "--run-name",
+        default="",
+        help="Nome do run no MLflow",
+    )
+    registry_group.add_argument(
+        "--tracking-uri",
+        default="",
+        help="Tracking URI para MLflow",
+    )
+    registry_group.add_argument(
+        "--experiment",
+        default="",
+        help="Experimento MLflow",
+    )
+    registry_group.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Arquivo CSV do registry local",
+    )
+    registry_group.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Arquivo Markdown do registry local",
+    )
+    registry_group.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Nao registrar no MLflow",
+    )
+    registry_group.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Nao atualizar registry local",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -665,7 +706,28 @@ def main(argv: Sequence[str] | None = None):
                     logger.info(f"  Saved: {out_path}")
                 else:
                     logger.warning("Could not load training history")
-        
+
+        if not args.no_registry:
+            try:
+                artifacts = visualization_registry.collect_visualization_outputs(output_dir)
+                run_name = args.run_name or visualization_registry.default_run_name(output_dir)
+                visualization_registry.register_visualization_run(
+                    input_path=Path(args.input),
+                    labels_path=Path(args.labels) if args.labels else None,
+                    output_dir=output_dir,
+                    output_paths=artifacts.output_paths,
+                    run_name=run_name,
+                    command=shlex.join(sys.argv),
+                    registry_csv=args.registry_csv,
+                    registry_md=args.registry_md,
+                    tracking_uri=args.tracking_uri or None,
+                    experiment=args.experiment or None,
+                    log_mlflow=not args.no_mlflow,
+                )
+                logger.info("Registry atualizado (run_name=%s).", run_name)
+            except Exception as exc:
+                logger.warning("Falha ao registrar visualizacoes: %s", exc)
+
         logger.info("Visualization complete!")
         return 0
 

@@ -10,7 +10,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+try:
+    from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    from mammography.utils.pydantic_fallback import (
+        BaseModel,
+        ConfigDict,
+        Field,
+        field_validator,
+        model_validator,
+    )
 
 
 def _normalize_dir_hint(path: Path) -> Path:

@@ -309,6 +309,20 @@ def test_create_splits_without_accession(tmp_path: Path) -> None:
     assert len(val_df) > 0
 
 
+def test_create_splits_single_accession_falls_back_to_random() -> None:
+    """Split should work even when all rows share the same accession."""
+    df = pd.DataFrame({
+        "image_path": [f"img_{i}.png" for i in range(20)],
+        "professional_label": [1, 2, 3, 4] * 5,
+        "accession": ["PATCHES001"] * 20,
+    })
+
+    train_df, val_df = create_splits(df, val_frac=0.2, seed=42)
+
+    assert len(train_df) > 0
+    assert len(val_df) > 0
+
+
 def test_create_three_way_split(tmp_path: Path) -> None:
     """Test train/val/test split creation."""
     df = pd.DataFrame({

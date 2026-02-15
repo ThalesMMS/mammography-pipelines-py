@@ -112,7 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     eval_parser = subparsers.add_parser(
         "eval-export",
-        help="Exibe um checklist para empacotar métricas/figuras do treino de densidade.",
+        help="Exporta artefatos de avaliacao e registra no MLflow/registry.",
     )
     _add_config_argument(
         eval_parser,
@@ -124,6 +124,37 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         type=Path,
         help="Diretório results_* a validar (pode repetir o argumento para múltiplos).",
+    )
+    eval_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("outputs/exports"),
+        help="Diretorio base para exportacoes (default: outputs/exports).",
+    )
+    eval_parser.add_argument("--run-name", default="", help="Nome do run no MLflow")
+    eval_parser.add_argument("--tracking-uri", default="", help="Tracking URI para MLflow")
+    eval_parser.add_argument("--experiment", default="", help="Experimento MLflow")
+    eval_parser.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Arquivo CSV do registry local",
+    )
+    eval_parser.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Arquivo Markdown do registry local",
+    )
+    eval_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Nao registrar no MLflow",
+    )
+    eval_parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Nao atualizar registry local",
     )
     pack_parser = subparsers.add_parser(
         "report-pack",
@@ -156,6 +187,31 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         help="Quantidade máxima de Grad-CAMs combinadas em cada collage (default: 4).",
+    )
+    pack_parser.add_argument("--run-name", default="", help="Nome do run no MLflow")
+    pack_parser.add_argument("--tracking-uri", default="", help="Tracking URI para MLflow")
+    pack_parser.add_argument("--experiment", default="", help="Experimento MLflow")
+    pack_parser.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Arquivo CSV do registry local",
+    )
+    pack_parser.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Arquivo Markdown do registry local",
+    )
+    pack_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Nao registrar no MLflow",
+    )
+    pack_parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Nao atualizar registry local",
     )
 
     audit_parser = subparsers.add_parser(
@@ -345,6 +401,43 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto",
         choices=["auto", "full", "randomized", "arpack"],
         help="Solver do PCA (auto/full/randomized/arpack).",
+    )
+    viz_parser.add_argument(
+        "--run-name",
+        default="",
+        help="Nome do run no MLflow",
+    )
+    viz_parser.add_argument(
+        "--tracking-uri",
+        default="",
+        help="Tracking URI para MLflow",
+    )
+    viz_parser.add_argument(
+        "--experiment",
+        default="",
+        help="Experimento MLflow",
+    )
+    viz_parser.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Arquivo CSV do registry local",
+    )
+    viz_parser.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Arquivo Markdown do registry local",
+    )
+    viz_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Nao registrar no MLflow",
+    )
+    viz_parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Nao atualizar registry local",
     )
 
     explain_parser = subparsers.add_parser(
@@ -581,6 +674,56 @@ def _load_config_args(config_arg: Path | None, command: str) -> list[str]:
     return args
 
 
+def _forwarded_has_flag(forwarded: Sequence[str], flag: str) -> bool:
+    flag_prefix = f"{flag}="
+    return any(token == flag or token.startswith(flag_prefix) for token in forwarded)
+
+
+def _strip_flags_with_values(args: Sequence[str], flags: set[str]) -> list[str]:
+    if not flags:
+        return list(args)
+    cleaned: list[str] = []
+    skip_next = False
+    for token in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in flags:
+            skip_next = True
+            continue
+        if any(token.startswith(f"{flag}=") for flag in flags):
+            continue
+        cleaned.append(token)
+    return cleaned
+
+
+def _filter_embed_config_args(config_args: Sequence[str], forwarded: Sequence[str]) -> list[str]:
+    """Avoid config CSV overrides when the user explicitly selects a dataset preset."""
+    if not config_args:
+        return list(config_args)
+    dataset_flag = _forwarded_has_flag(forwarded, "--dataset")
+    data_dir_flag = _forwarded_has_flag(forwarded, "--data_dir")
+    csv_flag = _forwarded_has_flag(forwarded, "--csv")
+    dicom_root_flag = _forwarded_has_flag(forwarded, "--dicom-root")
+
+    if not (dataset_flag or data_dir_flag):
+        return list(config_args)
+
+    flags_to_drop: set[str] = set()
+    if dataset_flag:
+        flags_to_drop.add("--dataset")
+    if csv_flag:
+        flags_to_drop.add("--csv")
+    if dicom_root_flag:
+        flags_to_drop.add("--dicom-root")
+
+    if not csv_flag:
+        flags_to_drop.add("--csv")
+        flags_to_drop.add("--dicom-root")
+
+    return _strip_flags_with_values(config_args, flags_to_drop)
+
+
 def _run_command(
     module: str,
     args: argparse.Namespace,
@@ -589,6 +732,8 @@ def _run_command(
 ) -> int:
     """Invoke an internal command module, merging config-derived args with forwarded CLI tokens."""
     config_args = _load_config_args(getattr(args, "config", None), args.command)
+    if args.command == "embed":
+        config_args = _filter_embed_config_args(config_args, forwarded)
     cmd_args = [*config_args, *forwarded]
     return _run_module_passthrough(module, args, cmd_args, entrypoint=entrypoint)
 
@@ -666,6 +811,33 @@ def _print_eval_guidance(args: argparse.Namespace, forwarded: Sequence[str]) -> 
     return 0
 
 
+def _run_eval_export(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
+    """Execute the eval-export routine with assembled arguments."""
+    cmd_args: list[str] = []
+    cmd_args.extend(_load_config_args(getattr(args, "config", None), args.command))
+    if getattr(args, "runs", None):
+        for run in args.runs:
+            cmd_args.extend(["--run", str(run)])
+    if hasattr(args, "output_dir") and args.output_dir:
+        cmd_args.extend(["--output-dir", str(args.output_dir)])
+    if hasattr(args, "run_name") and args.run_name:
+        cmd_args.extend(["--run-name", args.run_name])
+    if hasattr(args, "tracking_uri") and args.tracking_uri:
+        cmd_args.extend(["--tracking-uri", args.tracking_uri])
+    if hasattr(args, "experiment") and args.experiment:
+        cmd_args.extend(["--experiment", args.experiment])
+    if hasattr(args, "registry_csv") and args.registry_csv:
+        cmd_args.extend(["--registry-csv", str(args.registry_csv)])
+    if hasattr(args, "registry_md") and args.registry_md:
+        cmd_args.extend(["--registry-md", str(args.registry_md)])
+    if hasattr(args, "no_mlflow") and args.no_mlflow:
+        cmd_args.append("--no-mlflow")
+    if hasattr(args, "no_registry") and args.no_registry:
+        cmd_args.append("--no-registry")
+    cmd_args.extend(forwarded)
+    return _run_module_passthrough("mammography.commands.eval_export", args, cmd_args)
+
+
 def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
     """Execute the visualization script with assembled arguments."""
     cmd_args: list[str] = []
@@ -724,7 +896,21 @@ def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
         cmd_args.extend(["--seed", str(args.seed)])
     if hasattr(args, "pca_svd_solver") and args.pca_svd_solver:
         cmd_args.extend(["--pca-svd-solver", args.pca_svd_solver])
-    
+    if hasattr(args, "run_name") and args.run_name:
+        cmd_args.extend(["--run-name", args.run_name])
+    if hasattr(args, "tracking_uri") and args.tracking_uri:
+        cmd_args.extend(["--tracking-uri", args.tracking_uri])
+    if hasattr(args, "experiment") and args.experiment:
+        cmd_args.extend(["--experiment", args.experiment])
+    if hasattr(args, "registry_csv") and args.registry_csv:
+        cmd_args.extend(["--registry-csv", str(args.registry_csv)])
+    if hasattr(args, "registry_md") and args.registry_md:
+        cmd_args.extend(["--registry-md", str(args.registry_md)])
+    if hasattr(args, "no_mlflow") and args.no_mlflow:
+        cmd_args.append("--no-mlflow")
+    if hasattr(args, "no_registry") and args.no_registry:
+        cmd_args.append("--no-registry")
+
     # Add any forwarded arguments
     cmd_args.extend(forwarded)
 
@@ -757,6 +943,7 @@ def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
         raise SystemExit("Informe pelo menos um --run outputs/.../results_* para empacotar.")
     
     from mammography.tools import report_pack
+    from mammography.tools import report_pack_registry
 
     run_paths = []
     for run in args.runs:
@@ -768,11 +955,66 @@ def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
         tex_path = (REPO_ROOT / args.tex_path) if not args.tex_path.is_absolute() else args.tex_path
 
     LOGGER.info("Empacotando runs: %s", ", ".join(str(p) for p in run_paths))
-    report_pack.package_density_runs(
+    summarized = report_pack.package_density_runs(
         run_paths,
         assets_dir,
         tex_path=tex_path,
         gradcam_limit=args.gradcam_limit,
+    )
+    if args.no_registry:
+        return 0
+    asset_names = sorted(
+        {
+            asset
+            for run in summarized
+            for asset in run.assets.values()
+            if asset
+        }
+    )
+    output_paths = [
+        path for path in (assets_dir / name for name in asset_names) if path.exists()
+    ]
+    if tex_path and tex_path.exists():
+        output_paths.append(tex_path)
+    command_parts = ["mammography", "report-pack"]
+    for run in args.runs:
+        command_parts.extend(["--run", str(run)])
+    if args.assets_dir:
+        command_parts.extend(["--assets-dir", str(args.assets_dir)])
+    if args.tex_path:
+        command_parts.extend(["--tex", str(args.tex_path)])
+    if args.gradcam_limit is not None:
+        command_parts.extend(["--gradcam-limit", str(args.gradcam_limit)])
+    if args.run_name:
+        command_parts.extend(["--run-name", args.run_name])
+    if args.tracking_uri:
+        command_parts.extend(["--tracking-uri", args.tracking_uri])
+    if args.experiment:
+        command_parts.extend(["--experiment", args.experiment])
+    if args.registry_csv:
+        command_parts.extend(["--registry-csv", str(args.registry_csv)])
+    if args.registry_md:
+        command_parts.extend(["--registry-md", str(args.registry_md)])
+    if args.no_mlflow:
+        command_parts.append("--no-mlflow")
+    if args.no_registry:
+        command_parts.append("--no-registry")
+    command = _format_command(command_parts)
+    run_name = args.run_name or report_pack_registry.default_run_name(
+        report_pack_registry.infer_dataset_name(run_paths)
+    )
+    report_pack_registry.register_report_pack_run(
+        run_paths=run_paths,
+        assets_dir=assets_dir,
+        tex_path=tex_path,
+        output_paths=output_paths,
+        run_name=run_name,
+        command=command,
+        registry_csv=args.registry_csv,
+        registry_md=args.registry_md,
+        tracking_uri=args.tracking_uri or None,
+        experiment=args.experiment or None,
+        log_mlflow=not args.no_mlflow,
     )
     return 0
 
@@ -794,7 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "train-density":
             return _run_command("mammography.commands.train", args, forwarded)
         if args.command == "eval-export":
-            return _print_eval_guidance(args, forwarded)
+            return _run_eval_export(args, forwarded)
         if args.command == "report-pack":
             return _run_report_pack(args, forwarded)
         if args.command == "data-audit":

@@ -23,9 +23,12 @@ from __future__ import annotations
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import seaborn as sns
 import pandas as pd
 import numpy as np
+try:
+    import seaborn as sns
+except Exception:  # pragma: no cover - optional dependency
+    sns = None
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, Tuple
 from sklearn.manifold import TSNE
@@ -33,6 +36,155 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix
 
 from ..utils.numpy_warnings import suppress_numpy_matmul_warnings, resolve_pca_svd_solver
+
+
+if sns is None:  # pragma: no cover - lightweight fallback for missing seaborn
+    class _SeabornGrid:
+        def __init__(self, fig: plt.Figure) -> None:
+            self.fig = fig
+
+    class _SeabornStub:
+        @staticmethod
+        def color_palette(palette: str, n_colors: int) -> list[tuple[float, float, float, float]]:
+            cmap_name = palette if palette in plt.colormaps() else "viridis"
+            cmap = plt.get_cmap(cmap_name)
+            if n_colors <= 1:
+                return [cmap(0.5)]
+            return [cmap(i / (n_colors - 1)) for i in range(n_colors)]
+
+        @staticmethod
+        def heatmap(
+            data: Any,
+            *,
+            ax: Optional[plt.Axes] = None,
+            cmap: str = "viridis",
+            annot: bool = False,
+            annot_kws: Optional[dict[str, Any]] = None,
+            fmt: str = ".2f",
+            xticklabels: Optional[List[str]] = None,
+            yticklabels: Optional[List[str]] = None,
+            square: bool = False,
+            vmin: Optional[float] = None,
+            vmax: Optional[float] = None,
+            cbar_kws: Optional[dict[str, Any]] = None,
+            **_: Any,
+        ) -> Any:
+            ax = ax or plt.gca()
+            values = np.asarray(data)
+            im = ax.imshow(
+                values,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                aspect="equal" if square else "auto",
+            )
+            if xticklabels is not None:
+                ax.set_xticks(range(len(xticklabels)))
+                ax.set_xticklabels(xticklabels)
+            if yticklabels is not None:
+                ax.set_yticks(range(len(yticklabels)))
+                ax.set_yticklabels(yticklabels)
+            if annot:
+                annot_kws = annot_kws or {}
+                size = annot_kws.get("size", 8)
+                for i in range(values.shape[0]):
+                    for j in range(values.shape[1]):
+                        ax.text(
+                            j,
+                            i,
+                            format(values[i, j], fmt),
+                            ha="center",
+                            va="center",
+                            fontsize=size,
+                        )
+            cbar = ax.figure.colorbar(im, ax=ax)
+            if cbar_kws and "label" in cbar_kws:
+                cbar.set_label(cbar_kws["label"])
+            return im
+
+        @staticmethod
+        def clustermap(
+            data: Any,
+            *,
+            figsize: Tuple[int, int] = (10, 8),
+            cmap: str = "viridis",
+            **_: Any,
+        ) -> _SeabornGrid:
+            fig, ax = plt.subplots(figsize=figsize)
+            values = np.asarray(data)
+            im = ax.imshow(values, cmap=cmap, aspect="auto")
+            fig.colorbar(im, ax=ax)
+            return _SeabornGrid(fig)
+
+        @staticmethod
+        def pairplot(
+            df: pd.DataFrame,
+            *_: Any,
+            plot_kws: Optional[dict[str, Any]] = None,
+            **__: Any,
+        ) -> _SeabornGrid:
+            plot_kws = plot_kws or {}
+            numeric = df.select_dtypes(include=[np.number])
+            axes = pd.plotting.scatter_matrix(
+                numeric,
+                figsize=(8, 8),
+                alpha=plot_kws.get("alpha", 0.6),
+                s=plot_kws.get("s", 20),
+            )
+            fig = axes[0, 0].get_figure()
+            return _SeabornGrid(fig)
+
+        @staticmethod
+        def kdeplot(
+            data: Any,
+            *,
+            ax: Optional[plt.Axes] = None,
+            label: Optional[str] = None,
+            fill: bool = False,
+            alpha: float = 0.5,
+            **__: Any,
+        ) -> Any:
+            ax = ax or plt.gca()
+            ax.hist(data, bins=50, density=True, alpha=alpha, label=label)
+            return ax
+
+        @staticmethod
+        def violinplot(
+            *,
+            data: Optional[pd.DataFrame] = None,
+            x: Optional[str] = None,
+            y: Optional[str] = None,
+            ax: Optional[plt.Axes] = None,
+            **__: Any,
+        ) -> Any:
+            ax = ax or plt.gca()
+            if data is not None and x and y:
+                grouped = data.groupby(x)[y].apply(list)
+                ax.violinplot(grouped.tolist(), showmedians=True)
+                ax.set_xticks(range(1, len(grouped) + 1))
+                ax.set_xticklabels(grouped.index)
+            elif data is not None and y:
+                ax.violinplot(data[y], showmedians=True)
+            return ax
+
+        @staticmethod
+        def boxplot(
+            *,
+            data: Optional[pd.DataFrame] = None,
+            x: Optional[str] = None,
+            y: Optional[str] = None,
+            ax: Optional[plt.Axes] = None,
+            **__: Any,
+        ) -> Any:
+            ax = ax or plt.gca()
+            if data is not None and x and y:
+                grouped = data.groupby(x)[y].apply(list)
+                ax.boxplot(grouped.tolist(), labels=list(grouped.index))
+            elif data is not None and y:
+                ax.boxplot(data[y])
+            return ax
+
+    sns = _SeabornStub()
 
 # Default style configuration
 plt.style.use("seaborn-v0_8-whitegrid")
@@ -51,10 +203,19 @@ def _ensure_dir(path: Union[str, Path]) -> Path:
 
 
 def _build_pca(features: np.ndarray, n_components: int, seed: int) -> PCA:
+    max_components = min(n_components, features.shape[0], features.shape[1])
+    max_components = max(1, max_components)
     solver = resolve_pca_svd_solver(
-        features.shape[0], features.shape[1], n_components, "auto"
+        features.shape[0], features.shape[1], max_components, "auto"
     )
-    return PCA(n_components=n_components, random_state=seed, svd_solver=solver)
+    return PCA(n_components=max_components, random_state=seed, svd_solver=solver)
+
+
+def _resolve_tsne_perplexity(n_samples: int, perplexity: float) -> float:
+    if n_samples <= 1:
+        return 1.0
+    max_perplexity = max(1.0, (n_samples - 1) / 3)
+    return min(perplexity, max_perplexity)
 
 
 def plot_tsne_2d(
@@ -93,6 +254,7 @@ def plot_tsne_2d(
     Returns:
         Tuple of (tsne_embedding, figure)
     """
+    perplexity = _resolve_tsne_perplexity(features.shape[0], perplexity)
     tsne = TSNE(
         n_components=2,
         perplexity=perplexity,
@@ -161,6 +323,7 @@ def plot_tsne_3d(
     azimuth: float = 45,
 ) -> Tuple[np.ndarray, plt.Figure]:
     """Compute and plot 3D t-SNE embedding."""
+    perplexity = _resolve_tsne_perplexity(features.shape[0], perplexity)
     tsne = TSNE(
         n_components=3,
         perplexity=perplexity,
@@ -243,7 +406,7 @@ def plot_heatmap_correlation(
         pca = _build_pca(features, max_features, seed=42)
         with suppress_numpy_matmul_warnings():
             features = pca.fit_transform(features)
-        feature_names = [f"PC{i+1}" for i in range(max_features)]
+        feature_names = [f"PC{i+1}" for i in range(features.shape[1])]
     
     df = pd.DataFrame(features, columns=feature_names or [f"F{i}" for i in range(features.shape[1])])
     corr = df.corr(method=method)
@@ -362,7 +525,7 @@ def plot_feature_heatmap(
         pca = _build_pca(features, max_features, seed=42)
         with suppress_numpy_matmul_warnings():
             features = pca.fit_transform(features)
-        feature_names = [f"PC{i+1}" for i in range(max_features)]
+        feature_names = [f"PC{i+1}" for i in range(features.shape[1])]
     
     df = pd.DataFrame(
         features,
@@ -556,7 +719,13 @@ def plot_embedding_comparison(
                 emb = pca.fit_transform(features)
             method_title = f"PCA (var: {pca.explained_variance_ratio_.sum():.1%})"
         elif method.lower() == "tsne":
-            tsne = TSNE(n_components=2, random_state=seed, init="pca", learning_rate="auto")
+            tsne = TSNE(
+                n_components=2,
+                random_state=seed,
+                init="pca",
+                learning_rate="auto",
+                perplexity=_resolve_tsne_perplexity(features.shape[0], 30.0),
+            )
             with suppress_numpy_matmul_warnings():
                 emb = tsne.fit_transform(features)
             method_title = "t-SNE"

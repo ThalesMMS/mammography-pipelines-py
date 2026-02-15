@@ -10,21 +10,28 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
+import sys
+import time
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from pydantic import ValidationError
+try:
+    from pydantic import ValidationError
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    from mammography.utils.pydantic_fallback import ValidationError
 
 from mammography.config import HP, InferenceConfig
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
 from mammography.models.nets import build_model
 from mammography.utils.common import resolve_device, configure_runtime, parse_float_list
 from mammography.io.dicom import is_dicom_path
+from mammography.tools import inference_registry
 
 
 def _iter_inputs(root: str) -> list[str]:
@@ -50,17 +57,64 @@ def _strip_module_prefix(state_dict: dict) -> dict:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inferencia com checkpoint treinado.")
-    parser.add_argument("--checkpoint", required=True, help="Caminho para o checkpoint (.pt)")
-    parser.add_argument("--input", required=True, help="Arquivo ou diretorio de imagens/DICOM")
-    parser.add_argument("--arch", default="resnet50", choices=["resnet50", "efficientnet_b0"])
-    parser.add_argument("--classes", default="multiclass", choices=["binary", "density", "multiclass"])
+    parser.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Caminho para o checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Arquivo ou diretorio de imagens/DICOM",
+    )
+    parser.add_argument(
+        "--arch",
+        default="resnet50",
+        choices=["resnet50", "efficientnet_b0"],
+    )
+    parser.add_argument(
+        "--classes",
+        default="multiclass",
+        choices=["binary", "density", "multiclass"],
+    )
     parser.add_argument("--img-size", type=int, default=HP.IMG_SIZE)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--device", default=HP.DEVICE)
     parser.add_argument("--output", help="CSV de saida (opcional)")
     parser.add_argument("--amp", action="store_true", help="Usa autocast em CUDA/MPS")
-    parser.add_argument("--mean", help="Media de normalizacao (ex: 0.485,0.456,0.406)")
-    parser.add_argument("--std", help="Std de normalizacao (ex: 0.229,0.224,0.225)")
+    parser.add_argument(
+        "--mean",
+        help="Media de normalizacao (ex: 0.485,0.456,0.406)",
+    )
+    parser.add_argument(
+        "--std",
+        help="Std de normalizacao (ex: 0.229,0.224,0.225)",
+    )
+    parser.add_argument("--run-name", default="", help="Nome do run no MLflow")
+    parser.add_argument("--tracking-uri", default="", help="Tracking URI para MLflow")
+    parser.add_argument("--experiment", default="", help="Experimento MLflow")
+    parser.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Arquivo CSV do registry local",
+    )
+    parser.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Arquivo Markdown do registry local",
+    )
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Nao registrar no MLflow",
+    )
+    parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Nao atualizar registry local",
+    )
     return parser.parse_args(argv)
 
 
@@ -97,7 +151,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             {
                 "image_path": path,
                 "professional_label": None,
-                "accession": os.path.basename(os.path.dirname(path)) if is_dicom_path(path) else None,
+                "accession": (
+                    os.path.basename(os.path.dirname(path))
+                    if is_dicom_path(path)
+                    else None
+                ),
             }
         )
 
@@ -111,7 +169,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         mean=mean,
         std=std,
     )
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=mammo_collate)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=mammo_collate,
+    )
 
     device = resolve_device(args.device)
     configure_runtime(device, deterministic=False, allow_tf32=True)
@@ -135,6 +198,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     results: list[dict[str, object]] = []
     use_amp = args.amp and device.type in {"cuda", "mps"}
 
+    start_time = time.perf_counter()
     with torch.no_grad():
         for batch in loader:
             if batch is None:
@@ -156,13 +220,49 @@ def main(argv: Sequence[str] | None = None) -> None:
                 for i, p in enumerate(prob.tolist()):
                     row[f"prob_{i}"] = float(p)
                 results.append(row)
+    duration_sec = time.perf_counter() - start_time
 
     df = pd.DataFrame(results)
+    total_images = len(df)
+    images_per_sec = (
+        float(total_images) / duration_sec if duration_sec > 0 else 0.0
+    )
     if args.output:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out_path, index=False)
         print(f"[ok] CSV salvo em {out_path}")
+        if not args.no_registry:
+            dataset = inference_registry.infer_dataset_name(Path(args.input))
+            run_name = args.run_name or inference_registry.default_run_name(
+                dataset,
+                args.arch,
+            )
+            try:
+                inference_registry.register_inference_run(
+                    input_path=Path(args.input),
+                    output_path=out_path,
+                    checkpoint_path=Path(args.checkpoint),
+                    arch=args.arch,
+                    classes=args.classes,
+                    img_size=args.img_size,
+                    batch_size=args.batch_size,
+                    metrics=inference_registry.InferenceMetrics(
+                        total_images=total_images,
+                        images_per_sec=images_per_sec,
+                        duration_sec=duration_sec,
+                    ),
+                    run_name=run_name,
+                    command=shlex.join(sys.argv),
+                    registry_csv=args.registry_csv,
+                    registry_md=args.registry_md,
+                    tracking_uri=args.tracking_uri or None,
+                    experiment=args.experiment or None,
+                    log_mlflow=not args.no_mlflow,
+                )
+                print(f"[ok] Registry atualizado (run_name={run_name}).")
+            except Exception as exc:
+                print(f"[warn] Falha ao registrar inferencia: {exc}")
     else:
         print(df.head(20).to_string(index=False))
 

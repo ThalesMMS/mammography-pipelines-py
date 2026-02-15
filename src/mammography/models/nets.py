@@ -231,7 +231,9 @@ def build_model(
     pretrained: bool = True,
 ) -> nn.Module:
     """Build EfficientNetB0/ResNet50/ViT with a customizable head and optional feature fusion."""
-    
+    if arch == "vit":
+        arch = "vit_b_16"
+
     if arch == "efficientnet_b0":
         weights = EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
         base = _load_with_fallback(efficientnet_b0, weights, "efficientnet_b0")

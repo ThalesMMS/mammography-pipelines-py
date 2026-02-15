@@ -1016,7 +1016,7 @@ def run_wizard(dry_run: bool = False) -> int:
         "Rotular patches (GUI)",
         "EDA cancer",
         "Auditoria de dados",
-        "Eval-export (checklist)",
+        "Eval-export",
         "Report-pack (Article)",
         "Sair",
     ]

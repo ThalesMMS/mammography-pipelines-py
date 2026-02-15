@@ -14,7 +14,10 @@ from mammography.tuning.search_space import (
     IntParam,
     FloatParam,
 )
-from mammography.tuning.optuna_tuner import OptunaTuner
+try:
+    from mammography.tuning.optuna_tuner import OptunaTuner
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    OptunaTuner = None  # type: ignore[assignment]
 
 __all__ = [
     "SearchSpace",

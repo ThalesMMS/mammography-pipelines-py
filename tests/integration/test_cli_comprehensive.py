@@ -287,7 +287,7 @@ class TestEvalExportCommand:
 
     def test_eval_export_basic_dry_run(self):
         """Test eval-export with minimal arguments."""
-        with patch.object(cli, "_print_eval_guidance") as mock_run:
+        with patch.object(cli, "_run_eval_export") as mock_run:
             mock_run.return_value = 0
             exit_code = cli.main(["--dry-run", "eval-export"])
         assert exit_code == 0
@@ -295,7 +295,7 @@ class TestEvalExportCommand:
 
     def test_eval_export_with_runs(self):
         """Test eval-export with run directories."""
-        with patch.object(cli, "_print_eval_guidance") as mock_run:
+        with patch.object(cli, "_run_eval_export") as mock_run:
             mock_run.return_value = 0
             exit_code = cli.main([
                 "--dry-run", "eval-export",
@@ -311,8 +311,8 @@ class TestReportPackCommand:
 
     def test_report_pack_missing_runs(self):
         """Test report-pack without required --run arguments."""
-        with pytest.raises(SystemExit):
-            cli.main(["--dry-run", "report-pack"])
+        exit_code = cli.main(["--dry-run", "report-pack"])
+        assert exit_code == 1
 
     def test_report_pack_with_runs(self):
         """Test report-pack with run directories."""

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shlex
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -41,6 +42,7 @@ from mammography.utils.common import (
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
 from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
 from mammography.models.nets import build_model
+from mammography.tools import explain_registry
 from mammography.vis.explainability import (
     GradCAMExplainer,
     ViTAttentionVisualizer,
@@ -50,6 +52,8 @@ from mammography.vis.explainability import (
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms.v2 import functional as tv_v2_F
 from PIL import Image
+
+DEFAULT_EXPLAIN_OUTPUT_DIR = Path("outputs/explanations")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -88,7 +92,7 @@ Examples:
     # Output options
     parser.add_argument(
         "--output-dir", "-o",
-        default="outputs/explanations",
+        default=str(DEFAULT_EXPLAIN_OUTPUT_DIR),
         help="Output directory for explanation visualizations (default: outputs/explanations)",
     )
     parser.add_argument(
@@ -191,6 +195,47 @@ Examples:
         "--quiet", "-q",
         action="store_true",
         help="Suppress non-error output",
+    )
+
+    # Registry / MLflow
+    parser.add_argument(
+        "--run-name",
+        default="",
+        help=(
+            "MLflow run name (default: derived from dataset/method, or output dir when customized)"
+        ),
+    )
+    parser.add_argument(
+        "--tracking-uri",
+        default="",
+        help="MLflow tracking URI (optional)",
+    )
+    parser.add_argument(
+        "--experiment",
+        default="",
+        help="MLflow experiment name (optional)",
+    )
+    parser.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Local registry CSV path (default: results/registry.csv)",
+    )
+    parser.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Local registry Markdown path (default: results/registry.md)",
+    )
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Skip MLflow logging",
+    )
+    parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Skip local registry updates",
     )
 
     return parser.parse_args(argv)
@@ -408,8 +453,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error(f"Failed to load model: {e}")
         return 1
 
+    img_size = args.img_size
+    if args.model_type == "vit":
+        vit_model = model.backbone if hasattr(model, "backbone") else model
+        vit_image_size = getattr(vit_model, "image_size", None)
+        if isinstance(vit_image_size, (tuple, list)):
+            vit_image_size = vit_image_size[0]
+        if vit_image_size:
+            vit_image_size = int(vit_image_size)
+            if img_size != vit_image_size:
+                logger.warning(
+                    "Adjusting img_size from %s to %s to match ViT input size.",
+                    img_size,
+                    vit_image_size,
+                )
+                img_size = vit_image_size
+
     # Initialize explainers
     explainers: Dict[str, Any] = {}
+    layer_name = ""
 
     try:
         if args.method in ["gradcam", "both"]:
@@ -417,7 +479,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logger.warning("GradCAM not supported for ViT models, skipping")
             else:
                 target_layer = get_target_layer(model, args.model_type, args.target_layer)
-                layer_name = target_layer.__class__.__name__ if hasattr(target_layer, "__class__") else str(target_layer)
+                layer_name = (
+                    target_layer.__class__.__name__
+                    if hasattr(target_layer, "__class__")
+                    else str(target_layer)
+                )
                 logger.info(f"Initializing GradCAM explainer (target layer: {layer_name})")
                 explainers["gradcam"] = GradCAMExplainer(
                     model=model,
@@ -442,90 +508,103 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error("No valid explainers initialized")
         return 1
 
-    # Load images as tensors
-    try:
-        logger.info("Loading images...")
-        loaded_images = load_images_as_tensors(image_paths, args.img_size, logger)
-        logger.info(f"Loaded {len(loaded_images)} images successfully")
-
-        if len(loaded_images) == 0:
-            logger.error("No images loaded successfully")
-            return 1
-    except Exception as e:
-        logger.error(f"Failed to load images: {e}")
-        logger.exception(e)
-        return 1
-
     # Process images and generate explanations
     total_saved = 0
     total_failed = 0
+    loaded_images_count = 0
+    summary: Dict[str, Any] = {}
+    report_images: List[torch.Tensor] | None = [] if args.generate_report else None
 
     try:
         logger.info("Generating explanations...")
 
-        # Process each explainer type
-        for explainer_name, explainer in explainers.items():
-            logger.info(f"Generating {explainer_name} explanations...")
+        logged_explainers: set[str] = set()
 
-            # Determine explainer type
-            if explainer_name == "gradcam":
-                explainer_type = "gradcam"
-            elif explainer_name == "attention":
-                explainer_type = "vit_attention"
-            else:
-                logger.warning(f"Unknown explainer name: {explainer_name}, skipping")
+        # Process images in batches to avoid loading everything into memory
+        for start in range(0, len(image_paths), args.batch_size):
+            batch_paths = image_paths[start:start + args.batch_size]
+            if not batch_paths:
                 continue
 
-            # Generate heatmaps using correct function signature
-            heatmaps = generate_explanations_batch(
-                images=loaded_images,              # List[torch.Tensor]
-                model=model,
-                explainer_type=explainer_type,
-                target_classes=None,               # Let model predict
-                device=device,
-                batch_size=args.batch_size,
-            )
+            batch_images = load_images_as_tensors(batch_paths, img_size, logger)
+            if not batch_images:
+                continue
 
-            # Save the heatmaps using explainer's save method
-            output_subdir = output_dir / explainer_name
-            output_subdir.mkdir(exist_ok=True)
+            if report_images is not None:
+                report_images.extend(batch_images)
 
-            try:
-                # Convert images and heatmaps to batch tensors for saving
-                batch_images = torch.stack(loaded_images)
+            batch_offset = loaded_images_count
+            loaded_images_count += len(batch_images)
 
-                # Replace None heatmaps with zeros
-                valid_heatmaps = [
-                    hm if hm is not None else torch.zeros_like(loaded_images[0][0])
-                    for hm in heatmaps
-                ]
-                batch_heatmaps = torch.stack(valid_heatmaps)
+            batch_images_tensor = torch.stack(batch_images)
 
-                # Save overlays
-                saved_count = explainer.save_batch_overlays(
-                    x=batch_images,
-                    heatmaps=batch_heatmaps,
-                    output_dir=output_subdir,
-                    alpha=args.alpha,
-                    colormap=args.colormap,
+            # Process each explainer type
+            for explainer_name, explainer in explainers.items():
+                if explainer_name not in logged_explainers:
+                    logger.info(f"Generating {explainer_name} explanations...")
+                    logged_explainers.add(explainer_name)
+
+                # Determine explainer type
+                if explainer_name == "gradcam":
+                    explainer_type = "gradcam"
+                elif explainer_name == "attention":
+                    explainer_type = "vit_attention"
+                else:
+                    logger.warning(f"Unknown explainer name: {explainer_name}, skipping")
+                    continue
+
+                # Generate heatmaps using correct function signature
+                heatmaps = generate_explanations_batch(
+                    images=batch_images,              # List[torch.Tensor]
+                    model=model,
+                    explainer_type=explainer_type,
+                    target_classes=None,               # Let model predict
+                    device=device,
+                    batch_size=args.batch_size,
                 )
 
-                logger.info(f"Saved {saved_count} {explainer_name} visualizations")
-                total_saved += saved_count
+                # Save the heatmaps using explainer's save method
+                output_subdir = output_dir / explainer_name
+                output_subdir.mkdir(exist_ok=True)
 
-                # Count failed
-                failed_count = len([hm for hm in heatmaps if hm is None])
-                total_failed += failed_count
+                try:
+                    # Replace None heatmaps with zeros
+                    valid_heatmaps = [
+                        hm if hm is not None else torch.zeros_like(batch_images[0][0])
+                        for hm in heatmaps
+                    ]
+                    batch_heatmaps = torch.stack(valid_heatmaps)
 
-            except Exception as exc:
-                logger.error(f"Failed to save {explainer_name} overlays: {exc}")
-                logger.exception(exc)
-                total_failed += len(loaded_images)
+                    # Save overlays
+                    saved_count = explainer.save_batch_overlays(
+                        batch_images_tensor,
+                        batch_heatmaps,
+                        output_dir=output_subdir,
+                        alpha=args.alpha,
+                        colormap=args.colormap,
+                        index_offset=batch_offset,
+                    )
+
+                    logger.info(f"Saved {saved_count} {explainer_name} visualizations")
+                    total_saved += saved_count
+
+                    # Count failed
+                    failed_count = len([hm for hm in heatmaps if hm is None])
+                    total_failed += failed_count
+
+                except Exception as exc:
+                    logger.error(f"Failed to save {explainer_name} overlays: {exc}")
+                    logger.exception(exc)
+                    total_failed += len(batch_images)
+
+        if loaded_images_count == 0:
+            logger.error("No images loaded successfully")
+            return 1
 
         # Save summary
         summary = {
             "total_images": len(image_paths),
-            "loaded_images": len(loaded_images),
+            "loaded_images": loaded_images_count,
             "total_saved": total_saved,
             "total_failed": total_failed,
             "explainers": list(explainers.keys()),
@@ -536,7 +615,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dump(summary, f, indent=2)
         logger.info(f"Summary saved to {summary_path}")
 
-        logger.info(f"Generated explanations for {len(loaded_images)} images")
+        logger.info(f"Generated explanations for {loaded_images_count} images")
         logger.info(f"Total saved: {total_saved}, Failed: {total_failed}")
 
     except Exception as e:
@@ -548,8 +627,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.generate_report:
         try:
             logger.info("Generating explanation report...")
+            if report_images is None:
+                logger.error("Report requested but no images were collected.")
+                return 1
             report = export_explanations_report(
-                images=loaded_images,            # Required
+                images=report_images,            # Required
                 model=model,                     # Required
                 output_dir=output_dir / "report",
                 metas=None,                      # Could extract from image_paths if needed
@@ -565,6 +647,70 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.error(f"Failed to generate report: {e}")
             logger.exception(e)
             return 1
+
+    if not args.no_registry:
+        dataset = explain_registry.infer_dataset_name(Path(args.images_dir))
+        if args.run_name:
+            run_name = args.run_name
+        elif output_dir != DEFAULT_EXPLAIN_OUTPUT_DIR:
+            run_name = explain_registry.default_run_name_from_output(
+                output_dir,
+                args.method,
+            )
+        else:
+            run_name = explain_registry.default_run_name(
+                dataset,
+                args.method,
+            )
+        if args.method in ["gradcam", "both"] and (output_dir / "gradcam").exists():
+            explain_output = output_dir / "gradcam"
+        elif args.method == "attention" and (output_dir / "attention").exists():
+            explain_output = output_dir / "attention"
+        else:
+            explain_output = output_dir
+
+        artifacts = []
+        summary_path = output_dir / "summary.json"
+        if summary_path.exists():
+            artifacts.append(summary_path)
+
+        artifact_dirs = []
+        if explain_output.exists():
+            artifact_dirs.append(explain_output)
+        report_dir = output_dir / "report"
+        if args.generate_report and report_dir.exists():
+            artifact_dirs.append(report_dir)
+
+        try:
+            explain_registry.register_explain_run(
+                input_path=Path(args.images_dir),
+                output_dir=output_dir,
+                output_path=explain_output,
+                checkpoint_path=Path(args.model_path),
+                arch=args.model_type,
+                method=args.method,
+                layer=layer_name,
+                img_size=img_size,
+                batch_size=args.batch_size,
+                metrics=explain_registry.ExplainMetrics(
+                    total_images=int(summary.get("total_images", len(image_paths))),
+                    loaded_images=int(summary.get("loaded_images", loaded_images_count)),
+                    saved_images=int(summary.get("total_saved", total_saved)),
+                    failed_images=int(summary.get("total_failed", total_failed)),
+                ),
+                run_name=run_name,
+                command=shlex.join(sys.argv),
+                registry_csv=args.registry_csv,
+                registry_md=args.registry_md,
+                artifacts=artifacts,
+                artifact_dirs=artifact_dirs,
+                tracking_uri=args.tracking_uri or None,
+                experiment=args.experiment or None,
+                log_mlflow=not args.no_mlflow,
+            )
+            logger.info("Registry updated (run_name=%s).", run_name)
+        except Exception as exc:
+            logger.warning("Failed to register explain run: %s", exc)
 
     logger.info("=" * 80)
     logger.info("Explainability visualization complete!")

@@ -12,14 +12,19 @@ import argparse
 import json
 import logging
 import os
+import shlex
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import torch
-from pydantic import ValidationError
+try:
+    from pydantic import ValidationError
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    from mammography.utils.pydantic_fallback import ValidationError
 from torch.utils.data import DataLoader
 
 from mammography.config import HP, TrainConfig
@@ -32,8 +37,12 @@ from mammography.data.csv_loader import (
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
 from mammography.data.splits import create_splits
 from mammography.tracking import LocalTracker
-from mammography.tuning.optuna_tuner import OptunaTuner
 from mammography.tuning.search_space import SearchSpace
+from mammography.tuning.study_utils import (
+    load_study_summary,
+    should_skip_optimization,
+)
+from mammography.tools import tune_registry
 from mammography.utils.common import (
     configure_runtime,
     increment_path,
@@ -42,6 +51,9 @@ from mammography.utils.common import (
     seed_everything,
     setup_logging,
 )
+
+if TYPE_CHECKING:
+    from mammography.tuning.optuna_tuner import OptunaTuner
 
 
 def parse_args(argv: Sequence[str] | None = None):
@@ -170,6 +182,12 @@ def parse_args(argv: Sequence[str] | None = None):
     parser.add_argument("--device", default=HP.DEVICE)
     parser.add_argument("--val-frac", type=float, default=HP.VAL_FRAC)
     parser.add_argument(
+        "--split-mode",
+        choices=["random"],
+        default="random",
+        help="Modo de split (apenas random suportado no tune).",
+    )
+    parser.add_argument(
         "--split-ensure-all-classes",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -273,9 +291,235 @@ def resolve_loader_runtime(args, device: torch.device):
     return num_workers, prefetch, persistent
 
 
+def _resolve_optuna_db_path(storage: str | None) -> Path | None:
+    if not storage:
+        return None
+    if storage.startswith("sqlite:///"):
+        return Path(storage.replace("sqlite:///", "", 1))
+    if storage.startswith("sqlite://"):
+        return Path(storage.replace("sqlite://", "", 1))
+    return None
+
+
+def _find_latest_stats_path(outdir_root: Path, study_name: str) -> Path | None:
+    candidates = list(outdir_root.glob(f"results/**/{study_name}_stats.json"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _load_json_payload(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _coerce_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _register_existing_run(
+    *,
+    logger: logging.Logger,
+    args: argparse.Namespace,
+    outdir_root: Path,
+    outdir_path: Path,
+    study_name: str,
+    n_trials: int,
+    completed_trials: int,
+    pruned_trials: int,
+    best_trial: int,
+    best_value: float,
+    best_params: dict[str, object],
+    optuna_db_path: Path | None,
+    best_params_path: Path,
+    stats_path: Path | None,
+) -> None:
+    try:
+        run_id = tune_registry.register_tune_run(
+            outdir=outdir_root,
+            dataset=args.dataset or "custom",
+            arch=args.arch,
+            classes=args.classes,
+            img_size=args.img_size,
+            run_name=args.study_name or study_name,
+            command=shlex.join(sys.argv),
+            study_name=study_name,
+            n_trials=n_trials,
+            completed_trials=completed_trials,
+            pruned_trials=pruned_trials,
+            best_trial=best_trial,
+            best_value=float(best_value),
+            best_params=best_params,
+            storage=args.storage,
+            best_params_path=best_params_path,
+            stats_path=stats_path,
+            optuna_db_path=optuna_db_path,
+            registry_csv=Path("results/registry.csv"),
+            registry_md=Path("results/registry.md"),
+        )
+        logger.info("Tuning registry updated (mlflow_run_id=%s)", run_id)
+    except Exception as exc:
+        logger.error("Failed to register tuning run: %s", exc)
+
+    logger.info("=" * 80)
+    logger.info("OPTIMIZATION SKIPPED - EXISTING STUDY")
+    logger.info("=" * 80)
+    logger.info("Best trial: #%s", best_trial)
+    logger.info("Best validation accuracy: %.4f", best_value)
+    logger.info("Best hyperparameters:")
+    for param_name, param_value in best_params.items():
+        logger.info("  %s: %s", param_name, param_value)
+    logger.info("Total trials: %s", n_trials)
+    logger.info("Completed trials: %s", completed_trials)
+    logger.info("Pruned trials: %s", pruned_trials)
+    logger.info("Results saved to: %s", outdir_path)
+    logger.info("=" * 80)
+
+
 def main(argv: Sequence[str] | None = None):
     """Main entry point for hyperparameter tuning."""
     args = parse_args(argv)
+
+    outdir_root = Path(args.outdir)
+    outdir_root.mkdir(parents=True, exist_ok=True)
+    results_base = outdir_root / "results"
+    outdir_path = Path(increment_path(str(results_base)))
+    outdir_path.mkdir(parents=True, exist_ok=True)
+    outdir = str(outdir_path)
+    logger = setup_logging(outdir, args.log_level)
+    logger.info(f"Args: {args}")
+    logger.info("Resultados serao gravados em: %s", outdir_path)
+
+    optuna_db_path = _resolve_optuna_db_path(args.storage)
+    target_trials = args.n_trials
+    existing_summary = None
+    if not args.dry_run and args.storage and args.study_name:
+        if optuna_db_path is None or optuna_db_path.exists():
+            existing_summary = load_study_summary(args.storage, args.study_name)
+            if existing_summary:
+                logger.info(
+                    "Found existing study '%s' with %d trials.",
+                    args.study_name,
+                    existing_summary.n_trials,
+                )
+        else:
+            logger.info(
+                "Optuna storage not found at %s; starting new study.",
+                optuna_db_path,
+            )
+
+    best_params_root_path = outdir_root / "best_params.json"
+
+    if should_skip_optimization(target_trials, existing_summary):
+        assert existing_summary is not None
+        assert existing_summary.best_trial is not None
+        assert existing_summary.best_value is not None
+        study = existing_summary.study
+        logger.info(
+            "Study '%s' already has %d trials (target=%d). Skipping optimization.",
+            study.study_name,
+            existing_summary.n_trials,
+            target_trials,
+        )
+        if not best_params_root_path.exists():
+            best_params_payload = {
+                "best_trial": existing_summary.best_trial,
+                "best_value": existing_summary.best_value,
+                "best_params": existing_summary.best_params,
+                "n_trials": existing_summary.n_trials,
+                "datetime": datetime.now(tz=timezone.utc).isoformat(),
+                "study_name": study.study_name,
+            }
+            best_params_root_path.write_text(
+                json.dumps(best_params_payload, indent=2), encoding="utf-8"
+            )
+        stats_path = _find_latest_stats_path(outdir_root, study.study_name)
+        _register_existing_run(
+            logger=logger,
+            args=args,
+            outdir_root=outdir_root,
+            outdir_path=outdir_path,
+            study_name=study.study_name,
+            n_trials=existing_summary.n_trials,
+            completed_trials=existing_summary.completed_trials,
+            pruned_trials=existing_summary.pruned_trials,
+            best_trial=existing_summary.best_trial,
+            best_value=float(existing_summary.best_value),
+            best_params=existing_summary.best_params,
+            optuna_db_path=optuna_db_path,
+            best_params_path=best_params_root_path,
+            stats_path=stats_path,
+        )
+        return 0
+
+    if existing_summary is None:
+        file_payload = _load_json_payload(best_params_root_path)
+        if file_payload:
+            file_trials = _coerce_int(file_payload.get("n_trials")) or 0
+            file_best_trial = _coerce_int(file_payload.get("best_trial"))
+            file_best_value = _coerce_float(file_payload.get("best_value"))
+            file_best_params = file_payload.get("best_params")
+            file_best_params = (
+                file_best_params if isinstance(file_best_params, dict) else {}
+            )
+            file_study_name = str(
+                file_payload.get("study_name") or args.study_name or "tune"
+            )
+            if (
+                file_best_trial is not None
+                and file_best_value is not None
+                and file_trials >= target_trials
+            ):
+                logger.info(
+                    "Using existing best_params.json to register study '%s'.",
+                    file_study_name,
+                )
+                stats_path = _find_latest_stats_path(outdir_root, file_study_name)
+                completed_trials = file_trials
+                pruned_trials = 0
+                stats_payload = _load_json_payload(stats_path)
+                if stats_payload:
+                    completed_trials = (
+                        _coerce_int(stats_payload.get("completed_trials"))
+                        or completed_trials
+                    )
+                    pruned_trials = (
+                        _coerce_int(stats_payload.get("pruned_trials")) or pruned_trials
+                    )
+                _register_existing_run(
+                    logger=logger,
+                    args=args,
+                    outdir_root=outdir_root,
+                    outdir_path=outdir_path,
+                    study_name=file_study_name,
+                    n_trials=file_trials,
+                    completed_trials=completed_trials,
+                    pruned_trials=pruned_trials,
+                    best_trial=file_best_trial,
+                    best_value=float(file_best_value),
+                    best_params=file_best_params,
+                    optuna_db_path=optuna_db_path,
+                    best_params_path=best_params_root_path,
+                    stats_path=stats_path,
+                )
+                return 0
 
     # Resolve dataset paths
     csv_path, dicom_root = resolve_paths_from_preset(
@@ -295,16 +539,6 @@ def main(argv: Sequence[str] | None = None):
 
     # Setup reproducibility and output directory
     seed_everything(args.seed, deterministic=args.deterministic)
-
-    outdir_root = Path(increment_path(args.outdir))
-    outdir_root.mkdir(parents=True, exist_ok=True)
-    results_base = outdir_root / "results"
-    outdir_path = Path(increment_path(str(results_base)))
-    outdir_path.mkdir(parents=True, exist_ok=True)
-    outdir = str(outdir_path)
-    logger = setup_logging(outdir, args.log_level)
-    logger.info(f"Args: {args}")
-    logger.info("Resultados serao gravados em: %s", outdir_path)
 
     # Configure device and runtime
     device = resolve_device(args.device)
@@ -424,6 +658,7 @@ def main(argv: Sequence[str] | None = None):
 
     # Create OptunaTuner instance
     logger.info("Initializing OptunaTuner...")
+    from mammography.tuning.optuna_tuner import OptunaTuner
     tuner = OptunaTuner(
         search_space=search_space,
         train_dataset=train_ds,
@@ -506,18 +741,46 @@ def main(argv: Sequence[str] | None = None):
             tracker.finish()
         return 0
 
+    additional_trials = target_trials
+    if existing_summary:
+        if existing_summary.best_trial is None:
+            logger.warning(
+                "Study '%s' has no completed trials yet; running full %d trials.",
+                existing_summary.study.study_name,
+                target_trials,
+            )
+        else:
+            additional_trials = max(target_trials - existing_summary.n_trials, 0)
+            if additional_trials > 0:
+                logger.info(
+                    "Resuming study '%s' with %d existing trials; running %d more to reach target %d.",
+                    existing_summary.study.study_name,
+                    existing_summary.n_trials,
+                    additional_trials,
+                    target_trials,
+                )
+
     # Run optimization
     logger.info(
-        f"Starting Optuna optimization: {args.n_trials} trials, {args.epochs} epochs per trial"
+        "Starting Optuna optimization: %d new trials (target total=%d), %d epochs per trial",
+        additional_trials,
+        target_trials,
+        args.epochs,
     )
+    if optuna_db_path is not None:
+        optuna_db_path.parent.mkdir(parents=True, exist_ok=True)
     study = tuner.optimize(
-        n_trials=args.n_trials,
+        n_trials=additional_trials,
         study_name=args.study_name,
         storage=args.storage,
         pruner_warmup_steps=args.pruner_warmup_steps,
         pruner_startup_trials=args.pruner_startup_trials,
         timeout=args.timeout,
     )
+
+    n_trials = len(study.trials)
+    completed_trials = len([t for t in study.trials if t.state.name == "COMPLETE"])
+    pruned_trials = len([t for t in study.trials if t.state.name == "PRUNED"])
 
     # Save study to tracker if enabled
     if tracker:
@@ -548,18 +811,62 @@ def main(argv: Sequence[str] | None = None):
                         )
 
             # Log best trial metrics
-            tracker.log_metrics({
-                "best_trial_number": study.best_trial.number,
-                "best_value": study.best_value,
-                "n_trials": len(study.trials),
-                "completed_trials": len([t for t in study.trials if t.state.name == "COMPLETE"]),
-                "pruned_trials": len([t for t in study.trials if t.state.name == "PRUNED"]),
-            }, step=0)
+            tracker.log_metrics(
+                {
+                    "best_trial_number": study.best_trial.number,
+                    "best_value": study.best_value,
+                    "n_trials": n_trials,
+                    "completed_trials": completed_trials,
+                    "pruned_trials": pruned_trials,
+                },
+                step=0,
+            )
 
             tracker.finish()
             logger.info("Study results saved to LocalTracker successfully")
         except Exception as exc:
             logger.error(f"Failed to save study to tracker: {exc}")
+
+    best_params_payload = {
+        "best_trial": study.best_trial.number,
+        "best_value": study.best_value,
+        "best_params": study.best_params,
+        "n_trials": n_trials,
+        "datetime": datetime.now(tz=timezone.utc).isoformat(),
+        "study_name": study.study_name,
+    }
+    best_params_root_path = outdir_root / "best_params.json"
+    best_params_root_path.write_text(
+        json.dumps(best_params_payload, indent=2), encoding="utf-8"
+    )
+    logger.info("Best params summary saved to %s", best_params_root_path)
+
+    try:
+        run_id = tune_registry.register_tune_run(
+            outdir=outdir_root,
+            dataset=args.dataset or "custom",
+            arch=args.arch,
+            classes=args.classes,
+            img_size=args.img_size,
+            run_name=args.study_name or study.study_name,
+            command=shlex.join(sys.argv),
+            study_name=study.study_name,
+            n_trials=n_trials,
+            completed_trials=completed_trials,
+            pruned_trials=pruned_trials,
+            best_trial=study.best_trial.number,
+            best_value=float(study.best_value),
+            best_params=study.best_params,
+            storage=args.storage,
+            best_params_path=best_params_root_path,
+            stats_path=outdir_path / f"{study.study_name}_stats.json",
+            optuna_db_path=optuna_db_path,
+            registry_csv=Path("results/registry.csv"),
+            registry_md=Path("results/registry.md"),
+        )
+        logger.info("Tuning registry updated (mlflow_run_id=%s)", run_id)
+    except Exception as exc:
+        logger.error("Failed to register tuning run: %s", exc)
 
     # Report results
     logger.info("=" * 80)
@@ -570,13 +877,9 @@ def main(argv: Sequence[str] | None = None):
     logger.info("Best hyperparameters:")
     for param_name, param_value in study.best_params.items():
         logger.info(f"  {param_name}: {param_value}")
-    logger.info(f"Total trials: {len(study.trials)}")
-    logger.info(
-        f"Completed trials: {len([t for t in study.trials if t.state.name == 'COMPLETE'])}"
-    )
-    logger.info(
-        f"Pruned trials: {len([t for t in study.trials if t.state.name == 'PRUNED'])}"
-    )
+    logger.info(f"Total trials: {n_trials}")
+    logger.info(f"Completed trials: {completed_trials}")
+    logger.info(f"Pruned trials: {pruned_trials}")
     logger.info(f"Results saved to: {outdir_path}")
     if tracker:
         logger.info(f"Tracker database: {tracker.db_path}")

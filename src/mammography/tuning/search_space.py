@@ -10,7 +10,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+try:
+    from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    from mammography.utils.pydantic_fallback import (
+        BaseModel,
+        ConfigDict,
+        Field,
+        field_validator,
+        model_validator,
+    )
 
 
 class CategoricalParam(BaseModel):

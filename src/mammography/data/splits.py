@@ -380,60 +380,72 @@ def create_splits(
         raise RuntimeError("Nenhuma amostra valida apos mapear os rotulos.")
     df["_target"] = df["_target"].astype(int)
 
-    # Split without groups if accession is missing.
-    if "accession" not in df.columns or df["accession"].isna().all():
-        LOGGER.warning("Coluna 'accession' ausente; split sem agrupamento.")
-        y = df["_target"].values
+    def _split_without_groups(source_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        y = source_df["_target"].values
         strat = y if len(np.unique(y)) > 1 else None
         train_idx, val_idx = train_test_split(
-            df.index.to_numpy(),
+            source_df.index.to_numpy(),
             test_size=val_frac,
             random_state=seed,
             stratify=strat,
         )
-        train_df = df.loc[train_idx].copy()
-        val_df = df.loc[val_idx].copy()
+        train_df_local = source_df.loc[train_idx].copy()
+        val_df_local = source_df.loc[val_idx].copy()
+        return train_df_local, val_df_local
+
+    # Split without groups if accession is missing.
+    if "accession" not in df.columns or df["accession"].isna().all():
+        LOGGER.warning("Coluna 'accession' ausente; split sem agrupamento.")
+        train_df, val_df = _split_without_groups(df)
     else:
         group_targets = df.groupby("accession")["_target"].agg(lambda s: s.value_counts().idxmax())
         group_ids = group_targets.index.to_numpy()
         group_y = group_targets.values
 
         if len(group_ids) < 2:
-            raise RuntimeError("Grupos insuficientes para dividir train/val.")
+            LOGGER.warning(
+                "Grupos insuficientes para dividir train/val (groups=%d); usando split sem agrupamento.",
+                len(group_ids),
+            )
+            train_df, val_df = _split_without_groups(df)
+        else:
+            group_counts = pd.Series(group_y).value_counts().to_dict()
+            required_train = [c for c, n in group_counts.items() if n >= 1]
+            required_val = [c for c, n in group_counts.items() if n >= 2] if ensure_val_has_all_classes else []
 
-        group_counts = pd.Series(group_y).value_counts().to_dict()
-        required_train = [c for c, n in group_counts.items() if n >= 1]
-        required_val = [c for c, n in group_counts.items() if n >= 2] if ensure_val_has_all_classes else []
+            def _has_required(sub_df: pd.DataFrame, required) -> bool:
+                counts = sub_df["_target"].value_counts().to_dict()
+                return all(counts.get(c, 0) > 0 for c in required)
 
-        def _has_required(sub_df: pd.DataFrame, required) -> bool:
-            counts = sub_df["_target"].value_counts().to_dict()
-            return all(counts.get(c, 0) > 0 for c in required)
+            train_df = val_df = None
+            for attempt in range(max_tries):
+                rs = seed + attempt
+                strat = group_y if len(np.unique(group_y)) > 1 else None
+                try:
+                    tr_g, va_g = train_test_split(
+                        group_ids,
+                        test_size=val_frac,
+                        random_state=rs,
+                        stratify=strat,
+                    )
+                except ValueError:
+                    tr_g, va_g = train_test_split(
+                        group_ids, test_size=val_frac, random_state=rs, shuffle=True
+                    )
 
-        train_df = val_df = None
-        for attempt in range(max_tries):
-            rs = seed + attempt
-            strat = group_y if len(np.unique(group_y)) > 1 else None
-            try:
-                tr_g, va_g = train_test_split(
-                    group_ids,
-                    test_size=val_frac,
-                    random_state=rs,
-                    stratify=strat,
+                tr_df = df[df["accession"].isin(tr_g)]
+                va_df = df[df["accession"].isin(va_g)]
+                if _has_required(tr_df, required_train) and _has_required(va_df, required_val):
+                    train_df, val_df = tr_df.copy(), va_df.copy()
+                    break
+
+            if train_df is None or val_df is None:
+                splitter = GroupShuffleSplit(n_splits=1, test_size=val_frac, random_state=seed)
+                train_idx, val_idx = next(
+                    splitter.split(df, df["_target"], groups=df["accession"])
                 )
-            except ValueError:
-                tr_g, va_g = train_test_split(group_ids, test_size=val_frac, random_state=rs, shuffle=True)
-
-            tr_df = df[df["accession"].isin(tr_g)]
-            va_df = df[df["accession"].isin(va_g)]
-            if _has_required(tr_df, required_train) and _has_required(va_df, required_val):
-                train_df, val_df = tr_df.copy(), va_df.copy()
-                break
-
-        if train_df is None or val_df is None:
-            splitter = GroupShuffleSplit(n_splits=1, test_size=val_frac, random_state=seed)
-            train_idx, val_idx = next(splitter.split(df, df["_target"], groups=df["accession"]))
-            train_df = df.iloc[train_idx].copy()
-            val_df = df.iloc[val_idx].copy()
+                train_df = df.iloc[train_idx].copy()
+                val_df = df.iloc[val_idx].copy()
 
     def _counts(sub_df: pd.DataFrame) -> dict[int, int]:
         counts = sub_df["_target"].value_counts().sort_index()

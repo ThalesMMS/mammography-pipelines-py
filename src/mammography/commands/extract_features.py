@@ -12,12 +12,15 @@ import os
 import argparse
 import json
 import logging
+import shlex
+import sys
+import time
+from pathlib import Path
+from typing import Any, Sequence, Tuple
+
 import torch
 import pandas as pd
 import numpy as np
-import time
-from pathlib import Path
-from typing import Sequence, Tuple
 
 
 import matplotlib
@@ -25,7 +28,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
 
-from pydantic import ValidationError
+try:
+    from pydantic import ValidationError
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    from mammography.utils.pydantic_fallback import ValidationError
 
 from mammography.config import HP, ExtractConfig
 from mammography.utils.common import (
@@ -120,6 +126,113 @@ def resolve_loader_runtime(args, device: torch.device):
         return max(0, min(num_workers, os.cpu_count() or 0)), prefetch, persistent
     return num_workers, prefetch, persistent
 
+
+def _extract_embeddings_with_fallback(
+    *,
+    model: torch.nn.Module,
+    dataset: torch.utils.data.Dataset,
+    loader_kwargs: dict[str, Any],
+    device: torch.device,
+    amp_enabled: bool,
+    layer_name: str,
+    logger: logging.Logger,
+) -> Tuple[np.ndarray, list[dict]]:
+    """Extract embeddings and retry with num_workers=0 when multiprocessing is unavailable."""
+    loader = torch.utils.data.DataLoader(dataset, **loader_kwargs)
+    try:
+        return extract_embeddings(
+            model,
+            loader,
+            device,
+            amp_enabled=amp_enabled,
+            layer_name=layer_name,
+        )
+    except PermissionError as exc:
+        if loader_kwargs.get("num_workers", 0) == 0:
+            raise
+        logger.warning(
+            "Falha ao iniciar DataLoader com num_workers=%s (%s). Repetindo com num_workers=0.",
+            loader_kwargs.get("num_workers"),
+            exc,
+        )
+        safe_kwargs = dict(loader_kwargs)
+        safe_kwargs["num_workers"] = 0
+        safe_kwargs["persistent_workers"] = False
+        safe_kwargs.pop("prefetch_factor", None)
+        loader = torch.utils.data.DataLoader(dataset, **safe_kwargs)
+        return extract_embeddings(
+            model,
+            loader,
+            device,
+            amp_enabled=amp_enabled,
+            layer_name=layer_name,
+        )
+
+
+def _infer_dataset_name(args: argparse.Namespace, csv_path: str | None) -> str:
+    if getattr(args, "dataset", None):
+        return str(args.dataset)
+    if csv_path:
+        return Path(csv_path).stem
+    data_dir = getattr(args, "data_dir", None)
+    if data_dir:
+        return Path(data_dir).name
+    return "unknown"
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _resolve_output_dir(outdir: str, reuse_outdir: bool) -> str:
+    """Return output directory, optionally reusing an existing path."""
+    if reuse_outdir:
+        Path(outdir).mkdir(parents=True, exist_ok=True)
+        return outdir
+    return increment_path(outdir)
+
+
+def _serialize_args(args: argparse.Namespace) -> dict[str, object]:
+    return {key: _json_safe(value) for key, value in vars(args).items()}
+
+
+def _register_embedding_run(
+    *,
+    outdir: Path,
+    args: argparse.Namespace,
+    dataset_name: str,
+    command: str,
+) -> tuple[str, str | None]:
+    from mammography.tools import embedding_registry
+
+    run_name = args.run_name or embedding_registry.default_run_name(
+        dataset_name,
+        args.arch,
+    )
+    run_id = embedding_registry.register_embedding_run(
+        outdir=outdir,
+        dataset=dataset_name,
+        model=args.arch,
+        layer=args.layer_name,
+        batch_size=args.batch_size,
+        img_size=args.img_size,
+        run_name=run_name,
+        command=command,
+        registry_csv=args.registry_csv,
+        registry_md=args.registry_md,
+        tracking_uri=args.tracking_uri or None,
+        experiment=args.experiment or None,
+        log_mlflow=not args.no_mlflow,
+    )
+    return run_name, run_id
+
+
 def main(argv: Sequence[str] | None = None):
     parser = argparse.ArgumentParser(description="Extract embeddings + projections (EfficientNetB0/ResNet50)")
     parser.add_argument("--dataset", choices=sorted(DATASET_PRESETS.keys()), help="Atalho para datasets conhecidos (archive/mamografias/patches_completo)")
@@ -170,6 +283,24 @@ def main(argv: Sequence[str] | None = None):
     parser.add_argument("--n-clusters", type=int, default=0, help="Alias para --cluster-k")
     parser.add_argument("--sample-grid", type=int, default=16, help="Número de exemplos na grade de pré-visualização")
     parser.add_argument("--subset", type=int, default=0, help="Limita o número de amostras processadas")
+    parser.add_argument("--reuse-outdir", action="store_true", help="Reutiliza o diretório de saída se já existir")
+    parser.add_argument("--run-name", default="", help="Nome do run no MLflow")
+    parser.add_argument("--tracking-uri", default="", help="Tracking URI para MLflow")
+    parser.add_argument("--experiment", default="", help="Experimento MLflow")
+    parser.add_argument(
+        "--registry-csv",
+        type=Path,
+        default=Path("results/registry.csv"),
+        help="Arquivo CSV do registry local",
+    )
+    parser.add_argument(
+        "--registry-md",
+        type=Path,
+        default=Path("results/registry.md"),
+        help="Arquivo Markdown do registry local",
+    )
+    parser.add_argument("--no-mlflow", action="store_true", help="Nao registrar no MLflow")
+    parser.add_argument("--no-registry", action="store_true", help="Nao atualizar registry local")
     args = parser.parse_args(argv)
 
     # Handle --data_dir shortcut for testing
@@ -204,7 +335,8 @@ def main(argv: Sequence[str] | None = None):
         raise SystemExit("Informe --csv ou --dataset para localizar os dados.")
 
     seed_everything(args.seed)
-    outdir = increment_path(args.outdir)
+    outdir = _resolve_output_dir(args.outdir, args.reuse_outdir)
+    args.outdir = outdir
     logger = setup_logging(outdir, args.log_level)
 
     device = resolve_device(args.device)
@@ -267,8 +399,6 @@ def main(argv: Sequence[str] | None = None):
     }
     if prefetch is not None and nw > 0:
         loader_kwargs["prefetch_factor"] = prefetch
-    loader = torch.utils.data.DataLoader(ds, **loader_kwargs)
-
     num_classes = 2 if args.classes == "binary" else 4
     model = build_model(
         args.arch,
@@ -279,12 +409,14 @@ def main(argv: Sequence[str] | None = None):
     ).to(device)
 
     # Extract
-    features, metadata = extract_embeddings(
-        model,
-        loader,
-        device,
+    features, metadata = _extract_embeddings_with_fallback(
+        model=model,
+        dataset=ds,
+        loader_kwargs=loader_kwargs,
+        device=device,
         amp_enabled=args.amp and device.type in ["cuda", "mps"],
         layer_name=args.layer_name,
+        logger=logger,
     )
 
     if len(features) == 0:
@@ -315,10 +447,14 @@ def main(argv: Sequence[str] | None = None):
 
     if args.umap and features.shape[0] > 5:
         logger.info("Running UMAP...")
-        umap_2d = run_umap(features, 2, seed=args.seed)
-        joined["umap_x"] = umap_2d[:, 0]
-        joined["umap_y"] = umap_2d[:, 1]
-        plot_scatter(joined, "umap_x", "umap_y", hue="raw_label", title="UMAP by Label", out_path=os.path.join(outdir, "umap_label.png"))
+        try:
+            umap_2d = run_umap(features, 2, seed=args.seed)
+        except Exception as exc:
+            logger.warning("Falha ao executar UMAP: %s", exc)
+        else:
+            joined["umap_x"] = umap_2d[:, 0]
+            joined["umap_y"] = umap_2d[:, 1]
+            plot_scatter(joined, "umap_x", "umap_y", hue="raw_label", title="UMAP by Label", out_path=os.path.join(outdir, "umap_label.png"))
 
     if args.cluster_auto or args.cluster_k:
         k_values = [args.cluster_k] if args.cluster_k and args.cluster_k >= 2 else list(range(2, min(8, features.shape[0] + 1)))
@@ -363,7 +499,7 @@ def main(argv: Sequence[str] | None = None):
         "device": str(device),
         "num_samples": len(ds),
         "features_shape": list(features.shape),
-        "args": vars(args),
+        "args": _serialize_args(args),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     with open(Path(outdir) / "session_info.json", "w", encoding="utf-8") as f:
@@ -372,6 +508,18 @@ def main(argv: Sequence[str] | None = None):
         sample_embedding = {"embedding": features[0].tolist(), **metadata[0]}
         with open(Path(outdir) / "example_embedding.json", "w", encoding="utf-8") as f:
             json.dump(sample_embedding, f, indent=2)
+    if not args.no_registry:
+        dataset_name = _infer_dataset_name(args, csv_path)
+        try:
+            run_name, _run_id = _register_embedding_run(
+                outdir=Path(outdir),
+                args=args,
+                dataset_name=dataset_name,
+                command=shlex.join(sys.argv),
+            )
+            logger.info("Registry atualizado (run_name=%s).", run_name)
+        except Exception as exc:
+            logger.warning("Falha ao registrar embeddings: %s", exc)
     logger.info("Done.")
 
 if __name__ == "__main__":

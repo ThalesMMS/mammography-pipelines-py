@@ -9,7 +9,10 @@
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import seaborn as sns
+try:
+    import seaborn as sns
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
+    sns = None
 import pandas as pd
 import numpy as np
 from typing import Optional
@@ -24,7 +27,16 @@ def plot_scatter(
 ):
     """Quick scatter plot helper for 2-D embeddings such as PCA/t-SNE/UMAP outputs."""
     plt.figure(figsize=(10, 8))
-    sns.scatterplot(data=df, x=x_col, y=y_col, hue=hue, palette="viridis", s=60, alpha=0.7)
+    if sns is not None:
+        sns.scatterplot(
+            data=df, x=x_col, y=y_col, hue=hue, palette="viridis", s=60, alpha=0.7
+        )
+    else:
+        colors = None
+        if hue and hue in df.columns:
+            codes, _ = pd.factorize(df[hue])
+            colors = codes
+        plt.scatter(df[x_col], df[y_col], c=colors, s=60, alpha=0.7, cmap="viridis")
     plt.title(title)
     plt.tight_layout()
     plt.savefig(out_path)
