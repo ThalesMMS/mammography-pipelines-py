@@ -181,17 +181,12 @@ resnet50.pth
 /venv_cuda
 .specify
 .vscode/settings.json
-/outputs/mammo_resnet50_cuda/cache
-/outputs/mammo_resnet50_abxcd_cuda/cache
-/outputs/mammo_efficientnetb0_abxcd_cuda/cache
-/outputs/mammo_efficientnetb0_cuda/cache
 /mamografias
 /patches_completo
 /Article
 /archive_legacy/outputs
 weights/medicalnet/resnet_50.pth
 /mlruns
-/outputs
 tests/unit/ERROR_HANDLING_TESTS_README.md
 tests/coverage_gaps.md
 /outputs
