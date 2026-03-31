@@ -77,11 +77,24 @@ def _build_export_items(
         optional.append(artifacts.confusion_matrix_path)
     else:
         missing.append("confusion_matrix.png")
+    explicit_confusion_matrix = run_dir / "metrics" / "confusion_matrix.png"
+    if explicit_confusion_matrix.exists() and explicit_confusion_matrix not in optional:
+        optional.append(explicit_confusion_matrix)
 
     if artifacts.val_predictions_path:
         optional.append(artifacts.val_predictions_path)
     else:
         missing.append("val_predictions.csv")
+
+    test_metrics_path = run_dir / "metrics" / "test_metrics.json"
+    if test_metrics_path.exists():
+        optional.append(test_metrics_path)
+    test_metrics_fig_path = run_dir / "metrics" / "test_metrics.png"
+    if test_metrics_fig_path.exists():
+        optional.append(test_metrics_fig_path)
+    test_predictions_path = run_dir / "test_predictions.csv"
+    if test_predictions_path.exists():
+        optional.append(test_predictions_path)
 
     if (run_dir / "embeddings_val.csv").exists():
         optional.append(run_dir / "embeddings_val.csv")
@@ -129,7 +142,7 @@ def export_eval_run(run_dir: Path, output_root: Path) -> EvalExportResult:
         "run_dir": str(results_dir),
         "export_dir": str(export_dir),
         "exported_files": [
-            str(path.relative_to(export_dir)) for path in exported_paths
+            path.relative_to(export_dir).as_posix() for path in exported_paths
         ],
         "missing_files": missing,
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),

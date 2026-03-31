@@ -1,0 +1,5 @@
+# macOS — Apple Silicon (arm64) only.
+# PyTorch 2.10+ no longer publishes Intel (x86_64) macOS wheels.
+-r requirements-base.txt
+torch==2.10.0
+torchvision==0.25.0

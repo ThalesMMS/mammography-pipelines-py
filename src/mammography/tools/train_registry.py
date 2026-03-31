@@ -122,13 +122,72 @@ def _find_results_dir(outdir: Path) -> Path:
     return sorted(candidates, key=lambda item: item[0])[-1][1]
 
 
-def _pick_best_model(results_dir: Path) -> Path:
+def _resolve_checkpoint_candidate(
+    raw_path: object,
+    *,
+    results_dir: Path,
+) -> Path | None:
+    if raw_path is None:
+        return None
+    text = str(raw_path).strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = results_dir / path
+    return path
+
+
+def _iter_summary_checkpoint_candidates(
+    results_dir: Path,
+    summary: Mapping[str, Any],
+) -> Sequence[Path]:
+    candidates: list[Path] = []
+
+    top_k = summary.get("top_k")
+    if isinstance(top_k, Sequence) and not isinstance(top_k, (str, bytes)):
+        for entry in top_k:
+            if not isinstance(entry, Mapping):
+                continue
+            candidate = _resolve_checkpoint_candidate(
+                entry.get("path"),
+                results_dir=results_dir,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+    resume_from = _resolve_checkpoint_candidate(
+        summary.get("resume_from"),
+        results_dir=results_dir,
+    )
+    if resume_from is not None:
+        candidates.append(resume_from)
+        resume_results_dir = resume_from.parent
+        view = _normalize_view(summary.get("view"))
+        best_model_name = f"best_model_{view}.pt" if view else "best_model.pt"
+        candidates.append(resume_results_dir / best_model_name)
+        candidates.extend(sorted(resume_results_dir.glob("best_model*.pt")))
+
+    return candidates
+
+
+def _pick_best_model(
+    results_dir: Path,
+    summary: Mapping[str, Any] | None = None,
+) -> Path:
     best_model = results_dir / "best_model.pt"
     if best_model.exists():
         return best_model
     matches = sorted(results_dir.glob("best_model*.pt"))
     if matches:
         return matches[0]
+    if summary is not None:
+        for candidate in _iter_summary_checkpoint_candidates(results_dir, summary):
+            if candidate.exists():
+                return candidate
+    checkpoint = results_dir / "checkpoint.pt"
+    if checkpoint.exists():
+        return checkpoint
     raise FileNotFoundError(f"Checkpoint best_model*.pt ausente em {results_dir}")
 
 
@@ -213,7 +272,7 @@ def _collect_artifacts(outdir: Path) -> TrainingArtifacts:
         metrics_root = fallback_dir
         val_metrics_path = _resolve_metrics_json(metrics_root, view)
 
-    checkpoint_path = _pick_best_model(results_dir)
+    checkpoint_path = _pick_best_model(results_dir, summary)
     confusion_matrix_path = _resolve_confusion_matrix(
         metrics_root,
         results_dir / "figures",

@@ -14,6 +14,9 @@ from mammography.tuning.search_space import (
     IntParam,
     FloatParam,
 )
+from mammography.tuning.lr_finder import LRFinder
+from mammography.tuning.resource_manager import ResourceManager
+
 try:
     from mammography.tuning.optuna_tuner import OptunaTuner
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
@@ -25,4 +28,6 @@ __all__ = [
     "IntParam",
     "FloatParam",
     "OptunaTuner",
+    "LRFinder",
+    "ResourceManager",
 ]

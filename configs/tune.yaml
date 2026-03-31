@@ -3,10 +3,15 @@
 # Use with: mammo tune --config configs/tune.yaml --n-trials <budget>
 
 description: |
-  Default search space for EfficientNetB0 density classification.
-  Covers learning rates, batch size, and training schedule parameters.
+  Default search space for density classification with architecture selection.
+  Covers model architectures, learning rates, batch size, and training schedule parameters.
 
 parameters:
+  # Model architecture selection
+  arch:
+    type: categorical
+    choices: ["efficientnet_b0", "resnet50", "vit_b_16", "vit_b_32", "vit_l_16"]
+
   # Learning rate for classifier head (log scale)
   lr:
     type: float
@@ -44,3 +49,26 @@ parameters:
   unfreeze_last_block:
     type: categorical
     choices: [true, false]
+
+  # Data augmentation parameters
+  # Master augmentation switch
+  augment:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: vertical flip
+  augment_vertical:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: color jitter
+  augment_color:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: rotation degree range
+  augment_rotation_deg:
+    type: float
+    low: 0.0
+    high: 15.0
+    step: 2.5

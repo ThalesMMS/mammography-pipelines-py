@@ -270,18 +270,6 @@ def main() -> None:
         st.stop()
 
     st.title("🔍 Model Explainability")
-
-    st.markdown("""
-    <div style="background-color: #fff3cd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ffc107; margin-bottom: 1rem;">
-    <h3 style="color: #856404; margin-top: 0;">⚠️ EDUCATIONAL RESEARCH USE ONLY</h3>
-    <p style="color: #856404; margin-bottom: 0;">
-    This tool is for <strong>educational and research purposes only</strong>. It is <strong>NOT</strong>
-    intended for clinical diagnosis or treatment. All results should be validated by qualified
-    medical professionals before any clinical decision-making.
-    </p>
-    </div>
-    """, unsafe_allow_html=True)
-
     st.header("GradCAM Visualization")
 
     st.markdown("""
@@ -306,6 +294,7 @@ def main() -> None:
     with col1:
         checkpoint_path = st.text_input(
             "Model Checkpoint Path",
+            value="outputs/best_model.pt",
             placeholder="path/to/checkpoint.pt",
             help="Path to the trained model checkpoint file (.pt or .pth)",
         )
@@ -651,11 +640,11 @@ def main() -> None:
 
         with col1:
             st.subheader("Original Image")
-            st.image(st.session_state.explainability_image, use_container_width=True)
+            st.image(st.session_state.explainability_image, width="stretch")
 
         with col2:
             st.subheader("GradCAM Overlay")
-            st.image(st.session_state.explainability_heatmap, use_container_width=True)
+            st.image(st.session_state.explainability_heatmap, width="stretch")
 
         # Download button
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:

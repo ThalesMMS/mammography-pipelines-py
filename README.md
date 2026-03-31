@@ -222,7 +222,7 @@ You can override auto-detection with manual presets:
 - `mamografias`: PNGs per subdirectory with `featureS.txt`
 - `patches_completo`: PNGs at root with `featureS.txt`
 
-See `CLI_CHEATSHEET.md` for command matrices and common recipes.
+See `docs/guides/cli-cheatsheet.md` for command matrices and common recipes.
 
 ## RSNA (Cancer) EDA
 

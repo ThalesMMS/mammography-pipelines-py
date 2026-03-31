@@ -139,6 +139,7 @@ def create_three_way_split(
     num_classes: int = 4,
     ensure_all_splits_have_all_classes: bool = True,
     max_tries: int = 200,
+    group_col: Optional[str] = "accession",
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Create train/validation/test splits with group-aware stratification when possible.
 
@@ -150,6 +151,7 @@ def create_three_way_split(
         num_classes: Number of classes (2 or 4)
         ensure_all_splits_have_all_classes: If True, ensure val and test have all classes
         max_tries: Maximum attempts to find valid split with all classes
+        group_col: Column used for grouped splitting. Use None for pure random split.
 
     Returns:
         Tuple of (train_df, val_df, test_df)
@@ -185,9 +187,19 @@ def create_three_way_split(
         raise RuntimeError("Nenhuma amostra valida apos mapear os rotulos.")
     df["_target"] = df["_target"].astype(int)
 
-    # Split without groups if accession is missing.
-    if "accession" not in df.columns or df["accession"].isna().all():
-        LOGGER.warning("Coluna 'accession' ausente; split sem agrupamento.")
+    group_column = group_col if group_col else None
+
+    # Split without groups if the requested grouping column is unavailable.
+    if (
+        group_column is None
+        or group_column not in df.columns
+        or df[group_column].isna().all()
+    ):
+        if group_column:
+            LOGGER.warning(
+                "Coluna '%s' ausente ou vazia; split sem agrupamento.",
+                group_column,
+            )
         y = df["_target"].values
         strat = y if len(np.unique(y)) > 1 else None
 
@@ -215,7 +227,7 @@ def create_three_way_split(
         train_df = train_val_df.loc[train_idx].copy()
         val_df = train_val_df.loc[val_idx].copy()
     else:
-        group_targets = df.groupby("accession")["_target"].agg(lambda s: s.value_counts().idxmax())
+        group_targets = df.groupby(group_column)["_target"].agg(lambda s: s.value_counts().idxmax())
         group_ids = group_targets.index.to_numpy()
         group_y = group_targets.values
 
@@ -273,9 +285,9 @@ def create_three_way_split(
                     train_val_g, test_size=val_frac_adjusted, random_state=rs, shuffle=True
                 )
 
-            tr_df = df[df["accession"].isin(tr_g)]
-            va_df = df[df["accession"].isin(va_g)]
-            te_df = df[df["accession"].isin(test_g)]
+            tr_df = df[df[group_column].isin(tr_g)]
+            va_df = df[df[group_column].isin(va_g)]
+            te_df = df[df[group_column].isin(test_g)]
 
             if (_has_required(tr_df, required_train) and
                 _has_required(va_df, required_val) and
@@ -291,7 +303,9 @@ def create_three_way_split(
                 max_tries
             )
             splitter = GroupShuffleSplit(n_splits=1, test_size=test_frac, random_state=seed)
-            train_val_idx, test_idx = next(splitter.split(df, df["_target"], groups=df["accession"]))
+            train_val_idx, test_idx = next(
+                splitter.split(df, df["_target"], groups=df[group_column])
+            )
             test_df = df.iloc[test_idx].copy()
             train_val_df = df.iloc[train_val_idx].copy()
 
@@ -299,7 +313,11 @@ def create_three_way_split(
             val_frac_adjusted = val_frac / (1 - test_frac)
             splitter2 = GroupShuffleSplit(n_splits=1, test_size=val_frac_adjusted, random_state=seed)
             train_idx, val_idx = next(
-                splitter2.split(train_val_df, train_val_df["_target"], groups=train_val_df["accession"])
+                splitter2.split(
+                    train_val_df,
+                    train_val_df["_target"],
+                    groups=train_val_df[group_column],
+                )
             )
             train_df = train_val_df.iloc[train_idx].copy()
             val_df = train_val_df.iloc[val_idx].copy()
@@ -312,11 +330,11 @@ def create_three_way_split(
         "3-way split criado: Train=%d (groups=%s) | Val=%d (groups=%s) | Test=%d (groups=%s) | "
         "Train counts=%s | Val counts=%s | Test counts=%s",
         len(train_df),
-        train_df["accession"].nunique() if "accession" in train_df.columns else "NA",
+        train_df[group_column].nunique() if group_column and group_column in train_df.columns else "NA",
         len(val_df),
-        val_df["accession"].nunique() if "accession" in val_df.columns else "NA",
+        val_df[group_column].nunique() if group_column and group_column in val_df.columns else "NA",
         len(test_df),
-        test_df["accession"].nunique() if "accession" in test_df.columns else "NA",
+        test_df[group_column].nunique() if group_column and group_column in test_df.columns else "NA",
         _counts(train_df),
         _counts(val_df),
         _counts(test_df),
@@ -335,6 +353,7 @@ def create_splits(
     num_classes: int = 4,
     ensure_val_has_all_classes: bool = True,
     max_tries: int = 200,
+    group_col: Optional[str] = "accession",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Create train/validation splits with group-aware stratification when possible.
 
@@ -345,6 +364,7 @@ def create_splits(
         num_classes: Number of classes (2 or 4)
         ensure_val_has_all_classes: If True, ensure validation set has all classes
         max_tries: Maximum attempts to find valid split with all classes
+        group_col: Column used for grouped splitting. Use None for pure random split.
 
     Returns:
         Tuple of (train_df, val_df)
@@ -393,12 +413,22 @@ def create_splits(
         val_df_local = source_df.loc[val_idx].copy()
         return train_df_local, val_df_local
 
-    # Split without groups if accession is missing.
-    if "accession" not in df.columns or df["accession"].isna().all():
-        LOGGER.warning("Coluna 'accession' ausente; split sem agrupamento.")
+    group_column = group_col if group_col else None
+
+    # Split without groups if the requested grouping column is unavailable.
+    if (
+        group_column is None
+        or group_column not in df.columns
+        or df[group_column].isna().all()
+    ):
+        if group_column:
+            LOGGER.warning(
+                "Coluna '%s' ausente ou vazia; split sem agrupamento.",
+                group_column,
+            )
         train_df, val_df = _split_without_groups(df)
     else:
-        group_targets = df.groupby("accession")["_target"].agg(lambda s: s.value_counts().idxmax())
+        group_targets = df.groupby(group_column)["_target"].agg(lambda s: s.value_counts().idxmax())
         group_ids = group_targets.index.to_numpy()
         group_y = group_targets.values
 
@@ -433,8 +463,8 @@ def create_splits(
                         group_ids, test_size=val_frac, random_state=rs, shuffle=True
                     )
 
-                tr_df = df[df["accession"].isin(tr_g)]
-                va_df = df[df["accession"].isin(va_g)]
+                tr_df = df[df[group_column].isin(tr_g)]
+                va_df = df[df[group_column].isin(va_g)]
                 if _has_required(tr_df, required_train) and _has_required(va_df, required_val):
                     train_df, val_df = tr_df.copy(), va_df.copy()
                     break
@@ -442,7 +472,7 @@ def create_splits(
             if train_df is None or val_df is None:
                 splitter = GroupShuffleSplit(n_splits=1, test_size=val_frac, random_state=seed)
                 train_idx, val_idx = next(
-                    splitter.split(df, df["_target"], groups=df["accession"])
+                    splitter.split(df, df["_target"], groups=df[group_column])
                 )
                 train_df = df.iloc[train_idx].copy()
                 val_df = df.iloc[val_idx].copy()
@@ -454,9 +484,9 @@ def create_splits(
     LOGGER.info(
         "Split criado: Train=%d (groups=%s) | Val=%d (groups=%s) | Train counts=%s | Val counts=%s",
         len(train_df),
-        train_df["accession"].nunique() if "accession" in train_df.columns else "NA",
+        train_df[group_column].nunique() if group_column and group_column in train_df.columns else "NA",
         len(val_df),
-        val_df["accession"].nunique() if "accession" in val_df.columns else "NA",
+        val_df[group_column].nunique() if group_column and group_column in val_df.columns else "NA",
         _counts(train_df),
         _counts(val_df),
     )

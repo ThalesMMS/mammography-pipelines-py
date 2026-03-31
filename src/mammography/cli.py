@@ -4,6 +4,7 @@
 # mammography-pipelines
 #
 # Orchestrates CLI subcommands for embedding extraction, density training, eval export, and visualization.
+# DISCLAIMER: Educational project only - NOT for clinical or medical diagnostic purposes.
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
@@ -54,11 +55,25 @@ DEFAULT_CONFIGS: dict[str, Path | None] = {
     "embeddings-baselines": None,
     "data-audit": None,
     "tune": None,
+    "preprocess": None,
+    "cross-validate": None,
+    "batch-inference": None,
+    "compare-models": None,
+    "benchmark-report": None,
+    "automl": None,
 }
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Define the CLI with subcommands that wrap the internal command modules."""
+    """
+    Builds the top-level CLI ArgumentParser with global options and registered subcommands.
+
+    Each subcommand accepts an optional `--config` and is prepared to forward unknown arguments to the corresponding internal command module (examples: embed, train-density, eval-export, report-pack, data-audit, visualize, explain, wizard, inference, augment, preprocess, label-density, label-patches, web, eda-cancer, embeddings-baselines, tune, cross-validate, batch-inference, compare-models, automl). Adds global flags such as `--dry-run` and `--log-level`.
+
+
+    Returns:
+        argparse.ArgumentParser: The configured top-level CLI parser.
+    """
     parser = argparse.ArgumentParser(
         prog="mammography",
         description=(
@@ -476,6 +491,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "Encaminha argumentos ao comando de augmentacao.",
     )
 
+    preprocess_parser = subparsers.add_parser(
+        "preprocess",
+        help="Preprocessa datasets de mamografia para formatos padronizados.",
+    )
+    _add_config_argument(
+        preprocess_parser,
+        "Encaminha argumentos ao comando de preprocessamento.",
+    )
+
     label_density_parser = subparsers.add_parser(
         "label-density",
         help="Abre a interface de rotulagem de densidade.",
@@ -528,6 +552,81 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_config_argument(
         tune_parser,
         "Encaminha argumentos ao comando de hyperparameter tuning.",
+    )
+
+    cv_parser = subparsers.add_parser(
+        "cross-validate",
+        help="Executa validacao cruzada k-fold para densidade.",
+    )
+    _add_config_argument(
+        cv_parser,
+        "Encaminha argumentos ao comando de validacao cruzada.",
+    )
+
+    batch_inference_parser = subparsers.add_parser(
+        "batch-inference",
+        help="Executa inferencia em lote sobre multiplas imagens ou DICOMs.",
+    )
+    _add_config_argument(
+        batch_inference_parser,
+        "Encaminha argumentos ao comando de inferencia em lote.",
+    )
+
+    compare_models_parser = subparsers.add_parser(
+        "compare-models",
+        help="Compara o desempenho de diferentes modelos de densidade.",
+    )
+    _add_config_argument(
+        compare_models_parser,
+        "Encaminha argumentos ao comando de comparacao de modelos.",
+    )
+
+    benchmark_report_parser = subparsers.add_parser(
+        "benchmark-report",
+        help="Valida o rerun oficial e gera a tabela mestre e o artefato do artigo.",
+    )
+    _add_config_argument(
+        benchmark_report_parser,
+        "Gera a consolidacao oficial do rerun_2026q1 em CSV/MD/JSON/TEX.",
+    )
+    benchmark_report_parser.add_argument(
+        "--namespace",
+        type=Path,
+        default=Path("outputs/rerun_2026q1"),
+        help="Namespace oficial do rerun (default: outputs/rerun_2026q1).",
+    )
+    benchmark_report_parser.add_argument(
+        "--output-prefix",
+        type=Path,
+        default=Path("results/rerun_2026q1_master"),
+        help="Prefixo de saida para a tabela mestre (default: results/rerun_2026q1_master).",
+    )
+    benchmark_report_parser.add_argument(
+        "--docs-report",
+        type=Path,
+        default=Path("docs/reports/rerun_2026q1_technical_report.md"),
+        help="Relatorio tecnico consolidado em docs/.",
+    )
+    benchmark_report_parser.add_argument(
+        "--article-table",
+        type=Path,
+        default=Path("Article/sections/rerun_2026q1_benchmark_table.tex"),
+        help="Arquivo LaTeX da tabela consolidada do artigo.",
+    )
+    benchmark_report_parser.add_argument(
+        "--exports-search-root",
+        type=Path,
+        default=Path("outputs"),
+        help="Raiz usada para localizar manifests do eval-export.",
+    )
+
+    automl_parser = subparsers.add_parser(
+        "automl",
+        help="Executa AutoML para busca automatica de arquitetura e hiperparametros.",
+    )
+    _add_config_argument(
+        automl_parser,
+        "Encaminha argumentos ao comando de AutoML.",
     )
 
     return parser
@@ -917,6 +1016,24 @@ def _run_visualize(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
     return _run_module_passthrough("mammography.commands.visualize", args, cmd_args)
 
 
+def _run_benchmark_report(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
+    """Execute the benchmark-report command with assembled arguments."""
+    cmd_args: list[str] = []
+    cmd_args.extend(_load_config_args(getattr(args, "config", None), args.command))
+    if hasattr(args, "namespace") and args.namespace:
+        cmd_args.extend(["--namespace", str(args.namespace)])
+    if hasattr(args, "output_prefix") and args.output_prefix:
+        cmd_args.extend(["--output-prefix", str(args.output_prefix)])
+    if hasattr(args, "docs_report") and args.docs_report:
+        cmd_args.extend(["--docs-report", str(args.docs_report)])
+    if hasattr(args, "article_table") and args.article_table:
+        cmd_args.extend(["--article-table", str(args.article_table)])
+    if hasattr(args, "exports_search_root") and args.exports_search_root:
+        cmd_args.extend(["--exports-search-root", str(args.exports_search_root)])
+    cmd_args.extend(forwarded)
+    return _run_module_passthrough("mammography.commands.benchmark_report", args, cmd_args)
+
+
 def _run_data_audit(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
     """Execute the data audit tool with assembled arguments."""
     cmd_args: list[str] = []
@@ -1020,7 +1137,15 @@ def _run_report_pack(args: argparse.Namespace, forwarded: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point that routes subcommands and applies common logging/error handling."""
+    """
+    CLI entry point that parses arguments, dispatches the selected subcommand, and returns a process exit code.
+    
+    Parameters:
+        argv (Sequence[str] | None): Optional list of command-line arguments to parse; if None, the program's argv is used.
+    
+    Returns:
+        int: Exit code produced by the dispatched subcommand (0 on success).
+    """
     parser = _build_parser()
     args, forwarded = parser.parse_known_args(argv)
     if not args.command:
@@ -1053,6 +1178,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_command("mammography.commands.inference", args, forwarded)
         if args.command == "augment":
             return _run_command("mammography.commands.augment", args, forwarded)
+        if args.command == "preprocess":
+            return _run_command("mammography.commands.preprocess", args, forwarded)
         if args.command == "label-density":
             return _run_command("mammography.commands.label_density", args, forwarded)
         if args.command == "label-patches":
@@ -1070,6 +1197,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_command("mammography.commands.embeddings_baselines", args, forwarded)
         if args.command == "tune":
             return _run_command("mammography.commands.tune", args, forwarded)
+        if args.command == "cross-validate":
+            return _run_command("mammography.commands.cross_validate", args, forwarded)
+        if args.command == "batch-inference":
+            return _run_command("mammography.commands.batch_inference", args, forwarded)
+        if args.command == "compare-models":
+            return _run_command("mammography.commands.compare_models", args, forwarded)
+        if args.command == "benchmark-report":
+            return _run_benchmark_report(args, forwarded)
+        if args.command == "automl":
+            return _run_command("mammography.commands.automl", args, forwarded)
         parser.error(f"Subcomando desconhecido: {args.command}")
         return 1
     except SystemExit as exc:

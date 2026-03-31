@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 try:
-    import pandera as pa
+    import pandera.pandas as pa
 except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
     from mammography.utils import pandera_fallback as pa
 import pydicom
@@ -56,18 +56,29 @@ def _extract_view_from_dicom(dcm_path: str) -> Optional[str]:
     Returns:
         ViewPosition ('CC' or 'MLO') if found, None otherwise
     """
+    view, _patient_id = _extract_dicom_metadata(dcm_path)
+    return view
+
+
+def _extract_dicom_metadata(dcm_path: str) -> Tuple[Optional[str], Optional[str]]:
+    """Extract lightweight DICOM metadata used by the dataset loader."""
     try:
-        dataset = pydicom.dcmread(dcm_path, force=True)
-        view_position = getattr(dataset, "ViewPosition", "")
-        if view_position and isinstance(view_position, str):
-            view_position = view_position.strip().upper()
-            if view_position in ("CC", "MLO"):
-                return view_position
-        logger.debug(f"ViewPosition not found or invalid in {dcm_path}")
-        return None
+        dataset = pydicom.dcmread(dcm_path, stop_before_pixels=True, force=True)
     except Exception as exc:
-        logger.debug(f"Failed to extract view from {dcm_path}: {exc}")
-        return None
+        logger.debug(f"Failed to extract metadata from {dcm_path}: {exc}")
+        return None, None
+
+    view_position = getattr(dataset, "ViewPosition", "")
+    view: Optional[str] = None
+    if isinstance(view_position, str):
+        normalized_view = view_position.strip().upper()
+        if normalized_view in ("CC", "MLO"):
+            view = normalized_view
+        elif normalized_view:
+            logger.debug(f"ViewPosition not found or invalid in {dcm_path}")
+
+    patient_id = _normalize_accession(getattr(dataset, "PatientID", None))
+    return view, patient_id
 
 def _coerce_density_label(val: Any, strict: bool = False, warn: bool = True) -> Optional[int]:
     """Normalize label inputs to integers in {1, 2, 3, 4, 5} when possible.
@@ -442,8 +453,13 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
     # Read CSV with encoding detection
     df = _read_csv_with_encoding(csv_path)
 
-    classification_df, classification_error = _try_schema(CLASSIFICATION_SCHEMA, df)
-    if classification_df is not None:
+    if "image_path" in df.columns:
+        path_df, path_error = _try_schema(RAW_PATH_SCHEMA, df)
+        classification_df, classification_error = _try_schema(CLASSIFICATION_SCHEMA, df)
+    else:
+        classification_df, classification_error = _try_schema(CLASSIFICATION_SCHEMA, df)
+        path_df, path_error = _try_schema(RAW_PATH_SCHEMA, df)
+    if classification_df is not None and ("image_path" not in df.columns or path_df is None):
         if not dicom_root:
             raise ValueError("dicom_root é obrigatório para CSV com AccessionNumber/Classification.")
         dicom_root = _find_best_data_dir(dicom_root)
@@ -469,11 +485,17 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             dcm = _find_first_dicom(folder)
             if dcm is None:
                 continue
-            view = _extract_view_from_dicom(dcm)
-            rows.append({"accession": acc, "image_path": dcm, "professional_label": lab, "view": view})
+            view, patient_id = _extract_dicom_metadata(dcm)
+            rows.append(
+                {
+                    "accession": acc,
+                    "image_path": dcm,
+                    "professional_label": lab,
+                    "view": view,
+                    "patient_id": patient_id,
+                }
+            )
         return _validate_schema(DATASET_SCHEMA, pd.DataFrame(rows), "classificacao.csv")
-
-    path_df, path_error = _try_schema(RAW_PATH_SCHEMA, df)
     if path_df is not None:
         label_col_candidates = ["density_label", "label", "y", "professional_label"]
         lab_col = next((c for c in label_col_candidates if c in path_df.columns), None)
@@ -588,11 +610,12 @@ def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -
     override = os.environ.get("MAMMO_CACHE_MODE")
     if override:
         override_value = override.strip().lower()
-        allowed = {"none", "memory", "disk", "tensor-disk", "tensor-memmap", "auto"}
-        if override_value in allowed:
+        concrete = {"none", "memory", "disk", "tensor-disk", "tensor-memmap"}
+        if override_value in concrete:
             return override_value
-        logger.warning("Cache mode override invalido (%s). Ignorando.", override)
-    mode = (requested_mode or "none").lower()
+        if override_value != "auto":
+            logger.warning("Cache mode override invalido (%s). Ignorando.", override)
+    mode = (override.strip().lower() if override and override.strip().lower() == "auto" else (requested_mode or "none")).lower()
     if mode != "auto":
         return mode
 
@@ -611,10 +634,12 @@ def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -
         return "none"
 
     has_dicom = any(str(p).lower().endswith(DICOM_EXTS) for p in paths)
+    if has_dicom:
+        # DICOM mammograms are large (3000-5000px, 16-bit) even after resize;
+        # prefer disk caching to avoid excessive RAM usage.
+        if total <= CACHE_AUTO_DISK_MAX:
+            return "disk"
+        return "tensor-disk"
     if total <= CACHE_AUTO_MEMORY_MAX:
         return "memory"
-    if has_dicom and total <= CACHE_AUTO_DISK_MAX:
-        return "disk"
-    if has_dicom and total > CACHE_AUTO_DISK_MAX:
-        return "tensor-disk"
     return "none"

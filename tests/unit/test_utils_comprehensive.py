@@ -322,6 +322,11 @@ class TestGetReproducibilityInfo:
         assert "command_line" in info
         assert "cwd" in info
         assert "timestamp" in info
+        assert "python_version" in info
+        assert "platform" in info
+        assert "torch_version" in info
+        assert "cuda_version" in info
+        assert "gpu_name" in info
 
     def test_get_reproducibility_info_timestamp_format(self):
         """Test that timestamp is in ISO format."""

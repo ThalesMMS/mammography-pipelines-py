@@ -15,9 +15,11 @@ Image = pytest.importorskip("PIL.Image")
 pd = pytest.importorskip("pandas")
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
+pydicom = pytest.importorskip("pydicom")
 
 from mammography.data.csv_loader import (
     _coerce_density_label,
+    _extract_view_from_dicom,
     _normalize_accession,
     load_dataset_dataframe,
     load_multiple_csvs,
@@ -89,6 +91,16 @@ def test_coerce_density_label_invalid() -> None:
     assert _coerce_density_label(pd.NA) is None
     assert _coerce_density_label("invalid") is None
     assert _coerce_density_label(10) == 10  # Out of range but returns as-is
+    assert _coerce_density_label(-1) == -1  # Negative integers returned as-is
+    assert _coerce_density_label(0) == 0  # Integer 0 returns 0 (unlike string "0" -> 1)
+
+
+def test_coerce_density_label_string_numeric_no_mapping() -> None:
+    """Test string numeric values outside 0-3 range are not mapped (returned as-is)."""
+    assert _coerce_density_label("4") == 4  # Not mapped to 5
+    assert _coerce_density_label("5") == 5  # Returned as-is
+    assert _coerce_density_label("10") == 10  # Out of range string returns as-is
+    assert _coerce_density_label(" 4 ") == 4  # With whitespace
 
 
 def test_coerce_density_label_strict_mode() -> None:
@@ -143,6 +155,64 @@ def test_resolve_dataset_cache_mode_explicit() -> None:
     assert resolve_dataset_cache_mode("memory", rows) == "memory"
     assert resolve_dataset_cache_mode("disk", rows) == "disk"
     assert resolve_dataset_cache_mode("none", rows) == "none"
+
+
+def test_extract_view_from_dicom_cc(valid_dicom_dataset, tmp_path: Path) -> None:
+    """Test extraction of CC ViewPosition from DICOM."""
+    valid_dicom_dataset.ViewPosition = "CC"
+    dcm_path = tmp_path / "test_cc.dcm"
+    valid_dicom_dataset.save_as(str(dcm_path), write_like_original=False)
+
+    view = _extract_view_from_dicom(str(dcm_path))
+    assert view == "CC"
+
+
+def test_extract_view_from_dicom_mlo(valid_dicom_dataset, tmp_path: Path) -> None:
+    """Test extraction of MLO ViewPosition from DICOM."""
+    valid_dicom_dataset.ViewPosition = "MLO"
+    dcm_path = tmp_path / "test_mlo.dcm"
+    valid_dicom_dataset.save_as(str(dcm_path), write_like_original=False)
+
+    view = _extract_view_from_dicom(str(dcm_path))
+    assert view == "MLO"
+
+
+def test_extract_view_from_dicom_lowercase(valid_dicom_dataset, tmp_path: Path) -> None:
+    """Test extraction of ViewPosition with case normalization."""
+    valid_dicom_dataset.ViewPosition = "cc"
+    dcm_path = tmp_path / "test_lowercase.dcm"
+    valid_dicom_dataset.save_as(str(dcm_path), write_like_original=False)
+
+    view = _extract_view_from_dicom(str(dcm_path))
+    assert view == "CC"
+
+
+def test_extract_view_from_dicom_missing(valid_dicom_dataset, tmp_path: Path) -> None:
+    """Test handling of missing ViewPosition."""
+    # Remove ViewPosition attribute if present
+    if hasattr(valid_dicom_dataset, "ViewPosition"):
+        delattr(valid_dicom_dataset, "ViewPosition")
+    dcm_path = tmp_path / "test_no_view.dcm"
+    valid_dicom_dataset.save_as(str(dcm_path), write_like_original=False)
+
+    view = _extract_view_from_dicom(str(dcm_path))
+    assert view is None
+
+
+def test_extract_view_from_dicom_invalid(valid_dicom_dataset, tmp_path: Path) -> None:
+    """Test handling of invalid ViewPosition values."""
+    valid_dicom_dataset.ViewPosition = "INVALID"
+    dcm_path = tmp_path / "test_invalid.dcm"
+    valid_dicom_dataset.save_as(str(dcm_path), write_like_original=False)
+
+    view = _extract_view_from_dicom(str(dcm_path))
+    assert view is None
+
+
+def test_extract_view_from_dicom_nonexistent() -> None:
+    """Test handling of nonexistent DICOM file."""
+    view = _extract_view_from_dicom("/nonexistent/path/file.dcm")
+    assert view is None
 
 
 def test_validate_split_overlap_no_overlap() -> None:
@@ -208,22 +278,118 @@ def test_load_dataset_dataframe_missing_csv() -> None:
         load_dataset_dataframe(None, dicom_root=None)
 
 
-def test_load_dataset_dataframe_with_preset(tmp_path: Path) -> None:
-    """Test loading dataset with preset configuration."""
-    folder = tmp_path / "case_001"
-    folder.mkdir()
+def test_load_dataset_dataframe_classification_csv_integer_labels(
+    valid_dicom_dataset, tmp_path: Path
+) -> None:
+    """Test loading from classificacao.csv with integer Classification labels."""
+    # Create archive directory structure
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
 
-    img_path = folder / "img_001.png"
-    _write_sample_image(img_path)
+    # Create DICOM files with AccessionNumbers
+    acc001_dir = archive_dir / "ACC001"
+    acc001_dir.mkdir()
+    valid_dicom_dataset.ViewPosition = "CC"
+    dcm1_path = acc001_dir / "image1.dcm"
+    valid_dicom_dataset.save_as(str(dcm1_path), write_like_original=False)
 
-    (folder / "featureS.txt").write_text("img_001\n2\n", encoding="utf-8")
+    acc002_dir = archive_dir / "ACC002"
+    acc002_dir.mkdir()
+    valid_dicom_dataset.ViewPosition = "MLO"
+    dcm2_path = acc002_dir / "image2.dcm"
+    valid_dicom_dataset.save_as(str(dcm2_path), write_like_original=False)
 
-    # Should resolve paths from preset
-    df = load_dataset_dataframe(
-        csv_path=None,
-        dicom_root=None,
-        dataset="mamografias",
+    # Create classificacao.csv with integer labels
+    csv_path = tmp_path / "classificacao.csv"
+    csv_path.write_text(
+        "AccessionNumber,Classification\n"
+        "ACC001,2\n"
+        "ACC002,3\n",
+        encoding="utf-8",
     )
+
+    df = load_dataset_dataframe(str(csv_path), dicom_root=str(archive_dir))
+    assert len(df) == 2
+    assert "professional_label" in df.columns
+    assert "accession" in df.columns
+    assert "view" in df.columns
+    assert "patient_id" in df.columns
+
+    # Check labels were coerced correctly
+    acc001_rows = df[df["accession"] == "ACC001"]
+    assert len(acc001_rows) == 1
+    assert acc001_rows.iloc[0]["professional_label"] == 2
+    assert acc001_rows.iloc[0]["view"] == "CC"
+    assert acc001_rows.iloc[0]["patient_id"] == valid_dicom_dataset.PatientID
+
+    acc002_rows = df[df["accession"] == "ACC002"]
+    assert len(acc002_rows) == 1
+    assert acc002_rows.iloc[0]["professional_label"] == 3
+    assert acc002_rows.iloc[0]["view"] == "MLO"
+    assert acc002_rows.iloc[0]["patient_id"] == valid_dicom_dataset.PatientID
+
+
+def test_load_dataset_dataframe_classification_csv_birads_labels(
+    valid_dicom_dataset, tmp_path: Path
+) -> None:
+    """Test loading from classificacao.csv with BI-RADS letter Classification labels."""
+    # Create archive directory structure
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    # Create DICOM file with AccessionNumber
+    acc003_dir = archive_dir / "ACC003"
+    acc003_dir.mkdir()
+    valid_dicom_dataset.ViewPosition = "CC"
+    dcm_path = acc003_dir / "image.dcm"
+    valid_dicom_dataset.save_as(str(dcm_path), write_like_original=False)
+
+    # Create classificacao.csv with BI-RADS letters
+    csv_path = tmp_path / "classificacao.csv"
+    csv_path.write_text(
+        "AccessionNumber,Classification\n"
+        "ACC003,B\n",
+        encoding="utf-8",
+    )
+
+    df = load_dataset_dataframe(str(csv_path), dicom_root=str(archive_dir))
+    assert len(df) == 1
+    assert df.iloc[0]["professional_label"] == 2  # B -> 2
+    assert df.iloc[0]["accession"] == "ACC003"
+
+
+def test_load_dataset_dataframe_classification_csv_mixed_labels(
+    valid_dicom_dataset, tmp_path: Path
+) -> None:
+    """Test loading from classificacao.csv with mixed label formats."""
+    # Create archive directory structure
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    # Create DICOM files
+    for acc_num in ["ACC004", "ACC005", "ACC006"]:
+        acc_dir = archive_dir / acc_num
+        acc_dir.mkdir()
+        dcm_path = acc_dir / "image.dcm"
+        valid_dicom_dataset.save_as(str(dcm_path), write_like_original=False)
+
+    # Create classificacao.csv with mixed formats
+    csv_path = tmp_path / "classificacao.csv"
+    csv_path.write_text(
+        "AccessionNumber,Classification\n"
+        "ACC004,1\n"  # Integer
+        "ACC005,C\n"  # BI-RADS letter
+        "ACC006,2\n",  # String "2"
+        encoding="utf-8",
+    )
+
+    df = load_dataset_dataframe(str(csv_path), dicom_root=str(archive_dir))
+    assert len(df) == 3
+
+    # Verify each label was coerced correctly
+    assert df[df["accession"] == "ACC004"].iloc[0]["professional_label"] == 1
+    assert df[df["accession"] == "ACC005"].iloc[0]["professional_label"] == 3  # C -> 3
+    assert df[df["accession"] == "ACC006"].iloc[0]["professional_label"] == 2
 
 
 def test_load_multiple_csvs(tmp_path: Path) -> None:
@@ -323,6 +489,35 @@ def test_create_splits_single_accession_falls_back_to_random() -> None:
     assert len(val_df) > 0
 
 
+def test_create_splits_supports_custom_group_column_without_accession() -> None:
+    """Custom group columns should work even when accession is absent."""
+    rows = []
+    for patient_idx in range(12):
+        patient_id = f"PAT{patient_idx:03d}"
+        label = (patient_idx % 4) + 1
+        for image_idx in range(2):
+            rows.append(
+                {
+                    "image_path": f"img_{patient_idx}_{image_idx}.png",
+                    "professional_label": label,
+                    "patient_id": patient_id,
+                }
+            )
+    df = pd.DataFrame(rows)
+
+    train_df, val_df = create_splits(
+        df,
+        val_frac=0.25,
+        seed=42,
+        ensure_val_has_all_classes=False,
+        group_col="patient_id",
+    )
+
+    assert len(train_df) > 0
+    assert len(val_df) > 0
+    assert set(train_df["patient_id"]).isdisjoint(set(val_df["patient_id"]))
+
+
 def test_create_three_way_split(tmp_path: Path) -> None:
     """Test train/val/test split creation."""
     df = pd.DataFrame({
@@ -342,6 +537,41 @@ def test_create_three_way_split(tmp_path: Path) -> None:
     assert total == len(df)
 
 
+def test_create_three_way_split_supports_custom_group_column_without_accession() -> None:
+    """Three-way splits should honor custom grouping columns."""
+    rows = []
+    for patient_idx in range(16):
+        patient_id = f"PAT{patient_idx:03d}"
+        label = (patient_idx % 4) + 1
+        for image_idx in range(2):
+            rows.append(
+                {
+                    "image_path": f"img_{patient_idx}_{image_idx}.png",
+                    "professional_label": label,
+                    "patient_id": patient_id,
+                }
+            )
+    df = pd.DataFrame(rows)
+
+    train_df, val_df, test_df = create_three_way_split(
+        df,
+        val_frac=0.2,
+        test_frac=0.2,
+        seed=42,
+        ensure_all_splits_have_all_classes=False,
+        group_col="patient_id",
+    )
+
+    train_patients = set(train_df["patient_id"])
+    val_patients = set(val_df["patient_id"])
+    test_patients = set(test_df["patient_id"])
+
+    assert len(train_df) > 0
+    assert len(val_df) > 0
+    assert len(test_df) > 0
+    assert train_patients.isdisjoint(val_patients)
+    assert train_patients.isdisjoint(test_patients)
+    assert val_patients.isdisjoint(test_patients)
 def test_create_kfold_splits(tmp_path: Path) -> None:
     """Test k-fold cross-validation splits."""
     df = pd.DataFrame({
@@ -444,7 +674,7 @@ def test_load_splits_from_csvs_with_overlap(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Sobreposicao"):
+    with pytest.raises(ValueError, match="Sobreposição detectada"):
         load_splits_from_csvs(str(train_csv), str(val_csv), None)
 
 
@@ -608,6 +838,185 @@ def test_embedding_store_lookup() -> None:
     assert emb is None
 
 
+def test_load_embedding_store_valid(tmp_path: Path) -> None:
+    """Test loading embedding store from valid directory."""
+    # Create valid features.npy and metadata.csv
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    features = np.random.randn(3, 2048).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    metadata = pd.DataFrame({
+        "accession": ["ACC001", "ACC002", "ACC003"],
+        "path": ["img1.png", "img2.png", "img3.png"],
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    # Load embedding store
+    store = load_embedding_store(str(embeddings_dir))
+
+    assert store.feature_dim == 2048
+    assert len(store.embeddings_by_accession) == 3
+    assert len(store.embeddings_by_path) >= 3  # May have normalized paths too
+    assert "ACC001" in store.embeddings_by_accession
+    assert store.embeddings_by_accession["ACC001"].shape == (2048,)
+
+
+def test_load_embedding_store_1d_features(tmp_path: Path) -> None:
+    """Test loading embedding store with 1D features (should be reshaped to 2D)."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    # 1D features should be reshaped to (1, 2048)
+    features = np.random.randn(2048).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    metadata = pd.DataFrame({
+        "accession": ["ACC001"],
+        "path": ["img1.png"],
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    # Load embedding store
+    store = load_embedding_store(str(embeddings_dir))
+
+    assert store.feature_dim == 2048
+    assert len(store.embeddings_by_accession) == 1
+    assert "ACC001" in store.embeddings_by_accession
+
+
+def test_load_embedding_store_missing_features(tmp_path: Path) -> None:
+    """Test error when features.npy is missing."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    # Only create metadata.csv
+    metadata = pd.DataFrame({
+        "accession": ["ACC001"],
+        "path": ["img1.png"],
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    with pytest.raises(FileNotFoundError, match="features.npy nao encontrado"):
+        load_embedding_store(str(embeddings_dir))
+
+
+def test_load_embedding_store_missing_metadata(tmp_path: Path) -> None:
+    """Test error when metadata.csv is missing."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    # Only create features.npy
+    features = np.random.randn(3, 2048).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    with pytest.raises(FileNotFoundError, match="metadata.csv nao encontrado"):
+        load_embedding_store(str(embeddings_dir))
+
+
+def test_load_embedding_store_invalid_features_shape(tmp_path: Path) -> None:
+    """Test error when features.npy has invalid shape (3D+)."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    # 3D features are invalid
+    features = np.random.randn(3, 2048, 5).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    metadata = pd.DataFrame({
+        "accession": ["ACC001", "ACC002", "ACC003"],
+        "path": ["img1.png", "img2.png", "img3.png"],
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    with pytest.raises(ValueError, match="deve ter 2 dimensoes"):
+        load_embedding_store(str(embeddings_dir))
+
+
+def test_load_embedding_store_shape_mismatch(tmp_path: Path) -> None:
+    """Test error when metadata rows don't match features rows."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    # 3 rows in features
+    features = np.random.randn(3, 2048).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    # But only 2 rows in metadata
+    metadata = pd.DataFrame({
+        "accession": ["ACC001", "ACC002"],
+        "path": ["img1.png", "img2.png"],
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    with pytest.raises(ValueError, match="nao bate com features.npy"):
+        load_embedding_store(str(embeddings_dir))
+
+
+def test_load_embedding_store_no_valid_columns(tmp_path: Path) -> None:
+    """Test error when metadata has no valid accession/path columns."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    features = np.random.randn(2, 2048).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    # Metadata with neither accession nor path/image_path columns
+    metadata = pd.DataFrame({
+        "id": [1, 2],
+        "label": [0, 1],
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    with pytest.raises(ValueError, match="nao possui colunas 'accession'/'path' validas"):
+        load_embedding_store(str(embeddings_dir))
+
+
+def test_load_embedding_store_with_image_path_column(tmp_path: Path) -> None:
+    """Test loading with 'image_path' column instead of 'path'."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    features = np.random.randn(2, 2048).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    metadata = pd.DataFrame({
+        "accession": ["ACC001", "ACC002"],
+        "image_path": ["img1.png", "img2.png"],  # Use image_path instead of path
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    store = load_embedding_store(str(embeddings_dir))
+
+    assert store.feature_dim == 2048
+    assert len(store.embeddings_by_accession) == 2
+    assert "img1.png" in store.embeddings_by_path
+
+
+def test_load_embedding_store_nan_accessions(tmp_path: Path) -> None:
+    """Test loading with NaN/empty accessions (should be skipped)."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+
+    features = np.random.randn(4, 2048).astype(np.float32)
+    np.save(embeddings_dir / "features.npy", features)
+
+    metadata = pd.DataFrame({
+        "accession": ["ACC001", None, np.nan, ""],
+        "path": ["img1.png", "img2.png", "img3.png", "img4.png"],
+    })
+    metadata.to_csv(embeddings_dir / "metadata.csv", index=False)
+
+    store = load_embedding_store(str(embeddings_dir))
+
+    # Only ACC001 should be in accession index (others are invalid)
+    assert len(store.embeddings_by_accession) == 1
+    assert "ACC001" in store.embeddings_by_accession
+    # But all 4 paths should be indexed
+    assert len(store.embeddings_by_path) >= 4
+
+
 def test_mammo_density_dataset_creation(tmp_path: Path) -> None:
     """Test MammoDensityDataset instantiation."""
     img_path = tmp_path / "test.png"
@@ -703,3 +1112,578 @@ def test_robust_collate_all_none() -> None:
     batch = [None, None, None]
     result = robust_collate(batch)
     assert result is None
+
+
+# ==================== DICOM Loading Tests ====================
+
+
+def test_mammo_density_dataset_dicom_loading(dicom_file_path: Path) -> None:
+    """Test MammoDensityDataset loading DICOM files."""
+    rows = [
+        {
+            "image_path": str(dicom_file_path),
+            "professional_label": 3,
+            "accession": "DICOM001",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=128,
+        train=False,
+        augment=False,
+        cache_mode="none",
+    )
+
+    assert len(dataset) == 1
+
+    # Test DICOM loading
+    item = dataset[0]
+    assert item is not None
+    img, label, meta, emb = item
+    assert img.shape == (3, 128, 128)  # RGB channels, resized
+    assert label == 2  # 3 -> 2 (zero-indexed)
+    assert meta["accession"] == "DICOM001"
+
+
+def test_mammo_density_dataset_dicom_with_cache(dicom_file_path: Path, tmp_path: Path) -> None:
+    """Test MammoDensityDataset DICOM loading with memory cache."""
+    rows = [
+        {
+            "image_path": str(dicom_file_path),
+            "professional_label": 2,
+            "accession": "DICOM002",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=128,
+        train=False,
+        augment=False,
+        cache_mode="memory",
+    )
+
+    # First access - loads DICOM
+    item1 = dataset[0]
+    assert item1 is not None
+    img1, label1, meta1, _ = item1
+    assert img1.shape == (3, 128, 128)
+
+    # Second access - should use cache
+    item2 = dataset[0]
+    assert item2 is not None
+    img2, label2, meta2, _ = item2
+    assert img2.shape == (3, 128, 128)
+    assert label1 == label2
+
+
+def test_mammo_density_dataset_dicom_tensor_disk_cache(dicom_file_path: Path, tmp_path: Path) -> None:
+    """Test MammoDensityDataset DICOM with tensor-disk cache."""
+    cache_dir = tmp_path / "tensor_cache"
+    cache_dir.mkdir()
+
+    rows = [
+        {
+            "image_path": str(dicom_file_path),
+            "professional_label": 4,
+            "accession": "DICOM003",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=128,
+        train=False,
+        augment=False,
+        cache_mode="tensor-disk",
+        cache_dir=str(cache_dir),
+        split_name="test",
+    )
+
+    # First access - creates cache
+    item = dataset[0]
+    assert item is not None
+    img, label, meta, _ = item
+    assert img.shape == (3, 128, 128)
+    assert label == 3  # 4 -> 3 (zero-indexed)
+
+    # Verify cache file was created
+    cache_files = list(cache_dir.glob("*.pt"))
+    assert len(cache_files) > 0
+
+
+def test_mammo_density_dataset_memory_cache_with_getitem(tmp_path: Path) -> None:
+    """Test memory cache mode with __getitem__ to verify caching behavior."""
+    # Create multiple test images
+    img_paths = []
+    for i in range(3):
+        img_path = tmp_path / f"test_{i}.png"
+        _write_sample_image(img_path)
+        img_paths.append(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_paths[0]),
+            "professional_label": 1,
+            "accession": "MEM001",
+        },
+        {
+            "image_path": str(img_paths[1]),
+            "professional_label": 2,
+            "accession": "MEM002",
+        },
+        {
+            "image_path": str(img_paths[2]),
+            "professional_label": 3,
+            "accession": "MEM003",
+        },
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=128,
+        train=False,
+        augment=False,
+        cache_mode="memory",
+    )
+
+    # Verify cache is initialized but empty
+    assert dataset._image_cache is not None
+    assert len(dataset._image_cache) == 0
+
+    # First access - should populate cache
+    item0 = dataset[0]
+    assert item0 is not None
+    img0, label0, meta0, _ = item0
+    assert img0.shape == (3, 128, 128)
+    assert label0 == 0  # 1 -> 0 (zero-indexed)
+    assert meta0["accession"] == "MEM001"
+
+    # Cache should now contain one entry
+    assert len(dataset._image_cache) == 1
+
+    # Access different item - should add to cache
+    item1 = dataset[1]
+    assert item1 is not None
+    img1, label1, meta1, _ = item1
+    assert img1.shape == (3, 128, 128)
+    assert label1 == 1  # 2 -> 1 (zero-indexed)
+    assert meta1["accession"] == "MEM002"
+
+    # Cache should now contain two entries
+    assert len(dataset._image_cache) == 2
+
+    # Re-access first item - should use cached version
+    item0_again = dataset[0]
+    assert item0_again is not None
+    img0_again, label0_again, meta0_again, _ = item0_again
+    assert img0_again.shape == (3, 128, 128)
+    assert label0_again == label0
+
+    # Cache size should remain the same (no new entry)
+    assert len(dataset._image_cache) == 2
+
+    # Access all items to fully populate cache
+    item2 = dataset[2]
+    assert item2 is not None
+    assert len(dataset._image_cache) == 3
+
+
+def test_mammo_density_dataset_auto_normalize(tmp_path: Path) -> None:
+    """Test auto-normalization computes and applies stats correctly."""
+    # Create multiple test images to compute stats from
+    img_paths = []
+    for i in range(10):
+        img_path = tmp_path / f"auto_norm_{i}.png"
+        # Create images with varying pixel values
+        img = Image.new("RGB", (32, 32), color=(100 + i * 10, 50 + i * 5, 150 - i * 5))
+        img.save(img_path)
+        img_paths.append(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": (i % 4) + 1,
+            "accession": f"AUTO{i:03d}",
+        }
+        for i, img_path in enumerate(img_paths)
+    ]
+
+    # Create dataset with auto-normalization enabled
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=64,
+        train=False,
+        augment=False,
+        cache_mode="none",
+        auto_normalize=True,
+        auto_normalize_samples=5,  # Use subset for speed
+    )
+
+    # Verify normalization stats were computed
+    assert dataset._norm_mean is not None
+    assert dataset._norm_std is not None
+    assert len(dataset._norm_mean) == 3  # RGB channels
+    assert len(dataset._norm_std) == 3
+
+    # Stats should be non-trivial (not passthrough values)
+    # Mean should not be exactly [0.0, 0.0, 0.0]
+    assert not all(m == 0.0 for m in dataset._norm_mean)
+    # Std should not be exactly [1.0, 1.0, 1.0]
+    assert not all(s == 1.0 for s in dataset._norm_std)
+
+    # Verify dataset can load items with computed normalization
+    item = dataset[0]
+    assert item is not None
+    img, label, meta, _ = item
+    assert img.shape == (3, 64, 64)
+
+    # Check that normalization is applied (tensor should be normalized)
+    # Mean should be close to 0 and std close to 1 after normalization
+    # (allowing some variance since we use a small subset)
+    img_mean = img.mean(dim=[1, 2])
+    img_std = img.std(dim=[1, 2])
+
+    # Check values are in reasonable normalized range
+    assert torch.all(img_mean.abs() < 3.0)  # Should be somewhat centered
+    assert torch.all(img_std > 0.1)  # Should have some variance
+
+
+def test_mammo_density_dataset_auto_normalize_disabled(tmp_path: Path) -> None:
+    """Test that auto-normalization can be disabled with explicit mean/std."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 2,
+            "accession": "EXPLICIT001",
+        }
+    ]
+
+    # Provide explicit normalization values
+    explicit_mean = [0.5, 0.5, 0.5]
+    explicit_std = [0.25, 0.25, 0.25]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=128,
+        train=False,
+        augment=False,
+        cache_mode="none",
+        auto_normalize=True,  # Even with auto enabled
+        mean=explicit_mean,  # Explicit values should take precedence
+        std=explicit_std,
+    )
+
+    # Verify explicit values were used (not auto-computed)
+    assert dataset._norm_mean == explicit_mean
+    assert dataset._norm_std == explicit_std
+
+    # Verify dataset works correctly
+    item = dataset[0]
+    assert item is not None
+    img, label, meta, _ = item
+    assert img.shape == (3, 128, 128)
+
+
+# ==================== Augmentation Tests ====================
+
+
+def test_mammo_density_dataset_augmentation_enabled(tmp_path: Path) -> None:
+    """Test MammoDensityDataset with augmentation enabled in train mode."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 2,
+            "accession": "AUG001",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=224,
+        train=True,
+        augment=True,
+        cache_mode="none",
+    )
+
+    assert dataset.augment is True
+    assert dataset.train is True
+
+    # Get multiple samples to verify augmentation varies
+    item1 = dataset[0]
+    item2 = dataset[0]
+    assert item1 is not None
+    assert item2 is not None
+
+    img1, _, _, _ = item1
+    img2, _, _, _ = item2
+
+    # Images should potentially differ due to random augmentation
+    assert img1.shape == img2.shape == (3, 224, 224)
+
+
+def test_mammo_density_dataset_augmentation_disabled_in_eval(tmp_path: Path) -> None:
+    """Test augmentation is disabled when train=False."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 1,
+            "accession": "AUG002",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=224,
+        train=False,
+        augment=True,  # Requested but should be disabled
+        cache_mode="none",
+    )
+
+    # Augmentation should be disabled in eval mode
+    assert dataset.augment is False
+    assert dataset.train is False
+
+
+def test_mammo_density_dataset_vertical_augmentation(tmp_path: Path) -> None:
+    """Test vertical flip augmentation."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 3,
+            "accession": "AUG003",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=224,
+        train=True,
+        augment=True,
+        augment_vertical=True,
+        cache_mode="none",
+    )
+
+    assert dataset.augment_vertical is True
+
+    # Test that dataset can be accessed (vertical flip is random)
+    item = dataset[0]
+    assert item is not None
+    img, label, _, _ = item
+    assert img.shape == (3, 224, 224)
+    assert label == 2  # 3 -> 2 (zero-indexed)
+
+
+def test_mammo_density_dataset_color_augmentation(tmp_path: Path) -> None:
+    """Test color jitter augmentation."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 4,
+            "accession": "AUG004",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=224,
+        train=True,
+        augment=True,
+        augment_color=True,
+        cache_mode="none",
+    )
+
+    assert dataset.augment_color is True
+
+    # Test that dataset can be accessed (color jitter is random)
+    item = dataset[0]
+    assert item is not None
+    img, label, _, _ = item
+    assert img.shape == (3, 224, 224)
+    assert label == 3  # 4 -> 3 (zero-indexed)
+
+
+def test_mammo_density_dataset_rotation_augmentation(tmp_path: Path) -> None:
+    """Test rotation augmentation with custom degrees."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 2,
+            "accession": "AUG005",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=224,
+        train=True,
+        augment=True,
+        rotation_deg=10.0,
+        cache_mode="none",
+    )
+
+    assert dataset.rotation_deg == 10.0
+
+    # Test that dataset can be accessed (rotation is random)
+    item = dataset[0]
+    assert item is not None
+    img, label, _, _ = item
+    assert img.shape == (3, 224, 224)
+    assert label == 1  # 2 -> 1 (zero-indexed)
+
+
+def test_mammo_density_dataset_all_augmentations(tmp_path: Path) -> None:
+    """Test all augmentation options enabled together."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 3,
+            "accession": "AUG006",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=224,
+        train=True,
+        augment=True,
+        augment_vertical=True,
+        augment_color=True,
+        rotation_deg=15.0,
+        cache_mode="none",
+    )
+
+    assert dataset.augment is True
+    assert dataset.augment_vertical is True
+    assert dataset.augment_color is True
+    assert dataset.rotation_deg == 15.0
+
+    # Test that all augmentations can be applied
+    item = dataset[0]
+    assert item is not None
+    img, label, meta, _ = item
+    assert img.shape == (3, 224, 224)
+    assert label == 2  # 3 -> 2 (zero-indexed)
+    assert meta["accession"] == "AUG006"
+
+
+def test_mammo_density_dataset_dicom_with_augmentation(dicom_file_path: Path) -> None:
+    """Test DICOM loading combined with augmentation."""
+    rows = [
+        {
+            "image_path": str(dicom_file_path),
+            "professional_label": 2,
+            "accession": "DICOM_AUG001",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=128,
+        train=True,
+        augment=True,
+        augment_vertical=True,
+        augment_color=True,
+        rotation_deg=5.0,
+        cache_mode="none",
+    )
+
+    # Test DICOM loading with augmentation
+    item = dataset[0]
+    assert item is not None
+    img, label, meta, _ = item
+    assert img.shape == (3, 128, 128)
+    assert label == 1  # 2 -> 1 (zero-indexed)
+    assert meta["accession"] == "DICOM_AUG001"
+
+
+# ==================== Transform Pipeline Tests ====================
+
+
+def test_mammo_density_dataset_transform_consistency(tmp_path: Path) -> None:
+    """Test that transforms produce consistent output shapes."""
+    img_path = tmp_path / "test.png"
+    _write_sample_image(img_path)
+
+    rows = [
+        {
+            "image_path": str(img_path),
+            "professional_label": 1,
+            "accession": "TRANS001",
+        }
+    ]
+
+    # Test different image sizes
+    for size in [128, 224, 256]:
+        dataset = MammoDensityDataset(
+            rows=rows,
+            img_size=size,
+            train=False,
+            augment=False,
+            cache_mode="none",
+        )
+
+        item = dataset[0]
+        assert item is not None
+        img, _, _, _ = item
+        assert img.shape == (3, size, size)
+
+
+def test_mammo_density_dataset_dicom_transform_pipeline(dicom_file_path: Path) -> None:
+    """Test complete transform pipeline for DICOM files."""
+    rows = [
+        {
+            "image_path": str(dicom_file_path),
+            "professional_label": 4,
+            "accession": "DICOM_TRANS001",
+        }
+    ]
+
+    dataset = MammoDensityDataset(
+        rows=rows,
+        img_size=224,
+        train=True,
+        augment=True,
+        rotation_deg=5.0,
+        cache_mode="none",
+    )
+
+    # Test transform pipeline: DICOM -> PIL -> Tensor -> Augment -> Normalize
+    item = dataset[0]
+    assert item is not None
+    img, label, meta, _ = item
+
+    # Verify tensor properties
+    assert isinstance(img, torch.Tensor)
+    assert img.shape == (3, 224, 224)
+    assert img.dtype == torch.float32
+
+    # Verify normalization (values should be roughly in [-3, 3] range)
+    assert img.min() >= -5.0
+    assert img.max() <= 5.0
+
+    # Verify label mapping
+    assert label == 3  # 4 -> 3 (zero-indexed)
+    assert meta["accession"] == "DICOM_TRANS001"

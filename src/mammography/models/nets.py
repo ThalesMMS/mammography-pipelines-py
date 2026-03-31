@@ -9,7 +9,7 @@
 import torch
 import torch.nn as nn
 import warnings
-from typing import Optional
+from typing import Iterable, Optional
 from torchvision.models import (
     efficientnet_b0, EfficientNet_B0_Weights,
     resnet50, ResNet50_Weights,
@@ -24,6 +24,47 @@ except ImportError:
     TIMM_AVAILABLE = False
     timm = None  # type: ignore
     # Note: DeiT models will raise RuntimeError if attempted without timm installed
+
+
+TRANSFORMER_IMAGE_SIZE = 224
+FIXED_IMAGE_SIZE_ARCHITECTURES = {
+    "vit",
+    "vit_b_16",
+    "vit_b_32",
+    "vit_l_16",
+    "deit_small",
+    "deit_base",
+}
+
+
+def normalize_arch_name(arch: str) -> str:
+    """Normalize legacy aliases to canonical architecture names."""
+    return "vit_b_16" if arch == "vit" else arch
+
+
+def validate_arch_img_size(arch: str, img_size: int) -> None:
+    """Raise ValueError when an architecture requires a fixed image size."""
+    canonical_arch = normalize_arch_name(arch)
+    if canonical_arch in FIXED_IMAGE_SIZE_ARCHITECTURES and int(img_size) != TRANSFORMER_IMAGE_SIZE:
+        raise ValueError(
+            f"arch={canonical_arch} requires img_size={TRANSFORMER_IMAGE_SIZE}; "
+            f"received img_size={img_size}."
+        )
+
+
+def filter_architectures_for_img_size(
+    architectures: Iterable[str],
+    img_size: int,
+) -> list[str]:
+    """Return only architectures compatible with the requested image size."""
+    compatible: list[str] = []
+    for arch in architectures:
+        try:
+            validate_arch_img_size(str(arch), img_size)
+        except ValueError:
+            continue
+        compatible.append(str(arch))
+    return compatible
 
 
 def _load_with_fallback(factory, weights, arch_name: str) -> nn.Module:
@@ -231,8 +272,7 @@ def build_model(
     pretrained: bool = True,
 ) -> nn.Module:
     """Build EfficientNetB0/ResNet50/ViT with a customizable head and optional feature fusion."""
-    if arch == "vit":
-        arch = "vit_b_16"
+    arch = normalize_arch_name(arch)
 
     if arch == "efficientnet_b0":
         weights = EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None

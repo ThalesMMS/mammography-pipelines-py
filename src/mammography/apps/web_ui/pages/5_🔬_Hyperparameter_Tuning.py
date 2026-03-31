@@ -209,7 +209,7 @@ def _display_studies_overview(storage_uri: str) -> None:
 
     if study_data:
         df = pd.DataFrame(study_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
     # Study selector
     st.subheader("Select Study to View Details")
@@ -272,7 +272,7 @@ def _display_study_details(study: Study) -> None:
         params_df = pd.DataFrame(
             [{"Parameter": k, "Value": v} for k, v in sorted(best_params.items())]
         )
-        st.dataframe(params_df, use_container_width=True, hide_index=True)
+        st.dataframe(params_df, width="stretch", hide_index=True)
 
     # Trials table
     st.subheader("All Trials")
@@ -312,7 +312,7 @@ def _display_study_details(study: Study) -> None:
             trials_data.append(row)
 
         trials_df = pd.DataFrame(trials_data)
-        st.dataframe(trials_df, use_container_width=True, hide_index=True)
+        st.dataframe(trials_df, width="stretch", hide_index=True)
 
     # Visualization tabs
     if completed_trials:
@@ -348,7 +348,7 @@ def _display_optimization_history(study: Study) -> None:
 
     try:
         fig = optuna.visualization.plot_optimization_history(study)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         _export_plot_buttons(fig, f"optimization_history_{study.study_name}")
     except Exception as exc:
         st.error(f"Failed to generate optimization history plot: {exc}")
@@ -370,7 +370,7 @@ def _display_parameter_importance(study: Study) -> None:
             return
 
         fig = optuna.visualization.plot_param_importances(study)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         _export_plot_buttons(fig, f"param_importance_{study.study_name}")
     except Exception as exc:
         st.error(f"Failed to generate parameter importance plot: {exc}")
@@ -386,7 +386,7 @@ def _display_parallel_coordinates(study: Study) -> None:
 
     try:
         fig = optuna.visualization.plot_parallel_coordinate(study)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         _export_plot_buttons(fig, f"parallel_coords_{study.study_name}")
     except Exception as exc:
         st.error(f"Failed to generate parallel coordinates plot: {exc}")
@@ -402,7 +402,7 @@ def _display_parameter_distributions(study: Study) -> None:
 
     try:
         fig = optuna.visualization.plot_slice(study)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         _export_plot_buttons(fig, f"param_slices_{study.study_name}")
     except Exception as exc:
         st.error(f"Failed to generate parameter slice plots: {exc}")
@@ -427,18 +427,6 @@ def main() -> None:
         st.stop()
 
     st.title("🔬 Hyperparameter Tuning")
-
-    st.markdown("""
-    <div style="background-color: #fff3cd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ffc107; margin-bottom: 1rem;">
-    <h3 style="color: #856404; margin-top: 0;">⚠️ EDUCATIONAL RESEARCH USE ONLY</h3>
-    <p style="color: #856404; margin-bottom: 0;">
-    This tool is for <strong>educational and research purposes only</strong>. It is <strong>NOT</strong>
-    intended for clinical diagnosis or treatment. All results should be validated by qualified
-    medical professionals before any clinical decision-making.
-    </p>
-    </div>
-    """, unsafe_allow_html=True)
-
     # Check if Optuna is available
     try:
         _require_optuna()

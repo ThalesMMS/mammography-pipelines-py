@@ -37,7 +37,7 @@ view_specific_training:
 # Standard training hyperparameters (same as regular training)
 model:
   architecture: "efficientnet_b0"  # or "resnet50"
-  classes: "density"               # BI-RADS density classification (A-D)
+  classes: "multiclass"            # BI-RADS density classification (A-D)
   pretrained: true                 # Use ImageNet pretrained weights
 
 training:

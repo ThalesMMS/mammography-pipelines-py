@@ -20,6 +20,7 @@ from mammography.tools.data_audit_registry import (
     append_registry_csv,
     append_registry_markdown,
 )
+from mammography.utils.class_modes import normalize_classes_mode, parse_classes_mode_arg
 
 
 @dataclass(frozen=True)
@@ -118,18 +119,28 @@ def log_mlflow_run(
             experiment=experiment,
         )
 
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
-    if experiment:
-        mlflow.set_experiment(experiment)
+    try:
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        if experiment:
+            mlflow.set_experiment(experiment)
 
-    with mlflow.start_run(run_name=run_name) as run:
-        mlflow.log_params(dict(params))
-        for key, value in metrics.items():
-            mlflow.log_metric(key, value)
-        for path in artifacts:
-            mlflow.log_artifact(str(path))
-        return run.info.run_id
+        with mlflow.start_run(run_name=run_name) as run:
+            mlflow.log_params(dict(params))
+            for key, value in metrics.items():
+                mlflow.log_metric(key, value)
+            for path in artifacts:
+                mlflow.log_artifact(str(path))
+            return run.info.run_id
+    except Exception:
+        return _log_local_mlflow_run(
+            run_name=run_name,
+            params=params,
+            metrics=metrics,
+            artifacts=artifacts,
+            tracking_uri=tracking_uri,
+            experiment=experiment,
+        )
 
 
 def build_registry_row(
@@ -221,6 +232,7 @@ def register_inference_run(
     experiment: str | None = None,
     log_mlflow: bool = True,
 ) -> str | None:
+    classes = normalize_classes_mode(classes, allow_unknown=True)
     params = {
         "dataset": infer_dataset_name(input_path),
         "workflow": "inference",
@@ -287,7 +299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--classes", required=True)
+    parser.add_argument("--classes", required=True, type=parse_classes_mode_arg)
     parser.add_argument("--img-size", type=int, required=True)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--total-images", type=int, required=True)

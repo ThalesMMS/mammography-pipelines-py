@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from mammography.config import HP
 from mammography.data.dataset import MammoDensityDataset
 from mammography.models.nets import build_model
+from mammography.models.nets import validate_arch_img_size
 from mammography.training.engine import train_one_epoch, validate
 from mammography.tuning.search_space import SearchSpace, CategoricalParam, FloatParam, IntParam
 from mammography.utils.common import seed_everything, resolve_device
@@ -78,7 +79,8 @@ class OptunaTuner:
             num_classes: Number of output classes (default: 4 for BI-RADS density)
             outdir: Output directory for saving results and checkpoints
             amp_enabled: Whether to use automatic mixed precision
-            arch: Model architecture (efficientnet_b0 or resnet50)
+            arch: Default model architecture (efficientnet_b0, resnet50, vit_b_16, vit_b_32, vit_l_16, deit_tiny_patch16_224, deit_small_patch16_224, deit_base_patch16_224).
+                  Can be overridden by 'arch' parameter in search_space.
             pretrained: Whether to use ImageNet pretrained weights
             fixed_epochs: If set, override search space epochs (useful for quick trials)
             dataloader_kwargs: Additional kwargs for DataLoader (num_workers, pin_memory, etc.)
@@ -160,8 +162,31 @@ class OptunaTuner:
         early_stop_patience = hparams.get("early_stop_patience", self.base_config.get("early_stop_patience", HP.EARLY_STOP_PATIENCE))
         unfreeze_last_block = hparams.get("unfreeze_last_block", self.base_config.get("unfreeze_last_block", HP.UNFREEZE_LAST_BLOCK))
 
+        # Extract architecture (can be sampled from search space or use default)
+        arch = hparams.get("arch", self.arch)
+
         # Determine number of epochs (use fixed if provided, else from config)
         epochs = self.fixed_epochs if self.fixed_epochs else self.base_config.get("epochs", HP.EPOCHS)
+
+        # Apply sampled augmentation parameters to training dataset
+        # Extract augmentation hyperparameters with defaults from base config
+        augment = hparams.get("augment", self.base_config.get("augment", True))
+        augment_vertical = hparams.get("augment_vertical", self.base_config.get("augment_vertical", False))
+        augment_color = hparams.get("augment_color", self.base_config.get("augment_color", False))
+        # Note: search space uses 'augment_rotation_deg' but dataset expects 'rotation_deg'
+        rotation_deg = hparams.get("augment_rotation_deg", self.base_config.get("rotation_deg", 5.0))
+
+        # Update train_dataset augmentation settings
+        self.train_dataset.augment = bool(augment and self.train_dataset.train)
+        self.train_dataset.augment_vertical = bool(augment_vertical)
+        self.train_dataset.augment_color = bool(augment_color)
+        self.train_dataset.rotation_deg = float(rotation_deg)
+
+        self.logger.debug(
+            f"Trial {trial.number}: Applied augmentation params: "
+            f"augment={augment}, vertical={augment_vertical}, color={augment_color}, "
+            f"rotation_deg={rotation_deg:.1f}"
+        )
 
         # Create DataLoaders with sampled batch_size
         loader_kwargs = self.dataloader_kwargs.copy()
@@ -181,8 +206,10 @@ class OptunaTuner:
         self.logger.debug(f"Trial {trial.number}: Created DataLoaders with batch_size={batch_size}")
 
         # Build model with sampled hyperparameters
+        self.logger.info(f"Trial {trial.number}: Building model with architecture={arch}")
+        validate_arch_img_size(arch, int(self.base_config.get("img_size", 224)))
         model = build_model(
-            arch=self.arch,
+            arch=arch,
             num_classes=self.num_classes,
             pretrained=self.pretrained,
             train_backbone=self.base_config.get("train_backbone", HP.TRAIN_BACKBONE),

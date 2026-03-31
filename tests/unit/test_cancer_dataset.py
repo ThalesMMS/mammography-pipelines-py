@@ -188,7 +188,7 @@ def test_mammo_dicom_dataset_includes_unlabeled_when_allowed(tmp_path: Path) -> 
 
 
 def test_mammo_dicom_dataset_getitem_returns_correct_data(tmp_path: Path) -> None:
-    """Test MammoDicomDataset __getitem__ returns expected tuple."""
+    """Test MammoDicomDataset __getitem__ returns expected dict."""
     case_dir = tmp_path / "ACC001"
     case_dir.mkdir()
     dcm_path = case_dir / "image.dcm"
@@ -200,12 +200,13 @@ def test_mammo_dicom_dataset_getitem_returns_correct_data(tmp_path: Path) -> Non
         labels_by_accession=labels,
     )
 
-    img, label, accession, path, idx = dataset[0]
-    assert isinstance(img, Image.Image)
-    assert label == 2
-    assert accession == "ACC001"
-    assert path == str(dcm_path)
-    assert idx == 0
+    sample = dataset[0]
+    assert isinstance(sample, dict)
+    assert isinstance(sample["image"], torch.Tensor)
+    assert sample["label"] == 2
+    assert sample["accession"] == "ACC001"
+    assert sample["path"] == str(dcm_path)
+    assert sample["idx"] == 0
 
 
 def test_mammo_dicom_dataset_getitem_with_unlabeled(tmp_path: Path) -> None:
@@ -221,8 +222,8 @@ def test_mammo_dicom_dataset_getitem_with_unlabeled(tmp_path: Path) -> None:
         include_unlabeled=True,
     )
 
-    img, label, accession, path, idx = dataset[0]
-    assert label == -1
+    sample = dataset[0]
+    assert sample["label"] == -1
 
 
 def test_mammo_dicom_dataset_applies_transform(tmp_path: Path) -> None:
@@ -243,8 +244,8 @@ def test_mammo_dicom_dataset_applies_transform(tmp_path: Path) -> None:
         transform=DummyTransform(),
     )
 
-    img, _, _, _, _ = dataset[0]
-    assert img == "transformed"
+    sample = dataset[0]
+    assert sample["image"] == "transformed"
 
 
 def test_mammo_dicom_dataset_raises_on_missing_dir() -> None:
@@ -317,7 +318,7 @@ def test_mammography_dataset_getitem_returns_image_and_label(tmp_path: Path) -> 
     dataset = MammographyDataset(meta_df=df, img_dir=str(img_dir))
     img, label = dataset[0]
 
-    assert isinstance(img, Image.Image)
+    assert isinstance(img, torch.Tensor)
     assert isinstance(label, torch.Tensor)
     assert label.item() == 1
 
@@ -389,7 +390,7 @@ def test_split_dataset_returns_train_and_val(tmp_path: Path) -> None:
         labels_by_accession=labels,
     )
 
-    train_subset, val_subset = split_dataset(dataset, val_fraction=0.2, seed=42)
+    train_subset, val_subset = split_dataset(dataset, val_fraction_or_lengths=0.2, seed=42)
 
     assert len(train_subset) == 8
     assert len(val_subset) == 2
@@ -408,7 +409,7 @@ def test_split_dataset_returns_none_when_val_fraction_zero(tmp_path: Path) -> No
         labels_by_accession=labels,
     )
 
-    train_subset, val_subset = split_dataset(dataset, val_fraction=0.0, seed=42)
+    train_subset, val_subset = split_dataset(dataset, val_fraction_or_lengths=0.0, seed=42)
 
     assert train_subset is not None
     assert val_subset is None
@@ -427,8 +428,8 @@ def test_split_dataset_is_deterministic(tmp_path: Path) -> None:
         labels_by_accession=labels,
     )
 
-    train1, val1 = split_dataset(dataset, val_fraction=0.2, seed=42)
-    train2, val2 = split_dataset(dataset, val_fraction=0.2, seed=42)
+    train1, val1 = split_dataset(dataset, val_fraction_or_lengths=0.2, seed=42)
+    train2, val2 = split_dataset(dataset, val_fraction_or_lengths=0.2, seed=42)
 
     assert len(train1) == len(train2)
     assert len(val1) == len(val2)
@@ -444,7 +445,7 @@ def test_split_dataset_raises_on_empty_dataset(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="Dataset vazio"):
-        split_dataset(dataset, val_fraction=0.2, seed=42)
+        split_dataset(dataset, val_fraction_or_lengths=0.2, seed=42)
 
 
 def test_make_dataloader_creates_dataloader(tmp_path: Path) -> None:

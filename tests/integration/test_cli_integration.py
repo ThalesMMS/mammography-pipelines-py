@@ -54,3 +54,11 @@ def test_cli_data_audit_routes_to_tool() -> None:
         exit_code = cli.main(["--dry-run", "data-audit"])
     assert exit_code == 0
     mock_run.assert_called_once()
+
+
+def test_cli_benchmark_report_routes_to_command() -> None:
+    with patch.object(cli, "_run_benchmark_report") as mock_run:
+        mock_run.return_value = 0
+        exit_code = cli.main(["--dry-run", "benchmark-report"])
+    assert exit_code == 0
+    mock_run.assert_called_once()

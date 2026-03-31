@@ -34,6 +34,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
     from mammography.utils.pydantic_fallback import ValidationError
 
 from mammography.config import HP, ExtractConfig
+from mammography.utils.class_modes import (
+    CLASS_MODE_HELP,
+    VISIBLE_CLASS_MODES_METAVAR,
+    get_label_mapper,
+    get_num_classes,
+    parse_classes_mode_arg,
+)
 from mammography.utils.common import (
     seed_everything,
     resolve_device,
@@ -251,7 +258,7 @@ def main(argv: Sequence[str] | None = None):
         default=True,
         help="Usa pesos ImageNet quando disponiveis (default: True).",
     )
-    parser.add_argument("--classes", default="multiclass", choices=["binary", "density", "multiclass"], help="Define mapeamento de labels (binário ou BI-RADS 1..4)")
+    parser.add_argument("--classes", default="multiclass", type=parse_classes_mode_arg, metavar=VISIBLE_CLASS_MODES_METAVAR, help=CLASS_MODE_HELP)
     parser.add_argument("--img-size", type=int, default=HP.IMG_SIZE)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=HP.NUM_WORKERS)
@@ -317,6 +324,7 @@ def main(argv: Sequence[str] | None = None):
         cfg = ExtractConfig.from_args(args, csv=csv_path, dicom_root=dicom_root)
     except ValidationError as exc:
         raise SystemExit(f"Config invalida: {exc}") from exc
+    args.classes = getattr(cfg, "classes", args.classes)
     csv_path = str(cfg.csv) if cfg.csv else None
     dicom_root = str(cfg.dicom_root) if cfg.dicom_root else None
     args.csv = csv_path
@@ -365,15 +373,7 @@ def main(argv: Sequence[str] | None = None):
         raise SystemExit(str(exc)) from exc
 
     rows = df.to_dict("records")
-    mapper = None
-    if args.classes == "binary":
-        def _mapper(y):
-            if y in [1, 2]:
-                return 0
-            if y in [3, 4]:
-                return 1
-            return y - 1
-        mapper = _mapper
+    mapper = get_label_mapper(args.classes)
 
     cache_dir = Path(outdir) / "cache_extract"
     cache_mode = resolve_dataset_cache_mode(args.cache_mode, rows)
@@ -399,7 +399,7 @@ def main(argv: Sequence[str] | None = None):
     }
     if prefetch is not None and nw > 0:
         loader_kwargs["prefetch_factor"] = prefetch
-    num_classes = 2 if args.classes == "binary" else 4
+    num_classes = get_num_classes(args.classes)
     model = build_model(
         args.arch,
         num_classes=num_classes,

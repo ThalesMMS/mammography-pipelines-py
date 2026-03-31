@@ -19,6 +19,7 @@ from mammography.tools.data_audit_registry import (
     append_registry_csv,
     append_registry_markdown,
 )
+from mammography.utils.class_modes import normalize_classes_mode
 
 
 def _format_metric(value: float | int | None) -> str:
@@ -123,18 +124,28 @@ def log_mlflow_run(
             experiment=experiment,
         )
 
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
-    if experiment:
-        mlflow.set_experiment(experiment)
+    try:
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        if experiment:
+            mlflow.set_experiment(experiment)
 
-    with mlflow.start_run(run_name=run_name) as run:
-        mlflow.log_params(dict(params))
-        for key, value in metrics.items():
-            mlflow.log_metric(key, value)
-        for path in artifacts:
-            mlflow.log_artifact(str(path))
-        return run.info.run_id
+        with mlflow.start_run(run_name=run_name) as run:
+            mlflow.log_params(dict(params))
+            for key, value in metrics.items():
+                mlflow.log_metric(key, value)
+            for path in artifacts:
+                mlflow.log_artifact(str(path))
+            return run.info.run_id
+    except Exception:
+        return _log_local_mlflow_run(
+            run_name=run_name,
+            params=params,
+            metrics=metrics,
+            artifacts=artifacts,
+            tracking_uri=tracking_uri,
+            experiment=experiment,
+        )
 
 
 def build_registry_row(
@@ -245,6 +256,7 @@ def register_tune_run(
     tracking_uri: str | None = None,
     experiment: str | None = None,
 ) -> str:
+    classes = normalize_classes_mode(classes, allow_unknown=True)
     params = _build_mlflow_params(
         dataset=dataset,
         arch=arch,

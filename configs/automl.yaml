@@ -1,0 +1,166 @@
+# Full AutoML search space configuration for automated hyperparameter optimization.
+# This YAML defines a comprehensive search space for end-to-end AutoML workflows.
+# Use with: mammo automl --config configs/automl.yaml --n-trials <budget>
+
+description: |
+  Comprehensive AutoML search space for density classification.
+  Explores model architectures, training schedules, optimization parameters,
+  regularization, and data augmentation strategies.
+
+parameters:
+  # Model architecture selection
+  arch:
+    type: categorical
+    choices: ["efficientnet_b0", "resnet50", "vit_b_16", "vit_b_32", "vit_l_16"]
+
+  # Learning rate for classifier head (log scale, wider range for AutoML)
+  lr:
+    type: float
+    low: 0.000001
+    high: 0.01
+    log: true
+
+  # Learning rate for backbone (log scale, typically 10x smaller than head)
+  backbone_lr:
+    type: float
+    low: 0.0000001
+    high: 0.001
+    log: true
+
+  # Batch size (powers of 2 for GPU efficiency)
+  batch_size:
+    type: categorical
+    choices: [4, 8, 16, 32, 64]
+
+  # Optimizer selection
+  optimizer:
+    type: categorical
+    choices: ["adam", "adamw", "sgd"]
+
+  # Weight decay for regularization
+  weight_decay:
+    type: float
+    low: 0.000001
+    high: 0.01
+    log: true
+
+  # Dropout rate for classifier head
+  dropout:
+    type: float
+    low: 0.0
+    high: 0.5
+    step: 0.1
+
+  # Number of warmup epochs
+  warmup_epochs:
+    type: int
+    low: 0
+    high: 10
+    step: 1
+
+  # Learning rate scheduler type
+  scheduler:
+    type: categorical
+    choices: ["cosine", "step", "plateau", "none"]
+
+  # Early stopping patience
+  early_stop_patience:
+    type: int
+    low: 3
+    high: 15
+    step: 1
+
+  # Whether to unfreeze last backbone block
+  unfreeze_last_block:
+    type: categorical
+    choices: [true, false]
+
+  # Number of frozen backbone blocks (if partial unfreezing)
+  freeze_blocks:
+    type: int
+    low: 0
+    high: 4
+    step: 1
+
+  # Data augmentation parameters
+  # Master augmentation switch
+  augment:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: horizontal flip (standard for mammography)
+  augment_horizontal:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: vertical flip
+  augment_vertical:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: rotation degree range
+  augment_rotation_deg:
+    type: float
+    low: 0.0
+    high: 20.0
+    step: 2.5
+
+  # Augmentation: random affine transforms
+  augment_affine:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: color jitter
+  augment_color:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: random erasing
+  augment_erasing:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: gaussian blur
+  augment_blur:
+    type: categorical
+    choices: [true, false]
+
+  # Augmentation: brightness adjustment range
+  augment_brightness:
+    type: float
+    low: 0.0
+    high: 0.3
+    step: 0.05
+
+  # Augmentation: contrast adjustment range
+  augment_contrast:
+    type: float
+    low: 0.0
+    high: 0.3
+    step: 0.05
+
+  # Class balancing strategy
+  class_balancing:
+    type: categorical
+    choices: ["none", "weighted", "oversample", "undersample"]
+
+  # Gradient clipping max norm
+  grad_clip_norm:
+    type: float
+    low: 0.0
+    high: 5.0
+    step: 0.5
+
+  # Label smoothing factor
+  label_smoothing:
+    type: float
+    low: 0.0
+    high: 0.2
+    step: 0.05
+
+  # Mixup/cutmix augmentation alpha
+  mixup_alpha:
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.1

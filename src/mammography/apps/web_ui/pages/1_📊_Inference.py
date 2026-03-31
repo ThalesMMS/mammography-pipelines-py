@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
 from mammography.models.nets import build_model
+from mammography.utils.class_modes import get_label_mapper, get_num_classes, normalize_classes_mode
 from mammography.utils.common import resolve_device, configure_runtime
 from mammography.io.dicom import is_dicom_path
 from mammography.apps.web_ui.utils import ensure_shared_session_state
@@ -79,7 +80,7 @@ def _load_checkpoint(
     Args:
         checkpoint_path: Path to the checkpoint file
         arch: Model architecture ('resnet50' or 'efficientnet_b0')
-        classes_mode: Classification mode ('binary', 'density', or 'multiclass')
+        classes_mode: Classification mode ('binary' or 'multiclass')
         device: Device to load model on ('auto', 'cuda', 'cpu', or 'mps')
 
     Returns:
@@ -93,7 +94,8 @@ def _load_checkpoint(
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
     # Determine number of classes
-    num_classes = 2 if classes_mode == "binary" else 4
+    classes_mode = normalize_classes_mode(classes_mode)
+    num_classes = get_num_classes(classes_mode)
 
     # Resolve device
     device_obj = resolve_device(device)
@@ -152,18 +154,6 @@ def main() -> None:
         st.stop()
 
     st.title("📊 Model Inference")
-
-    st.markdown("""
-    <div style="background-color: #fff3cd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ffc107; margin-bottom: 1rem;">
-    <h3 style="color: #856404; margin-top: 0;">⚠️ EDUCATIONAL RESEARCH USE ONLY</h3>
-    <p style="color: #856404; margin-bottom: 0;">
-    This tool is for <strong>educational and research purposes only</strong>. It is <strong>NOT</strong>
-    intended for clinical diagnosis or treatment. All results should be validated by qualified
-    medical professionals before any clinical decision-making.
-    </p>
-    </div>
-    """, unsafe_allow_html=True)
-
     st.header("Upload Images for Classification")
 
     st.markdown("""
@@ -190,6 +180,7 @@ def main() -> None:
     with col1:
         checkpoint_path = st.text_input(
             "Model Checkpoint Path",
+            value="outputs/best_model.pt",
             placeholder="path/to/checkpoint.pt",
             help="Path to the trained model checkpoint file (.pt or .pth)",
         )
@@ -206,9 +197,9 @@ def main() -> None:
 
     classes_mode = st.radio(
         "Select classification type:",
-        options=["multiclass", "binary", "density"],
+        options=["multiclass", "binary"],
         horizontal=True,
-        help="Multiclass: 4 classes (1-4), Binary: 2 classes (non-dense/dense), Density: 4 density levels",
+        help="Multiclass: 4 classes (1-4), Binary: 2 classes (non-dense/dense)",
     )
 
     # File upload
@@ -301,7 +292,7 @@ def main() -> None:
                         st.session_state.shared_model = model
                         st.session_state.shared_checkpoint_path = checkpoint_path
                         st.session_state.shared_model_arch = arch
-                        st.session_state.shared_model_num_classes = 2 if classes_mode == "binary" else 4
+                        st.session_state.shared_model_num_classes = get_num_classes(classes_mode)
 
                         st.success(
                             f"✅ Model loaded successfully! "
@@ -379,15 +370,7 @@ def main() -> None:
                     )
 
                 # Create label mapper for binary mode
-                mapper = None
-                if classes_mode == "binary":
-                    def _mapper(y: int) -> int:
-                        if y in [1, 2]:
-                            return 0  # Non-dense
-                        if y in [3, 4]:
-                            return 1  # Dense
-                        return y - 1
-                    mapper = _mapper
+                mapper = get_label_mapper(classes_mode)
 
                 # Create dataset
                 try:
@@ -539,7 +522,7 @@ def main() -> None:
     # Display results placeholder
     if st.session_state.inference_results is not None:
         st.header("Results")
-        st.dataframe(st.session_state.inference_results, use_container_width=True)
+        st.dataframe(st.session_state.inference_results, width="stretch")
 
         # Download results
         csv = st.session_state.inference_results.to_csv(index=False)

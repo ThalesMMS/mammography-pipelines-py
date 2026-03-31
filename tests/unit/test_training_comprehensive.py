@@ -445,6 +445,17 @@ def test_save_predictions_empty() -> None:
         assert not (outdir / "val_predictions.csv").exists()
 
 
+def test_save_predictions_custom_filename() -> None:
+    """Test save_predictions with a custom output filename."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        outdir = Path(tmpdir)
+        pred_rows = [{"path": "img1.png", "y_true": 1, "y_pred": 1}]
+
+        save_predictions(pred_rows, outdir, filename="test_predictions.csv")
+
+        assert (outdir / "test_predictions.csv").exists()
+
+
 # ============================================================================
 # Test save_metrics_figure
 # ============================================================================

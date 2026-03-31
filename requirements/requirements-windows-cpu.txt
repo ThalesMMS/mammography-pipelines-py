@@ -1,0 +1,6 @@
+# Windows CPU-only build.
+# Install with: pip install -r requirements/requirements-windows-cpu.txt --index-url https://download.pytorch.org/whl/cpu
+-r requirements-base.txt
+torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0

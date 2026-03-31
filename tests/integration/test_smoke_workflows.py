@@ -397,6 +397,65 @@ class TestCommandsSmoke:
         assert main is not None
 
 
+@pytest.mark.integration
+class TestBatchInferenceSmoke:
+    """Smoke tests for batch-inference command."""
+
+    def test_batch_inference_help_works(self):
+        """Test that batch-inference --help displays without errors."""
+        with patch.object(sys, "argv", ["mammography", "batch-inference", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                cli.main()
+            assert exc_info.value.code == 0
+
+    def test_batch_inference_import_works(self):
+        """Test that batch_inference command imports without errors."""
+        from mammography.commands.batch_inference import main
+
+        assert main is not None
+
+    def test_batch_inference_routes_correctly(self):
+        """Test that batch-inference command routes to batch_inference module."""
+        with patch.object(cli, "_run_module_passthrough") as mock_run:
+            mock_run.return_value = 0
+            exit_code = cli.main(["--dry-run", "batch-inference"])
+        assert exit_code == 0
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == "mammography.commands.batch_inference"
+
+    def test_batch_inference_config_validates(self):
+        """Test that BatchInferenceConfig validates correctly."""
+        from mammography.config import BatchInferenceConfig
+        import tempfile
+
+        input_dir = None
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.pt', delete=False) as f:
+            checkpoint_path = f.name
+            # Create minimal checkpoint
+            torch = pytest.importorskip("torch")
+            torch.save({"model": {}}, checkpoint_path)
+
+        try:
+            input_dir = tempfile.mkdtemp()
+            config = BatchInferenceConfig(
+                checkpoint=checkpoint_path,
+                input=input_dir,
+                output="test_output.csv"
+            )
+            assert config.checkpoint == Path(checkpoint_path)
+            assert config.input == Path(input_dir)
+            assert config.output == "test_output.csv"
+            assert config.output_format == "csv"  # default
+            assert config.checkpoint_interval == 100  # default
+        finally:
+            import os
+            import shutil
+            if os.path.exists(checkpoint_path):
+                os.unlink(checkpoint_path)
+            if input_dir and os.path.isdir(input_dir):
+                shutil.rmtree(input_dir)
+
+
 class TestErrorHandlingSmoke:
     """Smoke tests for error handling."""
 

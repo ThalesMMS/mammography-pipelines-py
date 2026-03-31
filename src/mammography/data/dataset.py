@@ -448,6 +448,10 @@ class MammoDensityDataset(Dataset):
             if path in self._image_cache:
                 return self._image_cache[path].copy()
             img = self._read_image(path)
+            # Resize before caching to avoid storing full-resolution images
+            # (DICOM mammograms can be 3000-5000px and 50-100MB each).
+            if max(img.size) > self.img_size:
+                img.thumbnail((self.img_size, self.img_size), Image.BICUBIC)
             self._image_cache[path] = img
             return img.copy()
 

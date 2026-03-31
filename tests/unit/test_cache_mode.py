@@ -269,7 +269,7 @@ def test_cache_dir_required_for_disk_modes(tmp_path: Path):
 
 
 def test_auto_cache_mode_small_dataset(tmp_path: Path):
-    """Test auto mode with small dataset (<= 1000 images) - should use memory cache."""
+    """Test auto mode with small DICOM dataset - should use disk cache."""
     # Create a small dataset (10 images)
     dicom_paths = [tmp_path / f"img_{i}.dcm" for i in range(10)]
     for path in dicom_paths:
@@ -279,15 +279,16 @@ def test_auto_cache_mode_small_dataset(tmp_path: Path):
 
     # Test resolve function directly
     resolved_mode = resolve_dataset_cache_mode("auto", rows)
-    assert resolved_mode == "memory", f"Expected 'memory' for small dataset, got '{resolved_mode}'"
+    assert resolved_mode == "disk", f"Expected 'disk' for small DICOM dataset, got '{resolved_mode}'"
 
     # Verify dataset works with resolved mode
+    cache_dir = tmp_path / "cache"
     ds = MammoDensityDataset(
         rows,
         img_size=32,
         train=False,
         cache_mode=resolved_mode,
-        cache_dir=None,
+        cache_dir=str(cache_dir),
         split_name="test",
     )
 
@@ -299,7 +300,7 @@ def test_auto_cache_mode_small_dataset(tmp_path: Path):
 
 
 def test_auto_cache_mode_non_dicom(tmp_path: Path):
-    """Test auto mode with non-DICOM files - should use 'none' cache."""
+    """Test auto mode with small non-DICOM files - should use 'memory' cache."""
     # Create PNG files instead of DICOM
     from PIL import Image as PILImage
     png_paths = [tmp_path / f"img_{i}.png" for i in range(10)]
@@ -310,9 +311,9 @@ def test_auto_cache_mode_non_dicom(tmp_path: Path):
 
     rows = [{"image_path": str(path), "professional_label": 0} for path in png_paths]
 
-    # Test resolve function - should return "none" for non-DICOM files
+    # Small non-DICOM dataset (<= 1000) resolves to "memory"
     resolved_mode = resolve_dataset_cache_mode("auto", rows)
-    assert resolved_mode == "none", f"Expected 'none' for non-DICOM files, got '{resolved_mode}'"
+    assert resolved_mode == "memory", f"Expected 'memory' for small non-DICOM files, got '{resolved_mode}'"
 
 
 def test_auto_cache_mode_empty_dataset():

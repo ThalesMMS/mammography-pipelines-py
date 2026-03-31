@@ -29,6 +29,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
 from mammography.config import HP, InferenceConfig
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
 from mammography.models.nets import build_model
+from mammography.utils.class_modes import (
+    CLASS_MODE_HELP,
+    VISIBLE_CLASS_MODES_METAVAR,
+    get_label_mapper,
+    get_num_classes,
+    parse_classes_mode_arg,
+)
 from mammography.utils.common import resolve_device, configure_runtime, parse_float_list
 from mammography.io.dicom import is_dicom_path
 from mammography.tools import inference_registry
@@ -75,7 +82,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--classes",
         default="multiclass",
-        choices=["binary", "density", "multiclass"],
+        type=parse_classes_mode_arg,
+        metavar=VISIBLE_CLASS_MODES_METAVAR,
+        help=CLASS_MODE_HELP,
     )
     parser.add_argument("--img-size", type=int, default=HP.IMG_SIZE)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -121,9 +130,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     try:
-        InferenceConfig.from_args(args)
+        cfg = InferenceConfig.from_args(args)
     except ValidationError as exc:
         raise SystemExit(f"Config invalida: {exc}") from exc
+    args.classes = getattr(cfg, "classes", args.classes)
     inputs = _iter_inputs(args.input)
     if not inputs:
         raise SystemExit(f"Nenhum arquivo encontrado em {args.input}.")
@@ -134,16 +144,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    num_classes = 2 if args.classes == "binary" else 4
-    mapper = None
-    if args.classes == "binary":
-        def _mapper(y: int) -> int:
-            if y in [1, 2]:
-                return 0
-            if y in [3, 4]:
-                return 1
-            return y - 1
-        mapper = _mapper
+    num_classes = get_num_classes(args.classes)
+    mapper = get_label_mapper(args.classes)
 
     rows = []
     for path in inputs:

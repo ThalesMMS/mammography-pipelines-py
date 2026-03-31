@@ -12,6 +12,7 @@
 
 import json
 import logging
+import math
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -223,6 +224,13 @@ class LocalTracker:
                 try:
                     # Ensure value is float
                     float_value = float(value)
+                    if not math.isfinite(float_value):
+                        logger.warning(
+                            "Skipping non-finite metric %s=%s",
+                            key,
+                            value,
+                        )
+                        continue
 
                     cursor.execute(
                         """

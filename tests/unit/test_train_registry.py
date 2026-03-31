@@ -270,6 +270,40 @@ def test_register_training_run_writes_registry_and_mlflow_fallback(
     assert (artifacts_dir / "val_metrics.png").exists()
 
 
+def test_collect_artifacts_uses_top_k_checkpoint_for_resumed_run(
+    tmp_path: Path,
+) -> None:
+    previous_results = _write_training_artifacts(tmp_path / "outputs" / "previous_run")
+    previous_checkpoint = previous_results / "checkpoint.pt"
+    previous_checkpoint.write_bytes(b"resume-checkpoint")
+    previous_top_k_dir = previous_results / "top_k"
+    previous_top_k_dir.mkdir(parents=True, exist_ok=True)
+    previous_top_k = previous_top_k_dir / "model_epoch028_macro_f10.6413.pt"
+    previous_top_k.write_bytes(b"best-top-k")
+
+    resumed_results = _write_training_artifacts(tmp_path / "outputs" / "resumed_run")
+    (resumed_results / "best_model.pt").unlink()
+    (resumed_results / "checkpoint.pt").write_bytes(b"latest-checkpoint")
+
+    summary = json.loads((resumed_results / "summary.json").read_text(encoding="utf-8"))
+    summary["resume_from"] = str(previous_checkpoint)
+    summary["top_k"] = [
+        {
+            "score": 0.6413,
+            "epoch": 28,
+            "path": str(previous_top_k),
+        }
+    ]
+    (resumed_results / "summary.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
+
+    artifacts = registry._collect_artifacts(resumed_results)
+
+    assert artifacts.checkpoint_path == previous_top_k
+
+
 def test_compute_sensitivity_specificity_from_report() -> None:
     val_metrics = {
         "classification_report": {

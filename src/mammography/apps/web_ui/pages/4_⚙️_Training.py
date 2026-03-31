@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -21,11 +23,27 @@ from mammography.apps.web_ui.utils import ensure_shared_session_state
 
 try:
     import streamlit as st
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
 except Exception as exc:  # pragma: no cover - optional UI dependency
     st = None
+    go = None
+    make_subplots = None
     _STREAMLIT_IMPORT_ERROR = exc
 else:
     _STREAMLIT_IMPORT_ERROR = None
+
+try:
+    import mlflow
+    from mlflow.entities import Run
+    from mlflow.tracking import MlflowClient
+except Exception as exc:  # pragma: no cover - optional MLflow dependency
+    mlflow = None
+    MlflowClient = None
+    Run = None
+    _MLFLOW_IMPORT_ERROR = exc
+else:
+    _MLFLOW_IMPORT_ERROR = None
 
 
 def _require_streamlit() -> None:
@@ -34,6 +52,150 @@ def _require_streamlit() -> None:
         raise ImportError(
             "Streamlit is required to run the web UI dashboard."
         ) from _STREAMLIT_IMPORT_ERROR
+
+
+def _get_mlflow_client(tracking_uri: str) -> Optional[MlflowClient]:
+    """Get or create MLflow client with the specified tracking URI."""
+    if mlflow is None or MlflowClient is None:
+        return None
+
+    # Reuse existing client if tracking URI hasn't changed
+    if (
+        st.session_state.mlflow_client is not None
+        and st.session_state.mlflow_tracking_uri == tracking_uri
+    ):
+        return st.session_state.mlflow_client
+
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        client = MlflowClient(tracking_uri=tracking_uri)
+        st.session_state.mlflow_client = client
+        st.session_state.mlflow_tracking_uri = tracking_uri
+        return client
+    except Exception:
+        return None
+
+
+def _poll_mlflow_metrics() -> bool:
+    """Poll MLflow for the latest metrics from the active run.
+
+    Returns:
+        True if metrics were successfully fetched, False otherwise.
+    """
+    # Check if MLflow tracking is enabled
+    if mlflow is None or st.session_state.mlflow_client is None:
+        return False
+
+    # Check if we have an active run
+    if st.session_state.active_run_id is None:
+        return False
+
+    # Throttle polling to avoid excessive API calls (poll every 2 seconds max)
+    current_time = time.time()
+    if current_time - st.session_state.last_metrics_poll < 2.0:
+        return False
+
+    try:
+        client = st.session_state.mlflow_client
+        run_id = st.session_state.active_run_id
+
+        # Get the current run
+        run = client.get_run(run_id)
+
+        if run is None:
+            return False
+
+        # Extract metrics from the run
+        metrics = run.data.metrics
+
+        # Update current metrics from MLflow
+        updated_metrics = {}
+
+        # Map MLflow metric names to our internal names
+        metric_mappings = {
+            "train/loss": "train_loss",
+            "train_loss": "train_loss",
+            "val/loss": "val_loss",
+            "val_loss": "val_loss",
+            "train/acc": "train_acc",
+            "train_acc": "train_acc",
+            "val/acc": "val_acc",
+            "val_acc": "val_acc",
+            "lr": "learning_rate",
+            "learning_rate": "learning_rate",
+            "epoch": "epoch",
+        }
+
+        for mlflow_key, internal_key in metric_mappings.items():
+            if mlflow_key in metrics:
+                updated_metrics[internal_key] = metrics[mlflow_key]
+
+        # Get metric history for detailed tracking
+        if "epoch" in metrics:
+            try:
+                # Fetch history for key metrics
+                epoch_history = client.get_metric_history(run_id, "epoch")
+
+                if epoch_history:
+                    # Get the latest epoch
+                    latest_epoch_entry = max(epoch_history, key=lambda h: h.step)
+                    current_epoch = int(latest_epoch_entry.value)
+                    updated_metrics["epoch"] = current_epoch
+
+                    # Build metrics history by fetching all key metrics
+                    history_entries = []
+
+                    for step in range(current_epoch + 1):
+                        entry = {"epoch": step}
+
+                        # Fetch each metric at this step
+                        for metric_name in ["train/loss", "val/loss", "train/acc", "val/acc", "lr"]:
+                            try:
+                                history = client.get_metric_history(run_id, metric_name)
+                                # Find the value for this step
+                                for h in history:
+                                    if h.step == step:
+                                        internal_name = metric_mappings.get(metric_name, metric_name)
+                                        entry[internal_name] = h.value
+                                        break
+                            except Exception:
+                                pass
+
+                        history_entries.append(entry)
+
+                    # Update metrics history (only if we have new data)
+                    if history_entries:
+                        st.session_state.training_metrics_history = history_entries
+
+            except Exception:
+                pass
+
+        # Update current metrics
+        if updated_metrics:
+            st.session_state.training_metrics.update(updated_metrics)
+            st.session_state.last_metrics_poll = current_time
+            return True
+
+    except Exception:
+        # Silently fail on polling errors (e.g., run not found yet)
+        pass
+
+    st.session_state.last_metrics_poll = current_time
+    return False
+
+
+def _sync_shared_state() -> None:
+    """Sync values written by the background thread back into session state.
+
+    The ``stream_output`` thread writes to a plain ``dict`` (``_training_shared``)
+    instead of ``st.session_state`` to avoid "missing ScriptRunContext" warnings.
+    This helper copies those values back on each main-thread rerun.
+    """
+    shared = getattr(st.session_state, "_training_shared", None)
+    if shared is not None:
+        st.session_state.training_status = shared["training_status"]
+        if shared["active_run_id"] is not None:
+            st.session_state.active_run_id = shared["active_run_id"]
 
 
 def _ensure_session_defaults() -> None:
@@ -46,6 +208,26 @@ def _ensure_session_defaults() -> None:
         st.session_state.training_output = []
     if "training_status" not in st.session_state:
         st.session_state.training_status = "idle"  # idle, running, completed, failed
+    if "training_metrics" not in st.session_state:
+        st.session_state.training_metrics = {
+            "epoch": 0,
+            "train_loss": 0.0,
+            "val_loss": 0.0,
+            "train_acc": 0.0,
+            "val_acc": 0.0,
+            "learning_rate": 0.0,
+            "samples_processed": 0,
+        }
+    if "training_metrics_history" not in st.session_state:
+        st.session_state.training_metrics_history = []
+    if "mlflow_client" not in st.session_state:
+        st.session_state.mlflow_client = None
+    if "mlflow_tracking_uri" not in st.session_state:
+        st.session_state.mlflow_tracking_uri = None
+    if "active_run_id" not in st.session_state:
+        st.session_state.active_run_id = None
+    if "last_metrics_poll" not in st.session_state:
+        st.session_state.last_metrics_poll = 0
 
 
 def _render_data_section() -> Dict[str, Any]:
@@ -65,13 +247,13 @@ def _render_data_section() -> Dict[str, Any]:
 
         config["csv"] = st.text_input(
             "CSV Path",
-            value="",
+            value="classificacao.csv",
             help="Path to CSV file, directory with featureS.txt, or manual path",
         )
 
         config["dicom_root"] = st.text_input(
             "DICOM Root Path",
-            value="",
+            value="archive",
             help="Root directory for DICOM files (used with classificacao.csv)",
         )
 
@@ -90,8 +272,8 @@ def _render_data_section() -> Dict[str, Any]:
 
         config["cache_dir"] = st.text_input(
             "Cache Directory",
-            value="",
-            help="Directory for cached data (optional)",
+            value="outputs/cache",
+            help="Directory for cached data (used when cache mode is disk or tensor-disk)",
         )
 
         config["embeddings_dir"] = st.text_input(
@@ -156,8 +338,8 @@ def _render_model_section() -> Dict[str, Any]:
     with col2:
         config["classes"] = st.selectbox(
             "Task",
-            options=["density", "binary", "multiclass"],
-            help="Classification task: density (BI-RADS 1-4), binary (A/B vs C/D), multiclass",
+            options=["multiclass", "binary"],
+            help="Classification task: multiclass (BI-RADS 1-4) or binary (A/B vs C/D)",
         )
 
     with col3:
@@ -636,7 +818,7 @@ def _render_tracking_section() -> Dict[str, Any]:
         with col1:
             config["tracker_project"] = st.text_input(
                 "Project/Experiment Name",
-                value="",
+                value="mammography-density",
                 help="Name of the project or experiment for tracking",
             )
 
@@ -663,14 +845,358 @@ def _render_tracking_section() -> Dict[str, Any]:
     return config
 
 
+def _render_live_metrics_section() -> None:
+    """Render live training metrics monitoring section."""
+    st.subheader("📊 Live Training Metrics")
+
+    # Poll MLflow metrics if training is running
+    if st.session_state.training_status == "running":
+        _poll_mlflow_metrics()
+
+        # Show MLflow tracking status
+        if st.session_state.mlflow_client is not None and st.session_state.active_run_id is not None:
+            st.info(
+                f"📈 MLflow tracking active - Run ID: `{st.session_state.active_run_id[:8]}...` "
+                f"(polling every 2 seconds)"
+            )
+        elif st.session_state.training_config.get("tracker") == "mlflow":
+            st.warning("⏳ Waiting for MLflow run to start...")
+
+    if st.session_state.training_status == "idle":
+        st.info("💡 Metrics will appear here when training starts. Configure your training parameters above and launch training to monitor real-time metrics.")
+
+        # Show placeholder charts
+        st.markdown("**Preview: Sample Metrics Dashboard**")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                label="Current Epoch",
+                value="0 / 0",
+                delta=None,
+            )
+
+        with col2:
+            st.metric(
+                label="Training Loss",
+                value="0.000",
+                delta=None,
+            )
+
+        with col3:
+            st.metric(
+                label="Validation Accuracy",
+                value="0.00%",
+                delta=None,
+            )
+
+        with col4:
+            st.metric(
+                label="Learning Rate",
+                value="0.0e+00",
+                delta=None,
+            )
+
+        # Placeholder charts
+        if go is not None and make_subplots is not None:
+            fig = make_subplots(
+                rows=2,
+                cols=2,
+                subplot_titles=(
+                    "Training & Validation Loss",
+                    "Training & Validation Accuracy",
+                    "Learning Rate Schedule",
+                    "Samples Processed",
+                ),
+                specs=[
+                    [{"secondary_y": False}, {"secondary_y": False}],
+                    [{"secondary_y": False}, {"secondary_y": False}],
+                ],
+            )
+
+            # Placeholder data
+            placeholder_epochs = [0]
+            placeholder_values = [0]
+
+            # Loss plot
+            fig.add_trace(
+                go.Scatter(
+                    x=placeholder_epochs,
+                    y=placeholder_values,
+                    name="Train Loss",
+                    line=dict(color="blue"),
+                ),
+                row=1,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=placeholder_epochs,
+                    y=placeholder_values,
+                    name="Val Loss",
+                    line=dict(color="red"),
+                ),
+                row=1,
+                col=1,
+            )
+
+            # Accuracy plot
+            fig.add_trace(
+                go.Scatter(
+                    x=placeholder_epochs,
+                    y=placeholder_values,
+                    name="Train Acc",
+                    line=dict(color="green"),
+                ),
+                row=1,
+                col=2,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=placeholder_epochs,
+                    y=placeholder_values,
+                    name="Val Acc",
+                    line=dict(color="orange"),
+                ),
+                row=1,
+                col=2,
+            )
+
+            # Learning rate plot
+            fig.add_trace(
+                go.Scatter(
+                    x=placeholder_epochs,
+                    y=placeholder_values,
+                    name="Learning Rate",
+                    line=dict(color="purple"),
+                ),
+                row=2,
+                col=1,
+            )
+
+            # Samples processed plot
+            fig.add_trace(
+                go.Scatter(
+                    x=placeholder_epochs,
+                    y=placeholder_values,
+                    name="Samples",
+                    line=dict(color="brown"),
+                ),
+                row=2,
+                col=2,
+            )
+
+            fig.update_layout(
+                height=600,
+                showlegend=True,
+                template="plotly_white",
+            )
+
+            fig.update_xaxes(title_text="Epoch", row=1, col=1)
+            fig.update_xaxes(title_text="Epoch", row=1, col=2)
+            fig.update_xaxes(title_text="Epoch", row=2, col=1)
+            fig.update_xaxes(title_text="Epoch", row=2, col=2)
+
+            fig.update_yaxes(title_text="Loss", row=1, col=1)
+            fig.update_yaxes(title_text="Accuracy", row=1, col=2)
+            fig.update_yaxes(title_text="LR", row=2, col=1)
+            fig.update_yaxes(title_text="Count", row=2, col=2)
+
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.warning("📊 Install plotly to see interactive metrics charts: `pip install plotly`")
+
+    else:
+        # Display current metrics
+        metrics = st.session_state.training_metrics
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            epoch_display = f"{metrics.get('epoch', 0)}"
+            if st.session_state.training_config:
+                total_epochs = st.session_state.training_config.get("epochs", 100)
+                epoch_display = f"{metrics.get('epoch', 0)} / {total_epochs}"
+
+            st.metric(
+                label="Current Epoch",
+                value=epoch_display,
+                delta=None,
+            )
+
+        with col2:
+            st.metric(
+                label="Training Loss",
+                value=f"{metrics.get('train_loss', 0):.4f}",
+                delta=None,
+            )
+
+        with col3:
+            st.metric(
+                label="Validation Accuracy",
+                value=f"{metrics.get('val_acc', 0) * 100:.2f}%",
+                delta=None,
+            )
+
+        with col4:
+            st.metric(
+                label="Learning Rate",
+                value=f"{metrics.get('learning_rate', 0):.2e}",
+                delta=None,
+            )
+
+        # Display metrics charts if history is available
+        if st.session_state.training_metrics_history and go is not None and make_subplots is not None:
+            history = st.session_state.training_metrics_history
+
+            # Extract data for plotting
+            epochs = [m.get("epoch", 0) for m in history]
+            train_losses = [m.get("train_loss", 0) for m in history]
+            val_losses = [m.get("val_loss", 0) for m in history]
+            train_accs = [m.get("train_acc", 0) for m in history]
+            val_accs = [m.get("val_acc", 0) for m in history]
+            learning_rates = [m.get("learning_rate", 0) for m in history]
+            samples_processed = [m.get("samples_processed", 0) for m in history]
+
+            fig = make_subplots(
+                rows=2,
+                cols=2,
+                subplot_titles=(
+                    "Training & Validation Loss",
+                    "Training & Validation Accuracy",
+                    "Learning Rate Schedule",
+                    "Samples Processed",
+                ),
+                specs=[
+                    [{"secondary_y": False}, {"secondary_y": False}],
+                    [{"secondary_y": False}, {"secondary_y": False}],
+                ],
+            )
+
+            # Loss plot
+            fig.add_trace(
+                go.Scatter(
+                    x=epochs,
+                    y=train_losses,
+                    name="Train Loss",
+                    line=dict(color="blue"),
+                ),
+                row=1,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=epochs,
+                    y=val_losses,
+                    name="Val Loss",
+                    line=dict(color="red"),
+                ),
+                row=1,
+                col=1,
+            )
+
+            # Accuracy plot
+            fig.add_trace(
+                go.Scatter(
+                    x=epochs,
+                    y=train_accs,
+                    name="Train Acc",
+                    line=dict(color="green"),
+                ),
+                row=1,
+                col=2,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=epochs,
+                    y=val_accs,
+                    name="Val Acc",
+                    line=dict(color="orange"),
+                ),
+                row=1,
+                col=2,
+            )
+
+            # Learning rate plot
+            fig.add_trace(
+                go.Scatter(
+                    x=epochs,
+                    y=learning_rates,
+                    name="Learning Rate",
+                    line=dict(color="purple"),
+                ),
+                row=2,
+                col=1,
+            )
+
+            # Samples processed plot
+            fig.add_trace(
+                go.Scatter(
+                    x=epochs,
+                    y=samples_processed,
+                    name="Samples",
+                    line=dict(color="brown"),
+                ),
+                row=2,
+                col=2,
+            )
+
+            fig.update_layout(
+                height=600,
+                showlegend=True,
+                template="plotly_white",
+            )
+
+            fig.update_xaxes(title_text="Epoch", row=1, col=1)
+            fig.update_xaxes(title_text="Epoch", row=1, col=2)
+            fig.update_xaxes(title_text="Epoch", row=2, col=1)
+            fig.update_xaxes(title_text="Epoch", row=2, col=2)
+
+            fig.update_yaxes(title_text="Loss", row=1, col=1)
+            fig.update_yaxes(title_text="Accuracy", row=1, col=2)
+            fig.update_yaxes(title_text="LR", row=2, col=1)
+            fig.update_yaxes(title_text="Count", row=2, col=2)
+
+            st.plotly_chart(fig, width="stretch")
+
+            # Last updated timestamp
+            st.caption(f"📅 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            st.info("📊 Metrics history will be displayed here as training progresses.")
+
+        # Auto-refresh when training is running
+        if st.session_state.training_status == "running":
+            st.caption("🔄 Page auto-refreshing every 3 seconds to update metrics...")
+            time.sleep(3)
+            st.rerun()
+
+
 def _launch_training(command: str) -> None:
     """Launch training process in background and capture output."""
     st.session_state.training_output = []
     st.session_state.training_status = "running"
+    st.session_state.active_run_id = None
+
+    # Initialize MLflow client if tracking is enabled
+    config = st.session_state.training_config
+    if config.get("tracker") == "mlflow" and config.get("tracker_uri"):
+        tracking_uri = config["tracker_uri"]
+        client = _get_mlflow_client(tracking_uri)
+        if client:
+            st.session_state.mlflow_client = client
 
     # Convert command to list for subprocess
     # Handle multi-line command by removing backslashes and extra whitespace
     clean_command = command.replace("\\\n", " ").replace("  ", " ").strip()
+    # Replace bare 'mammography' with the current Python executable to ensure
+    # the subprocess uses the same virtualenv, even if 'mammography' is not on
+    # the system PATH.
+    clean_command = clean_command.replace(
+        "mammography train-density",
+        f'"{sys.executable}" -m mammography.cli train-density',
+        1,
+    )
 
     try:
         # Start the process
@@ -686,31 +1212,55 @@ def _launch_training(command: str) -> None:
 
         st.session_state.training_process = process
 
+        # Use plain Python containers shared between the main thread and the
+        # background thread.  Accessing st.session_state from a non-main
+        # thread floods the console with "missing ScriptRunContext" warnings,
+        # so we capture the *mutable list* for output and a plain dict for
+        # status/run-id that the main thread will sync back on rerun.
+        _output_list = st.session_state.training_output
+        _shared = {
+            "training_status": "running",
+            "active_run_id": None,
+        }
+        st.session_state._training_shared = _shared
+
         # Stream output in a separate thread
         def stream_output():
-            """Stream process output to session state."""
+            """Stream process output and detect MLflow run ID (thread-safe)."""
+            import re
+
+            mlflow_run_pattern = re.compile(r"run[_\s]+id[:\s]+([a-f0-9]{32})", re.IGNORECASE)
+            mlflow_run_pattern2 = re.compile(r"mlflow.*run.*:.*([a-f0-9]{32})", re.IGNORECASE)
+
             try:
                 for line in process.stdout:
-                    st.session_state.training_output.append(line.rstrip())
-                    if len(st.session_state.training_output) > 1000:
+                    _output_list.append(line.rstrip())
+
+                    # Try to detect MLflow run ID from output
+                    if _shared["active_run_id"] is None:
+                        match = mlflow_run_pattern.search(line) or mlflow_run_pattern2.search(line)
+                        if match:
+                            _shared["active_run_id"] = match.group(1)
+
+                    if len(_output_list) > 1000:
                         # Keep only last 1000 lines
-                        st.session_state.training_output = st.session_state.training_output[-1000:]
+                        del _output_list[:-1000]
 
                 # Wait for process to complete
                 process.wait()
 
                 if process.returncode == 0:
-                    st.session_state.training_status = "completed"
-                    st.session_state.training_output.append("\n✅ Training completed successfully!")
+                    _shared["training_status"] = "completed"
+                    _output_list.append("\n✅ Training completed successfully!")
                 else:
-                    st.session_state.training_status = "failed"
-                    st.session_state.training_output.append(
+                    _shared["training_status"] = "failed"
+                    _output_list.append(
                         f"\n❌ Training failed with exit code {process.returncode}"
                     )
             except Exception as e:
-                st.session_state.training_status = "failed"
-                st.session_state.training_output.append(f"\n❌ Error during training: {e}")
-                st.session_state.training_output.append(
+                _shared["training_status"] = "failed"
+                _output_list.append(f"\n❌ Error during training: {e}")
+                _output_list.append(
                     "\n💡 Check the output above for error details. Common issues:\n"
                     "- Dataset path not found or inaccessible\n"
                     "- Insufficient memory or disk space\n"
@@ -754,9 +1304,9 @@ def _build_command_line(config: Dict[str, Any]) -> str:
     # Data configuration
     if config.get("dataset"):
         cmd_parts.append(f"--dataset {config['dataset']}")
-    if config.get("csv"):
+    if config.get("csv") and config["csv"] != "classificacao.csv":
         cmd_parts.append(f"--csv \"{config['csv']}\"")
-    if config.get("dicom_root"):
+    if config.get("dicom_root") and config["dicom_root"] != "archive":
         cmd_parts.append(f"--dicom-root \"{config['dicom_root']}\"")
     if config.get("include_class_5"):
         cmd_parts.append("--include-class-5")
@@ -766,7 +1316,7 @@ def _build_command_line(config: Dict[str, Any]) -> str:
     # Cache configuration
     if config.get("cache_mode") != "auto":
         cmd_parts.append(f"--cache-mode {config['cache_mode']}")
-    if config.get("cache_dir"):
+    if config.get("cache_dir") and config["cache_dir"] != "outputs/cache":
         cmd_parts.append(f"--cache-dir \"{config['cache_dir']}\"")
     if config.get("embeddings_dir"):
         cmd_parts.append(f"--embeddings-dir \"{config['embeddings_dir']}\"")
@@ -774,7 +1324,7 @@ def _build_command_line(config: Dict[str, Any]) -> str:
     # Model configuration
     if config.get("arch") != "efficientnet_b0":
         cmd_parts.append(f"--arch {config['arch']}")
-    if config.get("classes") != "density":
+    if config.get("classes") != "multiclass":
         cmd_parts.append(f"--classes {config['classes']}")
     if not config.get("pretrained", True):
         cmd_parts.append("--no-pretrained")
@@ -922,22 +1472,12 @@ def main() -> None:
     try:
         ensure_shared_session_state()
         _ensure_session_defaults()
+        _sync_shared_state()
     except Exception as exc:
         st.error(f"❌ Failed to initialize session state: {exc}")
         st.stop()
 
     st.title("⚙️ Training Configuration")
-
-    st.markdown("""
-    <div style="background-color: #fff3cd; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #ffc107; margin-bottom: 1rem;">
-    <h3 style="color: #856404; margin-top: 0;">⚠️ EDUCATIONAL RESEARCH USE ONLY</h3>
-    <p style="color: #856404; margin-bottom: 0;">
-    This tool is for <strong>educational and research purposes only</strong>. It is <strong>NOT</strong>
-    intended for clinical diagnosis or treatment. All results should be validated by qualified
-    medical professionals before any clinical decision-making.
-    </p>
-    </div>
-    """, unsafe_allow_html=True)
 
     st.header("Configure Training Job")
 
@@ -1052,6 +1592,10 @@ def main() -> None:
             # Show line count
             st.caption(f"Showing last {min(100, len(st.session_state.training_output))} of {len(st.session_state.training_output)} lines")
 
+        # Live metrics monitoring section
+        st.markdown("---")
+        _render_live_metrics_section()
+
         # Configuration summary
         with st.expander("📋 Configuration Summary"):
             col1, col2 = st.columns(2)
@@ -1059,7 +1603,7 @@ def main() -> None:
             with col1:
                 st.subheader("Key Settings")
                 st.metric("Architecture", st.session_state.training_config.get("arch", "efficientnet_b0"))
-                st.metric("Task", st.session_state.training_config.get("classes", "density"))
+                st.metric("Task", st.session_state.training_config.get("classes", "multiclass"))
                 st.metric("Epochs", st.session_state.training_config.get("epochs", 100))
                 st.metric("Batch Size", st.session_state.training_config.get("batch_size", 16))
 
@@ -1107,9 +1651,8 @@ def main() -> None:
 
         ### Task Types
 
-        - **density**: BI-RADS density classification (A, B, C, D or 1-4)
+        - **multiclass**: BI-RADS density classification (A, B, C, D or 1-4)
         - **binary**: Binary classification (A/B vs C/D)
-        - **multiclass**: Multi-class classification
 
         ### Learning Rate Schedulers
 
@@ -1171,7 +1714,7 @@ def main() -> None:
         ### References
 
         - [CLAUDE.md](https://github.com/yourusername/mammography-pipelines/blob/main/CLAUDE.md)
-        - [CLI_CHEATSHEET.md](https://github.com/yourusername/mammography-pipelines/blob/main/CLI_CHEATSHEET.md)
+        - [CLI cheatsheet](https://github.com/yourusername/mammography-pipelines/blob/main/docs/guides/cli-cheatsheet.md)
         - [README.md](https://github.com/yourusername/mammography-pipelines/blob/main/README.md)
         """)
 

@@ -28,6 +28,14 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
 from torch.utils.data import DataLoader
 
 from mammography.config import HP, TrainConfig
+from mammography.models.nets import filter_architectures_for_img_size
+from mammography.utils.class_modes import (
+    CLASS_MODE_HELP,
+    VISIBLE_CLASS_MODES_METAVAR,
+    get_label_mapper as build_label_mapper,
+    get_num_classes,
+    parse_classes_mode_arg,
+)
 from mammography.data.csv_loader import (
     DATASET_PRESETS,
     load_dataset_dataframe,
@@ -54,6 +62,8 @@ from mammography.utils.common import (
 
 if TYPE_CHECKING:
     from mammography.tuning.optuna_tuner import OptunaTuner
+else:
+    OptunaTuner = None
 
 
 def parse_args(argv: Sequence[str] | None = None):
@@ -109,14 +119,16 @@ def parse_args(argv: Sequence[str] | None = None):
     )
     parser.add_argument(
         "--classes",
-        default="density",
-        choices=["density", "binary", "multiclass"],
-        help="density/multiclass = BI-RADS 1..4, binary = A/B vs C/D",
+        default="multiclass",
+        type=parse_classes_mode_arg,
+        metavar=VISIBLE_CLASS_MODES_METAVAR,
+        help=CLASS_MODE_HELP,
     )
     parser.add_argument(
         "--task",
         dest="classes",
-        choices=["density", "binary", "multiclass"],
+        type=parse_classes_mode_arg,
+        metavar=VISIBLE_CLASS_MODES_METAVAR,
         help="Alias para --classes",
     )
     parser.add_argument(
@@ -261,18 +273,7 @@ def parse_args(argv: Sequence[str] | None = None):
 
 def get_label_mapper(mode):
     """Return a mapper function to collapse classes when running binary experiments."""
-    mode = (mode or "density").lower()
-    if mode == "binary":
-        # 1,2 -> 0 (Low); 3,4 -> 1 (High)
-        def mapper(y):
-            if y in [1, 2]:
-                return 0
-            if y in [3, 4]:
-                return 1
-            return y - 1  # Fallback
-
-        return mapper
-    return None  # Default 1..4 -> 0..3
+    return build_label_mapper(mode)
 
 
 def resolve_loader_runtime(args, device: torch.device):
@@ -529,6 +530,7 @@ def main(argv: Sequence[str] | None = None):
         cfg = TrainConfig.from_args(args, csv=csv_path, dicom_root=dicom_root)
     except ValidationError as exc:
         raise SystemExit(f"Config invalida: {exc}") from exc
+    args.classes = getattr(cfg, "classes", args.classes)
     csv_path = str(cfg.csv) if cfg.csv else None
     dicom_root = str(cfg.dicom_root) if cfg.dicom_root else None
     args.csv = csv_path
@@ -553,6 +555,26 @@ def main(argv: Sequence[str] | None = None):
         search_space = SearchSpace.from_yaml(tune_config_path)
         logger.info(f"Search space loaded: {len(search_space.parameters)} parameters")
         logger.info(f"Parameters: {list(search_space.parameters.keys())}")
+        if "arch" in search_space.parameters:
+            param = search_space.parameters["arch"]
+            if param.type == "categorical" and hasattr(param, "choices"):
+                original_archs = list(param.choices)
+                filtered_archs = filter_architectures_for_img_size(
+                    [str(choice) for choice in original_archs],
+                    args.img_size,
+                )
+                if not filtered_archs:
+                    raise SystemExit(
+                        f"Nenhuma arquitetura do search space é compatível com img_size={args.img_size}."
+                    )
+                if filtered_archs != list(original_archs):
+                    param.choices = filtered_archs
+                    logger.info(
+                        "Filtered architectures by img_size=%s: %s -> %s",
+                        args.img_size,
+                        original_archs,
+                        filtered_archs,
+                    )
     except Exception as exc:
         raise SystemExit(f"Failed to load search space config: {exc}") from exc
 
@@ -580,7 +602,7 @@ def main(argv: Sequence[str] | None = None):
         raise SystemExit(str(exc)) from exc
 
     # Create splits
-    num_classes = 2 if args.classes == "binary" else 4
+    num_classes = get_num_classes(args.classes)
     train_df, val_df = create_splits(
         df,
         val_frac=args.val_frac,
@@ -658,8 +680,10 @@ def main(argv: Sequence[str] | None = None):
 
     # Create OptunaTuner instance
     logger.info("Initializing OptunaTuner...")
-    from mammography.tuning.optuna_tuner import OptunaTuner
-    tuner = OptunaTuner(
+    tuner_cls = OptunaTuner
+    if tuner_cls is None:
+        from mammography.tuning.optuna_tuner import OptunaTuner as tuner_cls
+    tuner = tuner_cls(
         search_space=search_space,
         train_dataset=train_ds,
         val_dataset=val_ds,

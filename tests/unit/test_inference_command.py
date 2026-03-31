@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from mammography.commands import inference as inference_cmd
@@ -59,23 +60,24 @@ def test_inference_registers_run_with_metrics(tmp_path: Path, monkeypatch) -> No
         _fake_register_inference_run,
     )
 
-    inference_cmd.main(
-        [
-            "--checkpoint",
-            str(checkpoint_path),
-            "--input",
-            str(input_dir),
-            "--arch",
-            "efficientnet_b0",
-            "--classes",
-            "density",
-            "--output",
-            str(output_path),
-            "--run-name",
-            "patches_inference_effnet",
-            "--no-mlflow",
-        ]
-    )
+    with pytest.warns(FutureWarning, match="density"):
+        inference_cmd.main(
+            [
+                "--checkpoint",
+                str(checkpoint_path),
+                "--input",
+                str(input_dir),
+                "--arch",
+                "efficientnet_b0",
+                "--classes",
+                "density",
+                "--output",
+                str(output_path),
+                "--run-name",
+                "patches_inference_effnet",
+                "--no-mlflow",
+            ]
+        )
 
     assert output_path.exists()
     assert captured["run_name"] == "patches_inference_effnet"

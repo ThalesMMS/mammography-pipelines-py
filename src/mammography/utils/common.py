@@ -9,6 +9,7 @@
 import os
 import sys
 import logging
+import platform
 import random
 import re
 import subprocess
@@ -152,10 +153,25 @@ def get_reproducibility_info() -> dict:
     except Exception:
         commit, is_dirty = "unknown", False
 
+    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
+    gpu_name = "cpu"
+    if torch.cuda.is_available():
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+        except Exception:
+            gpu_name = "unknown"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        gpu_name = "mps"
+
     return {
         "git_commit": commit,
         "git_dirty": is_dirty,
         "command_line": " ".join(sys.argv),
         "cwd": os.getcwd(),
         "timestamp": datetime.now().isoformat(),
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "torch_version": getattr(torch, "__version__", "unknown"),
+        "cuda_version": str(cuda_version or "cpu"),
+        "gpu_name": gpu_name,
     }

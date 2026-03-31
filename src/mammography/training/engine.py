@@ -183,6 +183,7 @@ def validate(
     gradcam: bool = False,
     gradcam_dir: Optional[Path] = None,
     gradcam_limit: int = 4,
+    progress_label: str = "Val",
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Validation loop that returns metrics plus optional per-sample predictions/Grad-CAMs."""
     model.eval()
@@ -194,7 +195,7 @@ def validate(
     gradcam_saved = 0
     pred_rows: List[Dict[str, Any]] = []
 
-    for batch in tqdm(loader, desc="Val", leave=False):
+    for batch in tqdm(loader, desc=progress_label, leave=False):
         if batch is None:
             continue
         if len(batch) == 4:
@@ -494,11 +495,16 @@ def plot_history(history: List[Dict[str, Any]], outdir: Path) -> None:
         logging.getLogger("mammography").debug("Plot de history falhou; salvando apenas CSV.")
 
 
-def save_predictions(pred_rows: List[Dict[str, Any]], outdir: Path) -> None:
-    """Write per-sample validation predictions when the caller opts in."""
+def save_predictions(
+    pred_rows: List[Dict[str, Any]],
+    outdir: Path,
+    filename: str = "val_predictions.csv",
+) -> None:
+    """Write per-sample predictions when the caller opts in."""
     if not pred_rows:
         return
-    pd.DataFrame(pred_rows).to_csv(outdir / "val_predictions.csv", index=False)
+    outdir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(pred_rows).to_csv(outdir / filename, index=False)
 
 def save_metrics_figure(metrics: Dict[str, Any], out_path: str) -> None:
     """Render confusion matrix and per-class precision/recall/F1 to a single PNG."""

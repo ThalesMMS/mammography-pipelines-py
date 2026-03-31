@@ -22,7 +22,7 @@ img_size: 512
 batch_size: 16
 epochs: 30
 arch: efficientnet_b0
-classes: density
+classes: multiclass
 lr: 0.0001
 backbone_lr: 0.00001
 device: auto

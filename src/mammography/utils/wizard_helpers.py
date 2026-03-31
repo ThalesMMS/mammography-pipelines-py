@@ -48,9 +48,9 @@ HELP_TEXTS: dict[str, str] = {
     ),
     "classes": (
         "Esquema de classificacao para densidade mamaria: "
-        "- density: 4 classes BI-RADS (A, B, C, D) - padrao para pesquisa. "
+        "- multiclass: 4 classes BI-RADS (A, B, C, D) - padrao para pesquisa. "
         "- binary: 2 classes (AB vs CD) - simplifica em baixa/alta densidade. "
-        "- multiclass: Alias para density, mantido por compatibilidade."
+        "- density: Alias legado para multiclass, mantido temporariamente por compatibilidade."
     ),
     "device": (
         "Dispositivo de computacao para treinamento: "

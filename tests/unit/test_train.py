@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,9 +15,17 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("sklearn")
 pytest.importorskip("pandas")
 
+import mammography.commands.train as train_module
 from torch import nn
 from torch.utils.data import DataLoader
 
+from mammography.commands.train import (
+    _resolve_best_model_path,
+    _summarize_metrics_for_summary,
+    freeze_backbone,
+    resolve_loader_runtime,
+    unfreeze_last_block,
+)
 from mammography.training.engine import train_one_epoch, validate
 
 
@@ -27,6 +36,26 @@ class DummyModel(nn.Module):
 
     def forward(self, x: torch.Tensor, extra_features=None) -> torch.Tensor:  # noqa: ANN001
         return self.net(x)
+
+
+class _DummyTransformerBlock(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = nn.Linear(4, 4)
+
+
+class _DummyTransformerBackbone(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.encoder = nn.Module()
+        self.encoder.layers = nn.ModuleList([_DummyTransformerBlock(), _DummyTransformerBlock()])
+
+
+class _DummyVitWrapper(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.backbone = _DummyTransformerBackbone()
+        self.classifier = nn.Linear(4, 2)
 
 
 def _make_loader() -> DataLoader:
@@ -58,3 +87,107 @@ def test_train_one_epoch_and_validate() -> None:
     assert "acc" in metrics
     assert isinstance(metrics["acc"], float)
     assert isinstance(pred_rows, list)
+
+
+def test_freeze_backbone_keeps_vit_classifier_trainable() -> None:
+    model = _DummyVitWrapper()
+
+    freeze_backbone(model, "vit_b_16")
+
+    assert all(not param.requires_grad for param in model.backbone.parameters())
+    assert all(param.requires_grad for param in model.classifier.parameters())
+
+
+def test_unfreeze_last_block_supports_vit_architecture() -> None:
+    model = _DummyVitWrapper()
+    freeze_backbone(model, "vit_b_16")
+
+    unfreeze_last_block(model, "vit_b_16")
+
+    first_block_params = list(model.backbone.encoder.layers[0].parameters())
+    last_block_params = list(model.backbone.encoder.layers[-1].parameters())
+    assert all(not param.requires_grad for param in first_block_params)
+    assert all(param.requires_grad for param in last_block_params)
+
+
+def test_resolve_best_model_path_prefers_top_k_checkpoint(tmp_path: Path) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(parents=True)
+    top_k_dir = results_dir / "top_k"
+    top_k_dir.mkdir()
+    best_top_k = top_k_dir / "model_epoch007_macro_f10.8123.pt"
+    best_top_k.write_bytes(b"weights")
+    (results_dir / "best_model.pt").write_bytes(b"fallback")
+
+    resolved = _resolve_best_model_path(
+        results_dir=results_dir,
+        current_view=None,
+        top_k=[{"score": 0.8123, "epoch": 7, "path": str(best_top_k)}],
+        resume_path=None,
+    )
+
+    assert resolved == best_top_k
+
+
+def test_summarize_metrics_for_summary_skips_non_finite_values() -> None:
+    summary = _summarize_metrics_for_summary(
+        {
+            "acc": 0.91,
+            "macro_f1": 0.89,
+            "auc_ovr": float("nan"),
+            "loss": float("inf"),
+            "epoch": 12,
+            "num_samples": 42,
+        }
+    )
+
+    assert summary == {
+        "acc": 0.91,
+        "macro_f1": 0.89,
+        "epoch": 12,
+        "num_samples": 42,
+    }
+
+
+def test_resolve_loader_runtime_disables_windows_cuda_workers_on_python313(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = SimpleNamespace(
+        num_workers=4,
+        prefetch_factor=4,
+        persistent_workers=True,
+        loader_heuristics=True,
+    )
+    monkeypatch.setattr(train_module.os, "name", "nt")
+    monkeypatch.setattr(train_module.sys, "version_info", (3, 13, 3))
+
+    num_workers, prefetch, persistent = resolve_loader_runtime(
+        args,
+        torch.device("cuda"),
+    )
+
+    assert num_workers == 0
+    assert prefetch is None
+    assert persistent is False
+
+
+def test_resolve_loader_runtime_keeps_cuda_workers_outside_windows_python313(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = SimpleNamespace(
+        num_workers=4,
+        prefetch_factor=4,
+        persistent_workers=True,
+        loader_heuristics=True,
+    )
+    monkeypatch.setattr(train_module.os, "name", "posix")
+    monkeypatch.setattr(train_module.sys, "version_info", (3, 13, 3))
+
+    num_workers, prefetch, persistent = resolve_loader_runtime(
+        args,
+        torch.device("cuda"),
+    )
+
+    assert num_workers == 4
+    assert prefetch == 4
+    assert persistent is True

@@ -84,6 +84,7 @@ def test_register_tune_run_writes_registry_and_mlflow_fallback(tmp_path: Path) -
     assert "name: 'archive_effnet_tune'" in meta_text
 
     params_dir = run_dir / "params"
+    assert (params_dir / "classes").read_text(encoding="utf-8") == "multiclass"
     assert (params_dir / "best_batch_size").read_text(encoding="utf-8") == "16"
     assert (params_dir / "best_lr").read_text(encoding="utf-8") == "0.001"
 

@@ -12,12 +12,15 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from mammography.config import (
     HP,
     BaseConfig,
+    BatchInferenceConfig,
     ExtractConfig,
     InferenceConfig,
+    PreprocessConfig,
     TrainConfig,
 )
 
@@ -185,6 +188,11 @@ class TestTrainConfig:
         # Invalid weight_decay (< 0)
         with pytest.raises(Exception):
             TrainConfig(dataset="mamografias", weight_decay=-0.1)
+
+    def test_train_config_rejects_transformer_with_non_224_img_size(self):
+        """Transformer backbones should require 224x224 inputs."""
+        with pytest.raises(ValueError, match="requires img_size=224"):
+            TrainConfig(dataset="mamografias", arch="vit_b_16", img_size=64)
 
     def test_train_config_view_specific_training(self):
         """Test view-specific training configuration."""
@@ -723,11 +731,21 @@ class TestInferenceConfig:
             checkpoint.write_text("fake checkpoint")
             input_path = Path(tmpdir)
 
-            for classes in ["multiclass", "density", "cancer"]:
-                config = InferenceConfig(
-                    checkpoint=checkpoint, input=input_path, classes=classes
+            config = InferenceConfig(
+                checkpoint=checkpoint, input=input_path, classes="multiclass"
+            )
+            assert config.classes == "multiclass"
+
+            with pytest.warns(FutureWarning, match="density"):
+                legacy_config = InferenceConfig(
+                    checkpoint=checkpoint, input=input_path, classes="density"
                 )
-                assert config.classes == classes
+            assert legacy_config.classes == "multiclass"
+
+            cancer_config = InferenceConfig(
+                checkpoint=checkpoint, input=input_path, classes="cancer"
+            )
+            assert cancer_config.classes == "cancer"
 
     def test_inference_config_output_parameter(self):
         """Test output path configuration."""
@@ -960,15 +978,27 @@ class TestConfigEdgeCases:
 
     def test_train_config_classes_parameter(self):
         """Test classes parameter configuration."""
-        for classes in ["density", "cancer", "multiclass"]:
-            config = TrainConfig(dataset="mamografias", classes=classes)
-            assert config.classes == classes
+        config = TrainConfig(dataset="mamografias", classes="multiclass")
+        assert config.classes == "multiclass"
+
+        with pytest.warns(FutureWarning, match="density"):
+            legacy_config = TrainConfig(dataset="mamografias", classes="density")
+        assert legacy_config.classes == "multiclass"
+
+        cancer_config = TrainConfig(dataset="mamografias", classes="cancer")
+        assert cancer_config.classes == "cancer"
 
     def test_extract_config_classes_parameter(self):
         """Test classes parameter for extraction."""
-        for classes in ["multiclass", "density", "cancer"]:
-            config = ExtractConfig(dataset="mamografias", classes=classes)
-            assert config.classes == classes
+        config = ExtractConfig(dataset="mamografias", classes="multiclass")
+        assert config.classes == "multiclass"
+
+        with pytest.warns(FutureWarning, match="density"):
+            legacy_config = ExtractConfig(dataset="mamografias", classes="density")
+        assert legacy_config.classes == "multiclass"
+
+        cancer_config = ExtractConfig(dataset="mamografias", classes="cancer")
+        assert cancer_config.classes == "cancer"
 
     def test_base_config_from_args_missing_fields(self):
         """Test from_args with args missing some fields."""
@@ -1041,3 +1071,403 @@ class TestConfigEdgeCases:
             # Valid path should work
             config = ExtractConfig(csv=csv_path, dicom_root=archive_dir)
             assert config.dicom_root == archive_dir
+
+
+class TestBatchInferenceConfig:
+    """Test BatchInferenceConfig validation."""
+
+    def test_batch_inference_config_requires_checkpoint_and_input(self):
+        """Test that checkpoint and input are required."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir) / "images"
+            input_path.mkdir()
+
+            # Valid config
+            config = BatchInferenceConfig(checkpoint=checkpoint, input=input_path)
+            assert config.checkpoint == checkpoint
+            assert config.input == input_path
+
+    def test_batch_inference_config_checkpoint_validation(self):
+        """Test checkpoint path validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(ValueError, match="checkpoint nao encontrado"):
+                BatchInferenceConfig(
+                    checkpoint=Path("/nonexistent.pt"),
+                    input=Path(tmpdir),
+                )
+
+    def test_batch_inference_config_checkpoint_must_be_file(self):
+        """Test that checkpoint must be a file, not directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint_dir = Path(tmpdir) / "checkpoint"
+            checkpoint_dir.mkdir()
+
+            with pytest.raises(ValueError, match="checkpoint invalido"):
+                BatchInferenceConfig(checkpoint=checkpoint_dir, input=Path(tmpdir))
+
+    def test_batch_inference_config_input_validation(self):
+        """Test input path validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+
+            # Nonexistent input
+            with pytest.raises(ValueError, match="input nao encontrado"):
+                BatchInferenceConfig(checkpoint=checkpoint, input=Path("/nonexistent"))
+
+    def test_batch_inference_config_defaults(self):
+        """Test default values."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            config = BatchInferenceConfig(checkpoint=checkpoint, input=input_path)
+            assert config.arch == "resnet50"
+            assert config.batch_size == 16
+            assert config.img_size == HP.IMG_SIZE
+            assert config.device == HP.DEVICE
+            assert config.amp is False
+            assert config.output_format == "csv"
+            assert config.resume is False
+            assert config.checkpoint_interval == 100
+
+    def test_batch_inference_config_output_format_validation(self):
+        """Test output format validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            # Valid formats
+            for fmt in ["csv", "json", "jsonl"]:
+                config = BatchInferenceConfig(
+                    checkpoint=checkpoint, input=input_path, output_format=fmt
+                )
+                assert config.output_format == fmt
+
+            # Invalid format
+            with pytest.raises(ValueError, match="output_format deve ser um de"):
+                BatchInferenceConfig(
+                    checkpoint=checkpoint, input=input_path, output_format="invalid"
+                )
+
+    def test_batch_inference_config_checkpoint_file_validation(self):
+        """Test checkpoint_file validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            # Valid checkpoint_file (file doesn't need to exist yet)
+            checkpoint_file = Path(tmpdir) / "checkpoint.json"
+            config = BatchInferenceConfig(
+                checkpoint=checkpoint,
+                input=input_path,
+                checkpoint_file=checkpoint_file,
+            )
+            assert config.checkpoint_file == checkpoint_file
+
+            # Invalid checkpoint_file (parent directory doesn't exist)
+            with pytest.raises(ValueError, match="checkpoint_file parent directory nao encontrado"):
+                BatchInferenceConfig(
+                    checkpoint=checkpoint,
+                    input=input_path,
+                    checkpoint_file=Path("/nonexistent/dir/checkpoint.json"),
+                )
+
+    def test_batch_inference_config_numeric_constraints(self):
+        """Test numeric field constraints."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            # Valid config
+            config = BatchInferenceConfig(
+                checkpoint=checkpoint,
+                input=input_path,
+                batch_size=32,
+                img_size=256,
+                checkpoint_interval=50,
+            )
+            assert config.batch_size == 32
+            assert config.img_size == 256
+            assert config.checkpoint_interval == 50
+
+            # Invalid batch_size (< 1)
+            with pytest.raises(ValidationError):
+                BatchInferenceConfig(checkpoint=checkpoint, input=input_path, batch_size=0)
+
+            # Invalid img_size (< 1)
+            with pytest.raises(ValidationError):
+                BatchInferenceConfig(checkpoint=checkpoint, input=input_path, img_size=0)
+
+            # Invalid checkpoint_interval (< 1)
+            with pytest.raises(ValidationError):
+                BatchInferenceConfig(
+                    checkpoint=checkpoint, input=input_path, checkpoint_interval=0
+                )
+
+    def test_batch_inference_config_architecture(self):
+        """Test architecture configuration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            for arch in ["resnet50", "efficientnet_b0"]:
+                config = BatchInferenceConfig(
+                    checkpoint=checkpoint, input=input_path, arch=arch
+                )
+                assert config.arch == arch
+
+    def test_batch_inference_rejects_transformer_with_non_224_img_size(self):
+        """Transformer inference configs should validate image size upfront."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            with pytest.raises(ValueError, match="requires img_size=224"):
+                BatchInferenceConfig(
+                    checkpoint=checkpoint,
+                    input=input_path,
+                    arch="vit_b_16",
+                    img_size=64,
+                )
+
+    def test_batch_inference_config_classes_parameter(self):
+        """Test classes parameter configuration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            multiclass_config = BatchInferenceConfig(
+                checkpoint=checkpoint, input=input_path, classes="multiclass"
+            )
+            assert multiclass_config.classes == "multiclass"
+
+            with pytest.warns(FutureWarning, match="density"):
+                legacy_config = BatchInferenceConfig(
+                    checkpoint=checkpoint, input=input_path, classes="density"
+                )
+            assert legacy_config.classes == "multiclass"
+
+            binary_config = BatchInferenceConfig(
+                checkpoint=checkpoint, input=input_path, classes="binary"
+            )
+            assert binary_config.classes == "binary"
+
+    def test_batch_inference_config_dataloader_parameters(self):
+        """Test DataLoader configuration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            config = BatchInferenceConfig(
+                checkpoint=checkpoint,
+                input=input_path,
+                num_workers=8,
+                prefetch_factor=8,
+                persistent_workers=False,
+            )
+            assert config.num_workers == 8
+            assert config.prefetch_factor == 8
+            assert config.persistent_workers is False
+
+            # Invalid num_workers (< 0)
+            with pytest.raises(ValidationError):
+                BatchInferenceConfig(checkpoint=checkpoint, input=input_path, num_workers=-1)
+
+            # Invalid prefetch_factor (< 0)
+            with pytest.raises(ValidationError):
+                BatchInferenceConfig(
+                    checkpoint=checkpoint, input=input_path, prefetch_factor=-1
+                )
+
+    def test_batch_inference_config_from_args(self):
+        """Test BatchInferenceConfig.from_args integration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint = Path(tmpdir) / "model.pt"
+            checkpoint.write_text("fake checkpoint")
+            input_path = Path(tmpdir)
+
+            args = Namespace(
+                checkpoint=checkpoint,
+                input=input_path,
+                arch="efficientnet_b0",
+                batch_size=32,
+                output_format="json",
+                resume=True,
+            )
+
+            config = BatchInferenceConfig.from_args(args)
+            assert config.checkpoint == checkpoint
+            assert config.input == input_path
+            assert config.arch == "efficientnet_b0"
+            assert config.batch_size == 32
+            assert config.output_format == "json"
+            assert config.resume is True
+
+
+class TestPreprocessConfig:
+    """Test PreprocessConfig validation."""
+
+    def test_preprocess_config_requires_input_and_output(self):
+        """Test that input and output are required."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+            output_path = Path(tmpdir) / "output"
+
+            # Valid config
+            config = PreprocessConfig(input=input_path, output=output_path)
+            assert config.input == input_path
+            assert config.output == output_path
+
+    def test_preprocess_config_input_validation(self):
+        """Test input path validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "output"
+
+            # Nonexistent input
+            with pytest.raises(ValueError, match="input nao encontrado"):
+                PreprocessConfig(input=Path("/nonexistent"), output=output_path)
+
+    def test_preprocess_config_output_validation(self):
+        """Test output path validation and parent directory creation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+
+            # Output with non-existent parent (should create parent)
+            output_path = Path(tmpdir) / "new_dir" / "output"
+            config = PreprocessConfig(input=input_path, output=output_path)
+            assert config.output == output_path
+            assert output_path.parent.exists()
+
+    def test_preprocess_config_defaults(self):
+        """Test default values."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+            output_path = Path(tmpdir) / "output"
+
+            config = PreprocessConfig(input=input_path, output=output_path)
+            assert config.normalize == "per-image"
+            assert config.img_size == HP.IMG_SIZE
+            assert config.resize is True
+            assert config.crop is False
+            assert config.format == "png"
+            assert config.preview is False
+            assert config.preview_n == 8
+            assert config.report is True
+            assert config.border_removal is False
+            assert config.log_level == HP.LOG_LEVEL
+
+    def test_preprocess_config_normalize_validation(self):
+        """Test normalize parameter validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+            output_path = Path(tmpdir) / "output"
+
+            # Valid normalize options
+            for normalize in ["per-image", "per-dataset", "none"]:
+                config = PreprocessConfig(
+                    input=input_path, output=output_path, normalize=normalize
+                )
+                assert config.normalize == normalize
+
+            # Invalid normalize option
+            with pytest.raises(ValueError, match="normalize deve ser um de"):
+                PreprocessConfig(input=input_path, output=output_path, normalize="invalid")
+
+    def test_preprocess_config_format_validation(self):
+        """Test format parameter validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+            output_path = Path(tmpdir) / "output"
+
+            # Valid format options
+            for fmt in ["png", "jpg", "keep"]:
+                config = PreprocessConfig(input=input_path, output=output_path, format=fmt)
+                assert config.format == fmt
+
+            # Invalid format option
+            with pytest.raises(ValueError, match="format deve ser um de"):
+                PreprocessConfig(input=input_path, output=output_path, format="invalid")
+
+    def test_preprocess_config_numeric_constraints(self):
+        """Test numeric field constraints."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+            output_path = Path(tmpdir) / "output"
+
+            # Valid config
+            config = PreprocessConfig(
+                input=input_path, output=output_path, img_size=256, preview_n=16
+            )
+            assert config.img_size == 256
+            assert config.preview_n == 16
+
+            # Invalid img_size (< 1)
+            with pytest.raises(ValidationError):
+                PreprocessConfig(input=input_path, output=output_path, img_size=0)
+
+            # Invalid preview_n (< 1)
+            with pytest.raises(ValidationError):
+                PreprocessConfig(input=input_path, output=output_path, preview_n=0)
+
+    def test_preprocess_config_boolean_flags(self):
+        """Test boolean configuration flags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+            output_path = Path(tmpdir) / "output"
+
+            config = PreprocessConfig(
+                input=input_path,
+                output=output_path,
+                resize=False,
+                crop=True,
+                preview=True,
+                report=False,
+                border_removal=True,
+            )
+            assert config.resize is False
+            assert config.crop is True
+            assert config.preview is True
+            assert config.report is False
+            assert config.border_removal is True
+
+    def test_preprocess_config_from_args(self):
+        """Test PreprocessConfig.from_args integration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input"
+            input_path.mkdir()
+            output_path = Path(tmpdir) / "output"
+
+            args = Namespace(
+                input=input_path,
+                output=output_path,
+                normalize="per-dataset",
+                img_size=256,
+                format="jpg",
+                preview=True,
+            )
+
+            config = PreprocessConfig.from_args(args)
+            assert config.input == input_path
+            assert config.output == output_path
+            assert config.normalize == "per-dataset"
+            assert config.img_size == 256
+            assert config.format == "jpg"
+            assert config.preview is True

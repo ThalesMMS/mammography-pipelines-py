@@ -119,6 +119,7 @@ def test_register_inference_run_logs_mlflow_payload(
     assert run_id == "run-123"
     assert captured["run_name"] == "mamografias_inference_effnet"
     assert captured["params"]["checkpoint_path"] == str(checkpoint_path)
+    assert captured["params"]["classes"] == "multiclass"
     assert captured["metrics"]["total_images"] == 12.0
     assert captured["metrics"]["images_per_sec"] == 3.0
     assert captured["metrics"]["inference_seconds"] == 4.0

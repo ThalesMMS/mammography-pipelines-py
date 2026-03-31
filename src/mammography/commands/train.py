@@ -3,11 +3,11 @@
 # train.py
 # mammography-pipelines
 #
-# Trains EfficientNetB0/ResNet50 density classifiers with optional caching, AMP, Grad-CAM, and evaluation exports.
+# Trains EfficientNetB0/ResNet50/ViT density classifiers with optional caching, AMP, Grad-CAM, and evaluation exports.
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
-"""Train EfficientNetB0/ResNet50 for breast density with optional caches and AMP."""
+"""Train EfficientNetB0/ResNet50/ViT for breast density with optional caches and AMP."""
 import os
 import signal
 import sys
@@ -36,6 +36,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
     from mammography.utils.pydantic_fallback import ValidationError
 
 from mammography.config import HP, TrainConfig
+from mammography.utils.class_modes import (
+    CLASS_MODE_HELP,
+    VISIBLE_CLASS_MODES_METAVAR,
+    get_label_mapper as build_label_mapper,
+    get_num_classes,
+    parse_classes_mode_arg,
+)
 from mammography.utils.common import (
     seed_everything,
     resolve_device,
@@ -107,7 +114,7 @@ def _normalize_bool_flags(argv: Optional[Sequence[str]]) -> list[str] | None:
 
 def parse_args(argv: Optional[Sequence[str]] = None):
     """Define and parse CLI arguments for the density training script."""
-    parser = argparse.ArgumentParser(description="Treinamento Mammography (EfficientNetB0/ResNet50)")
+    parser = argparse.ArgumentParser(description="Treinamento Mammography (EfficientNetB0/ResNet50/ViT)")
 
     # Data
     parser.add_argument("--dataset", choices=sorted(DATASET_PRESETS.keys()), help="Atalho para datasets conhecidos (archive/mamografias/patches_completo)")
@@ -131,9 +138,9 @@ def parse_args(argv: Optional[Sequence[str]] = None):
     parser.add_argument("--ensemble-method", default="none", choices=["none", "average", "weighted", "max"], help="Metodo de ensemble para combinar predicoes de views (none/average/weighted/max)")
 
     # Model / task
-    parser.add_argument("--arch", default="efficientnet_b0", choices=["efficientnet_b0", "resnet50"])
-    parser.add_argument("--classes", default="density", choices=["density", "binary", "multiclass"], help="density/multiclass = BI-RADS 1..4, binary = A/B vs C/D")
-    parser.add_argument("--task", dest="classes", choices=["density", "binary", "multiclass"], help="Alias para --classes")
+    parser.add_argument("--arch", default="efficientnet_b0", choices=["efficientnet_b0", "resnet50", "vit_b_16", "vit_b_32", "vit_l_16", "deit_small", "deit_base"])
+    parser.add_argument("--classes", default="multiclass", type=parse_classes_mode_arg, metavar=VISIBLE_CLASS_MODES_METAVAR, help=CLASS_MODE_HELP)
+    parser.add_argument("--task", dest="classes", type=parse_classes_mode_arg, metavar=VISIBLE_CLASS_MODES_METAVAR, help="Alias para --classes")
     parser.add_argument(
         "--pretrained",
         action=argparse.BooleanOptionalAction,
@@ -232,15 +239,7 @@ def parse_args(argv: Optional[Sequence[str]] = None):
 
 def get_label_mapper(mode):
     """Return a mapper function to collapse classes when running binary experiments."""
-    mode = (mode or "density").lower()
-    if mode == "binary":
-        # 1,2 -> 0 (Low); 3,4 -> 1 (High)
-        def mapper(y):
-            if y in [1, 2]: return 0
-            if y in [3, 4]: return 1
-            return y - 1 # Fallback
-        return mapper
-    return None # Default 1..4 -> 0..3
+    return build_label_mapper(mode)
 
 
 def get_file_hash(path: str) -> str:
@@ -483,6 +482,190 @@ def _assert_no_patient_leakage(
         raise RuntimeError(message)
     warn_logger = logger or logging.getLogger("mammography")
     warn_logger.warning("%s Prosseguindo porque split_mode=random.", message)
+
+
+def _resolve_split_group_column(
+    df: pd.DataFrame,
+    split_mode: str,
+) -> str | None:
+    mode = (split_mode or "random").lower()
+    if mode in {"random", "preset"}:
+        return None
+    patient_col = _select_patient_id_column(df)
+    if patient_col is None:
+        raise SystemExit(
+            "split-mode=patient requer coluna 'patient_id' ou 'PatientID' no dataset carregado."
+        )
+    return patient_col
+
+
+def _write_split_artifacts(
+    *,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame | None,
+    outdir: Path,
+    split_mode: str,
+    group_column: str | None,
+    logger: logging.Logger,
+) -> None:
+    split_dir = outdir / "splits"
+    split_dir.mkdir(parents=True, exist_ok=True)
+
+    split_files: dict[str, str] = {}
+    split_frames = {
+        "train": train_df,
+        "val": val_df,
+        "test": test_df,
+    }
+    for split_name, split_df in split_frames.items():
+        if split_df is None:
+            continue
+        split_path = split_dir / f"{split_name}.csv"
+        split_df.to_csv(split_path, index=False)
+        split_files[split_name] = str(split_path)
+
+    manifest = {
+        "split_mode": split_mode,
+        "group_column": group_column,
+        "files": split_files,
+        "train_rows": int(len(train_df)),
+        "val_rows": int(len(val_df)),
+        "test_rows": int(len(test_df)) if test_df is not None else 0,
+        "train_groups": (
+            int(train_df[group_column].nunique())
+            if group_column and group_column in train_df.columns
+            else None
+        ),
+        "val_groups": (
+            int(val_df[group_column].nunique())
+            if group_column and group_column in val_df.columns
+            else None
+        ),
+        "test_groups": (
+            int(test_df[group_column].nunique())
+            if test_df is not None and group_column and group_column in test_df.columns
+            else None
+        ),
+    }
+    manifest_path = split_dir / "split_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    logger.info("Split artifacts salvos em %s", split_dir)
+
+
+def _metrics_artifact_base(split_name: str, current_view: str | None) -> str:
+    if current_view:
+        return f"{split_name}_metrics_{current_view.lower()}"
+    return f"{split_name}_metrics"
+
+
+def _write_metrics_artifacts(
+    *,
+    metrics: Dict[str, Any],
+    metrics_dir: Path,
+    outdir: Path,
+    split_name: str,
+    current_view: str | None,
+    export_formats: list[str],
+) -> Path:
+    base_name = _metrics_artifact_base(split_name, current_view)
+    metrics_path = metrics_dir / f"{base_name}.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2, default=str), encoding="utf-8")
+    save_metrics_figure(metrics, str(metrics_dir / f"{base_name}.png"))
+
+    if export_formats:
+        figures_dir = outdir / "figures"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        for fmt in export_formats:
+            _save_metrics_figure_format(metrics, str(figures_dir / f"{base_name}.{fmt}"))
+
+    return metrics_path
+
+
+def _summarize_metrics_for_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for key in (
+        "acc",
+        "accuracy",
+        "kappa_quadratic",
+        "auc_ovr",
+        "macro_f1",
+        "bal_acc",
+        "bal_acc_adj",
+        "loss",
+        "epoch",
+        "num_samples",
+    ):
+        value = metrics.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (int, np.integer)):
+            summary[key] = int(value)
+            continue
+        if isinstance(value, (float, np.floating)):
+            if np.isfinite(value):
+                summary[key] = float(value)
+            continue
+    return summary
+
+
+def _resolve_checkpoint_candidate(raw_path: object, *, results_dir: Path) -> Path | None:
+    if raw_path is None:
+        return None
+    text = str(raw_path).strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = results_dir / path
+    return path
+
+
+def _resolve_best_model_path(
+    *,
+    results_dir: Path,
+    current_view: str | None,
+    top_k: list[dict[str, Any]],
+    resume_path: Path | None,
+) -> Path | None:
+    for entry in _sort_top_k(top_k):
+        candidate = _resolve_checkpoint_candidate(entry.get("path"), results_dir=results_dir)
+        if candidate is not None and candidate.exists():
+            return candidate
+
+    best_model_name = f"best_model_{current_view.lower()}.pt" if current_view else "best_model.pt"
+    candidates = [results_dir / best_model_name, *sorted(results_dir.glob("best_model*.pt"))]
+
+    if resume_path is not None:
+        resume_results_dir = resume_path.parent
+        candidates.extend(
+            [
+                resume_results_dir / best_model_name,
+                *sorted(resume_results_dir.glob("best_model*.pt")),
+                resume_path,
+            ]
+        )
+
+    candidates.append(results_dir / "checkpoint.pt")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_checkpoint_for_eval(
+    model: torch.nn.Module,
+    checkpoint_path: Path,
+    device: torch.device,
+) -> None:
+    state = torch.load(checkpoint_path, map_location=device)
+    if isinstance(state, dict) and "model_state" in state:
+        state = state["model_state"]
+    model.load_state_dict(state, strict=False)
 
 
 class ExperimentTracker:
@@ -809,6 +992,15 @@ def resolve_loader_runtime(args, device: torch.device):
         return 0, prefetch, False
     if device.type == "mps":
         return 0, prefetch, False
+    if os.name == "nt" and device.type == "cuda" and sys.version_info >= (3, 13):
+        logging.getLogger("mammography").warning(
+            (
+                "Desabilitando DataLoader multiprocessado em Windows + CUDA + Python %s "
+                "para evitar deadlocks observados durante treino oficial."
+            ),
+            ".".join(str(part) for part in sys.version_info[:3]),
+        )
+        return 0, None, False
     if device.type == "cpu":
         return max(0, min(num_workers, os.cpu_count() or 0)), prefetch, persistent
     return num_workers, prefetch, persistent
@@ -849,14 +1041,14 @@ def _build_dataloader(
         )
 
 def _resolve_head_module(model: torch.nn.Module, arch: str) -> Optional[torch.nn.Module]:
-    if arch == "resnet50":
-        if hasattr(model, "classifier"):
-            return model.classifier
-        if hasattr(model, "fc"):
-            return model.fc
-    if arch == "efficientnet_b0":
-        if hasattr(model, "classifier"):
-            return model.classifier
+    if hasattr(model, "classifier"):
+        return model.classifier
+    if arch == "resnet50" and hasattr(model, "fc"):
+        return model.fc
+    if hasattr(model, "heads"):
+        return model.heads
+    if hasattr(model, "head"):
+        return model.head
     return None
 
 def _resolve_backbone_module(model: torch.nn.Module) -> torch.nn.Module:
@@ -880,6 +1072,17 @@ def unfreeze_last_block(model: torch.nn.Module, arch: str) -> None:
         features = backbone.features
         if len(features) > 0:
             for p in features[-1].parameters():
+                p.requires_grad = True
+    if arch in {"vit", "vit_b_16", "vit_b_32", "vit_l_16"}:
+        encoder = getattr(backbone, "encoder", None)
+        layers = getattr(encoder, "layers", None)
+        if layers is not None and len(layers) > 0:
+            for p in layers[-1].parameters():
+                p.requires_grad = True
+    if arch in {"deit_small", "deit_base"}:
+        blocks = getattr(backbone, "blocks", None)
+        if blocks is not None and len(blocks) > 0:
+            for p in blocks[-1].parameters():
                 p.requires_grad = True
 
 def build_param_groups(model: torch.nn.Module, arch: str, lr_head: float, lr_backbone: float) -> list[dict]:
@@ -937,6 +1140,7 @@ def main(argv: Optional[Sequence[str]] = None):
         cfg = TrainConfig.from_args(args, csv=csv_path, dicom_root=dicom_root)
     except ValidationError as exc:
         raise SystemExit(f"Config invalida: {exc}") from exc
+    args.classes = getattr(cfg, "classes", args.classes)
     csv_path = str(cfg.csv) if cfg.csv else None
     dicom_root = str(cfg.dicom_root) if cfg.dicom_root else None
     args.csv = csv_path
@@ -999,7 +1203,9 @@ def main(argv: Optional[Sequence[str]] = None):
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    num_classes = 2 if args.classes == "binary" else 4
+    num_classes = get_num_classes(args.classes)
+
+    split_group_column = _resolve_split_group_column(df, args.split_mode)
 
     # Route to appropriate split function based on configuration
     test_df = None
@@ -1022,6 +1228,7 @@ def main(argv: Optional[Sequence[str]] = None):
             num_classes=num_classes,
             ensure_all_splits_have_all_classes=args.split_ensure_all_classes,
             max_tries=args.split_max_tries,
+            group_col=split_group_column,
         )
     else:
         # Default two-way split (train/val) for backward compatibility
@@ -1032,6 +1239,7 @@ def main(argv: Optional[Sequence[str]] = None):
             num_classes=num_classes,
             ensure_val_has_all_classes=args.split_ensure_all_classes,
             max_tries=args.split_max_tries,
+            group_col=split_group_column,
         )
 
     patient_col = _select_patient_id_column(df)
@@ -1044,20 +1252,39 @@ def main(argv: Optional[Sequence[str]] = None):
         test_patients = _patient_ids_from_column(test_df, patient_col, "test") if test_df is not None else set()
     else:
         logger.info("Leakage check: usando PatientID dos cabecalhos DICOM.")
+        split_frames = [train_df, val_df]
         if test_df is not None:
-            # Extended DICOM patient ID extraction for 3-way split
-            all_paths = _unique_paths(
-                [str(p) for p in pd.concat([train_df["image_path"], val_df["image_path"], test_df["image_path"]], axis=0).dropna().tolist()]
-            )
-            if not all_paths:
-                raise RuntimeError("CRITICO: nenhum image_path valido para validar vazamento.")
-            non_dicom = [p for p in all_paths if not is_dicom_path(p)]
-            if non_dicom:
+            split_frames.append(test_df)
+        all_paths = _unique_paths(
+            [
+                str(path)
+                for frame in split_frames
+                for path in frame["image_path"].dropna().tolist()
+            ]
+        )
+        if not all_paths:
+            raise RuntimeError("CRITICO: nenhum image_path valido para validar vazamento.")
+        non_dicom = [path for path in all_paths if not is_dicom_path(path)]
+        if non_dicom:
+            if args.split_mode == "random":
+                logger.warning(
+                    (
+                        "Leakage check ignorado: split random sem patient_id contem %d amostras "
+                        "nao-DICOM."
+                    ),
+                    len(non_dicom),
+                )
+                train_patients = set()
+                val_patients = set()
+                test_patients = set()
+            else:
                 examples = non_dicom[:3]
                 raise RuntimeError(
                     "CRITICO: amostras nao-DICOM sem patient_id; nao e possivel validar vazamento "
                     f"(ex: {examples})."
                 )
+        elif test_df is not None:
+            # Extended DICOM patient ID extraction for 3-way split
             logger.info("Lendo cabecalhos DICOM para obter PatientID (%d arquivos).", len(all_paths))
             patient_by_path: dict[str, str] = {}
             read_errors = []
@@ -1140,36 +1367,44 @@ def main(argv: Optional[Sequence[str]] = None):
 
     embedding_store = None
     if args.embeddings_dir:
-        if args.arch not in ["efficientnet_b0", "resnet50"]:
-            raise SystemExit("Fusao de embeddings so esta disponivel para efficientnet_b0 e resnet50.")
-        embedding_store = load_embedding_store(args.embeddings_dir)
-        logger.info("Embeddings carregadas de %s", args.embeddings_dir)
+        _emb_root = Path(args.embeddings_dir)
+        if (_emb_root / "features.npy").exists() and (_emb_root / "metadata.csv").exists():
+            if args.arch not in ["efficientnet_b0", "resnet50"]:
+                raise SystemExit("Fusao de embeddings so esta disponivel para efficientnet_b0 e resnet50.")
+            embedding_store = load_embedding_store(args.embeddings_dir)
+            logger.info("Embeddings carregadas de %s", args.embeddings_dir)
 
-        def _count_missing(rows):
-            return sum(1 for r in rows if embedding_store.lookup(r) is None)  # type: ignore[union-attr]
+            def _count_missing(rows):
+                return sum(1 for r in rows if embedding_store.lookup(r) is None)  # type: ignore[union-attr]
 
-        missing_train = _count_missing(train_rows)
-        missing_val = _count_missing(val_rows)
-        missing_test = _count_missing(test_rows) if test_rows else 0
-        if missing_train or missing_val or missing_test:
-            if test_rows:
-                logger.warning(
-                    "Embeddings ausentes: train=%s, val=%s, test=%s (total train=%s, val=%s, test=%s).",
-                    missing_train,
-                    missing_val,
-                    missing_test,
-                    len(train_rows),
-                    len(val_rows),
-                    len(test_rows),
-                )
-            else:
-                logger.warning(
-                    "Embeddings ausentes: train=%s, val=%s (total train=%s, val=%s).",
-                    missing_train,
-                    missing_val,
-                    len(train_rows),
-                    len(val_rows),
-                )
+            missing_train = _count_missing(train_rows)
+            missing_val = _count_missing(val_rows)
+            missing_test = _count_missing(test_rows) if test_rows else 0
+            if missing_train or missing_val or missing_test:
+                if test_rows:
+                    logger.warning(
+                        "Embeddings ausentes: train=%s, val=%s, test=%s (total train=%s, val=%s, test=%s).",
+                        missing_train,
+                        missing_val,
+                        missing_test,
+                        len(train_rows),
+                        len(val_rows),
+                        len(test_rows),
+                    )
+                else:
+                    logger.warning(
+                        "Embeddings ausentes: train=%s, val=%s (total train=%s, val=%s).",
+                        missing_train,
+                        missing_val,
+                        len(train_rows),
+                        len(val_rows),
+                    )
+        else:
+            logger.info(
+                "Embeddings dir '%s' especificado mas features.npy/metadata.csv nao encontrados; "
+                "prosseguindo sem fusao de embeddings.",
+                args.embeddings_dir,
+            )
 
     cache_dir = args.cache_dir or str(outdir_root / "cache")
 
@@ -1181,13 +1416,20 @@ def main(argv: Optional[Sequence[str]] = None):
         if current_view is not None:
             view_train_df = train_df[train_df[args.view_column] == current_view].reset_index(drop=True)
             view_val_df = val_df[val_df[args.view_column] == current_view].reset_index(drop=True)
+            view_test_df = (
+                test_df[test_df[args.view_column] == current_view].reset_index(drop=True)
+                if test_df is not None
+                else None
+            )
             view_train_rows = view_train_df.to_dict("records")
             view_val_rows = view_val_df.to_dict("records")
+            view_test_rows = view_test_df.to_dict("records") if view_test_df is not None else []
             logger.info(
-                "Training view-specific model for view '%s': %d train samples, %d val samples",
+                "Training view-specific model for view '%s': %d train samples, %d val samples, %d test samples",
                 current_view,
                 len(view_train_rows),
                 len(view_val_rows),
+                len(view_test_rows),
             )
             # Create view-specific output directory
             view_outdir_path = outdir_path.parent / f"{outdir_path.name}_{current_view}"
@@ -1200,13 +1442,32 @@ def main(argv: Optional[Sequence[str]] = None):
                 view_figures_dir.mkdir(parents=True, exist_ok=True)
         else:
             # Use full dataset (no view filtering)
+            view_train_df = train_df
+            view_val_df = val_df
+            view_test_df = test_df
             view_train_rows = train_rows
             view_val_rows = val_rows
+            view_test_rows = test_rows if test_rows is not None else []
             view_outdir_path = outdir_path
             view_metrics_dir = metrics_dir
 
+        _write_split_artifacts(
+            train_df=view_train_df,
+            val_df=view_val_df,
+            test_df=view_test_df,
+            outdir=view_outdir_path,
+            split_mode=args.split_mode,
+            group_column=split_group_column,
+            logger=logger,
+        )
+
         cache_mode_train = resolve_dataset_cache_mode(args.cache_mode, view_train_rows)
         cache_mode_val = resolve_dataset_cache_mode(args.cache_mode, view_val_rows)
+        cache_mode_test = (
+            resolve_dataset_cache_mode(args.cache_mode, view_test_rows)
+            if view_test_rows
+            else None
+        )
 
         train_ds = MammoDensityDataset(
             view_train_rows,
@@ -1285,6 +1546,28 @@ def main(argv: Optional[Sequence[str]] = None):
             dl_kwargs=dl_kwargs,
             logger=logger,
         )
+        test_loader = None
+        if view_test_rows:
+            test_ds = MammoDensityDataset(
+                view_test_rows,
+                args.img_size,
+                train=False,
+                augment=False,
+                cache_mode=cache_mode_test or "none",
+                cache_dir=cache_dir,
+                split_name="test",
+                label_mapper=mapper,
+                embedding_store=embedding_store,
+                mean=mean,
+                std=std,
+            )
+            test_loader = _build_dataloader(
+                test_ds,
+                shuffle=False,
+                sampler=None,
+                dl_kwargs=dl_kwargs,
+                logger=logger,
+            )
 
         # Model
         model = build_model(
@@ -1470,6 +1753,7 @@ def main(argv: Optional[Sequence[str]] = None):
             "std": std,
             # Split settings
             "split_mode": args.split_mode,
+            "split_group_column": split_group_column,
             "val_frac": args.val_frac,
             "test_frac": args.test_frac,
             "split_ensure_all_classes": args.split_ensure_all_classes,
@@ -1491,6 +1775,8 @@ def main(argv: Optional[Sequence[str]] = None):
             "tracker_run_name": args.tracker_run_name,
             "tracker_uri": args.tracker_uri,
             # Evaluation settings
+            "save_val_preds": args.save_val_preds,
+            "export_val_embeddings": args.export_val_embeddings,
             "top_k_metric": top_k_metric,
             "top_k_limit": top_k_limit,
             # View-specific training
@@ -1711,6 +1997,89 @@ def main(argv: Optional[Sequence[str]] = None):
             best_epoch,
             best_acc,
         )
+        best_model_path = _resolve_best_model_path(
+            results_dir=view_outdir_path,
+            current_view=current_view,
+            top_k=top_k,
+            resume_path=resume_path,
+        )
+        if best_model_path is not None:
+            logger.info(
+                "Carregando melhor checkpoint%s para avaliacao final: %s",
+                f" (view={current_view})" if current_view else "",
+                best_model_path,
+            )
+            _load_checkpoint_for_eval(model, best_model_path, device)
+        else:
+            logger.warning(
+                "Melhor checkpoint%s nao encontrado; avaliacao final usara o estado atual do modelo.",
+                f" (view={current_view})" if current_view else "",
+            )
+
+        test_metrics_summary = None
+        if test_loader is not None:
+            logger.info(
+                "Avaliando conjunto de teste%s (%d amostras)...",
+                f" (view={current_view})" if current_view else "",
+                len(view_test_rows),
+            )
+            test_metrics, test_pred_rows = validate(
+                model,
+                test_loader,
+                device,
+                amp_enabled=args.amp and device.type in ["cuda", "mps"],
+                loss_fn=loss_fn,
+                collect_preds=True,
+                progress_label="Test",
+            )
+            test_metrics["epoch"] = int(best_epoch)
+            test_metrics["num_samples"] = int(len(view_test_rows))
+            _write_metrics_artifacts(
+                metrics=test_metrics,
+                metrics_dir=view_metrics_dir,
+                outdir=view_outdir_path,
+                split_name="test",
+                current_view=current_view,
+                export_formats=export_formats,
+            )
+            save_predictions(test_pred_rows, view_outdir_path, filename="test_predictions.csv")
+            test_metrics_summary = _summarize_metrics_for_summary(test_metrics)
+
+            test_acc = float(test_metrics.get("acc", 0.0) or 0.0)
+            test_macro_f1 = float(test_metrics.get("macro_f1", 0.0) or 0.0)
+            test_auc_raw = test_metrics.get("auc_ovr", None)
+            test_auc = (
+                float(test_auc_raw)
+                if isinstance(test_auc_raw, (int, float, np.integer, np.floating))
+                and np.isfinite(test_auc_raw)
+                else None
+            )
+            logger.info(
+                "Test metrics%s | Acc: %.4f | Macro-F1: %.4f | AUC: %s",
+                f" (view={current_view})" if current_view else "",
+                test_acc,
+                test_macro_f1,
+                f"{test_auc:.4f}" if test_auc is not None else "n/a",
+            )
+
+            if tracker:
+                test_payload = {
+                    "test_loss": float(test_metrics.get("loss", 0.0) or 0.0),
+                    "test_acc": test_acc,
+                    "test_f1": test_macro_f1,
+                    "test_kappa": float(test_metrics.get("kappa_quadratic", 0.0) or 0.0),
+                    "test_bal_acc": float(test_metrics.get("bal_acc", 0.0) or 0.0),
+                    "test_bal_acc_adj": float(test_metrics.get("bal_acc_adj", 0.0) or 0.0),
+                }
+                if test_auc is not None:
+                    test_payload["test_auc"] = test_auc
+                    test_payload["test_auc_ovr"] = test_auc
+                tracker.log_metrics(test_payload, step=max(best_epoch, 0))
+        elif args.test_frac > 0:
+            logger.warning(
+                "Split de teste solicitado%s, mas sem amostras disponiveis; pulando avaliacao final.",
+                f" (view={current_view})" if current_view else "",
+            )
         summary_payload.update(
             {
                 "best_acc": float(best_acc),
@@ -1718,6 +2087,7 @@ def main(argv: Optional[Sequence[str]] = None):
                 "best_metric_name": top_k_metric,
                 "best_epoch": int(best_epoch),
                 "top_k": top_k,
+                "test_metrics": test_metrics_summary,
                 "finished_at": datetime.now(tz=timezone.utc).isoformat(),
             }
         )
@@ -1725,12 +2095,8 @@ def main(argv: Optional[Sequence[str]] = None):
 
         if args.export_val_embeddings:
             logger.info("Extraindo embeddings do conjunto de validação%s...", f" (view={current_view})" if current_view else "")
-            # Load best model with view suffix for view-specific training
-            best_model_name = f"best_model_{current_view.lower()}.pt" if current_view else "best_model.pt"
-            best_path = view_outdir_path / best_model_name
-            if best_path.exists():
-                state = torch.load(best_path, map_location=device)
-                model.load_state_dict(state, strict=False)
+            if best_model_path is not None:
+                _load_checkpoint_for_eval(model, best_model_path, device)
             feats, metas = extract_embeddings(model, val_loader, device, amp_enabled=args.amp and device.type in ["cuda", "mps"])
             np.save(view_outdir_path / "embeddings_val.npy", feats)
             pd.DataFrame(metas).to_csv(view_outdir_path / "embeddings_val.csv", index=False)

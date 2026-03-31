@@ -1,3 +1,10 @@
+#
+# wizard.py
+# mammography-pipelines
+#
+# Interactive wizard for guided mammography pipeline workflows.
+# DISCLAIMER: Educational project only - NOT for clinical or medical diagnostic purposes.
+#
 from __future__ import annotations
 
 import os
@@ -360,8 +367,8 @@ def _wizard_train() -> WizardCommand:
     _print_progress(current_step, total_steps, "Configuracao Basica")
     arch_idx = ask_choice_with_help("Arquitetura:", ["efficientnet_b0", "resnet50"], param_name="arch", default=0)
     arch = ["efficientnet_b0", "resnet50"][arch_idx]
-    class_idx = ask_choice_with_help("Classes:", ["density (A-D)", "binary (AB vs CD)", "multiclass (A-D)"], param_name="classes", default=0)
-    classes = ["density", "binary", "multiclass"][class_idx]
+    class_idx = ask_choice_with_help("Classes:", ["multiclass (A-D)", "binary (AB vs CD)"], param_name="classes", default=0)
+    classes = ["multiclass", "binary"][class_idx]
 
     outdir = ask_with_help("Outdir", param_name="outdir", default="outputs/mammo_efficientnetb0_density")
     epochs = ask_int_with_help("Epocas", param_name="epochs", default=HP.EPOCHS)
@@ -607,11 +614,11 @@ def _wizard_embed() -> WizardCommand:
     arch = ["resnet50", "efficientnet_b0"][arch_idx]
     class_idx = ask_choice_with_help(
         "Classes:",
-        ["multiclass (A-D)", "binary (AB vs CD)", "density (A-D)"],
+        ["multiclass (A-D)", "binary (AB vs CD)"],
         param_name="classes",
         default=0,
     )
-    classes = ["multiclass", "binary", "density"][class_idx]
+    classes = ["multiclass", "binary"][class_idx]
 
     outdir = ask_with_help("Outdir", param_name="outdir", default="outputs/features")
 
@@ -858,6 +865,14 @@ def _wizard_embeddings_baselines() -> WizardCommand:
 
 
 def _wizard_inference() -> WizardCommand:
+    """
+    Interactively collect inference configuration from the user and construct a CLI command for running model inference.
+    
+    Prompts for checkpoint path, input file/directory, architecture, class mode, image size, batch size, device, optional output CSV, optional custom normalization (mean/std), and optional AMP; includes any supplied config and extra CLI arguments.
+    
+    Returns:
+        WizardCommand: A command labeled "Inferencia" whose argv is the full CLI invocation for the "inference" subcommand with the collected options.
+    """
     args = _ask_config_args()
     checkpoint = _ask_string("Checkpoint (.pt)")
     input_path = _ask_string("Imagem ou diretorio de entrada")
@@ -901,7 +916,97 @@ def _wizard_inference() -> WizardCommand:
     return WizardCommand("Inferencia", _build_cli_command("inference", args))
 
 
+def _wizard_batch_inference() -> WizardCommand:
+    """
+    Builds a batch inference wizard command by interactively collecting configuration and dataset parameters.
+    
+    Prompts the user for checkpoint, input/output paths, model architecture, class mode, image size, batch size, device, output format, optional resume/checkpoint settings, and optional advanced runtime options (custom normalization, AMP, workers, prefetch, persistent workers). Appends any extra CLI arguments entered by the user.
+    
+    Returns:
+        WizardCommand: A command labeled "Inferencia em lote (batch)" whose argv is the full CLI invocation for the "batch-inference" subcommand.
+    """
+    args = _ask_config_args()
+    checkpoint = _ask_string("Checkpoint (.pt)")
+    input_path = _ask_string("Diretorio de entrada (imagens/DICOMs)")
+    output_path = _ask_string("Arquivo de saida")
+    arch_idx = _ask_choice("Arquitetura:", ["resnet50", "efficientnet_b0"], default=0)
+    arch = ["resnet50", "efficientnet_b0"][arch_idx]
+    class_idx = _ask_choice("Classes:", ["multiclass (A-D)", "binary (AB vs CD)"], default=0)
+    classes = ["multiclass", "binary"][class_idx]
+    img_size = _ask_int("Img size", HP.IMG_SIZE)
+    batch_size = _ask_int("Batch size", 16)
+    device = _ask_string("Device (auto/cuda/mps/cpu)", HP.DEVICE)
+
+    args.extend(
+        [
+            "--checkpoint",
+            checkpoint,
+            "--input",
+            input_path,
+            "--output",
+            output_path,
+            "--arch",
+            arch,
+            "--classes",
+            classes,
+            "--img-size",
+            str(img_size),
+            "--batch-size",
+            str(batch_size),
+            "--device",
+            device,
+        ]
+    )
+
+    # Output format
+    format_idx = _ask_choice("Formato de saida:", ["csv", "json", "jsonl"], default=0)
+    output_format = ["csv", "json", "jsonl"][format_idx]
+    if output_format != "csv":
+        args.extend(["--output-format", output_format])
+
+    # Resume capability
+    if _ask_yes_no("Habilitar resume/checkpoint?", False):
+        args.append("--resume")
+        checkpoint_file = _ask_string("Checkpoint file", "batch_inference_checkpoint.json")
+        checkpoint_interval = _ask_int("Checkpoint interval (batches)", 100)
+        args.extend(["--checkpoint-file", checkpoint_file, "--checkpoint-interval", str(checkpoint_interval)])
+
+    # Advanced options
+    if _ask_yes_no("Configurar opcoes avancadas?", False):
+        if _ask_yes_no("Normalizacao customizada?", False):
+            mean = _ask_string("Mean (ex: 0.485,0.456,0.406)", "0.485,0.456,0.406")
+            std = _ask_string("Std (ex: 0.229,0.224,0.225)", "0.229,0.224,0.225")
+            args.extend(["--mean", mean, "--std", std])
+
+        if _ask_yes_no("Usar AMP?", False):
+            args.append("--amp")
+
+        num_workers = _ask_int("Num workers", HP.NUM_WORKERS)
+        if num_workers != HP.NUM_WORKERS:
+            args.extend(["--num-workers", str(num_workers)])
+
+        prefetch_factor = _ask_int("Prefetch factor", HP.PREFETCH_FACTOR)
+        if prefetch_factor != HP.PREFETCH_FACTOR:
+            args.extend(["--prefetch-factor", str(prefetch_factor)])
+
+        if _ask_yes_no("Persistent workers?", HP.PERSISTENT_WORKERS):
+            args.append("--persistent-workers")
+        else:
+            args.append("--no-persistent-workers")
+
+    args.extend(_ask_extra_args())
+    return WizardCommand("Inferencia em lote (batch)", _build_cli_command("batch-inference", args))
+
+
 def _wizard_augment() -> WizardCommand:
+    """
+    Prompt the user for augmentation inputs and produce a configured augmentation CLI command.
+    
+    Collects source directory, output directory, number of augmentations, optional config and extra CLI arguments, and returns a WizardCommand that runs the "augment" subcommand with the collected options.
+    
+    Returns:
+        WizardCommand: A command labeled "Augmentacao de dados" configured to invoke the "augment" CLI subcommand with the prompted arguments.
+    """
     args = _ask_config_args()
     source_dir = _ask_string("Diretorio de origem")
     output_dir = _ask_string("Diretorio de saida", f"{source_dir}_aug")
@@ -1003,6 +1108,15 @@ def _wizard_report_pack() -> WizardCommand:
 
 
 def run_wizard(dry_run: bool = False) -> int:
+    """
+    Display an interactive wizard menu of tasks, run the selected task's command, and return its exit code.
+    
+    Parameters:
+        dry_run (bool): If True, commands are not actually executed and are only shown.
+    
+    Returns:
+        int: Exit code of the executed command, or 0 if the wizard was exited without running a command.
+    """
     print("\n=== MAMMOGRAPHY WIZARD ===")
     options = [
         "Treinamento de densidade",
@@ -1011,6 +1125,7 @@ def run_wizard(dry_run: bool = False) -> int:
         "Baselines classicos (embeddings)",
         "Visualizacao de embeddings",
         "Inferencia",
+        "Inferencia em lote (batch)",
         "Augmentacao de dados",
         "Rotular densidade (GUI)",
         "Rotular patches (GUI)",
@@ -1034,18 +1149,20 @@ def run_wizard(dry_run: bool = False) -> int:
     elif choice == 5:
         cmd = _wizard_inference()
     elif choice == 6:
-        cmd = _wizard_augment()
+        cmd = _wizard_batch_inference()
     elif choice == 7:
-        cmd = _wizard_label_density()
+        cmd = _wizard_augment()
     elif choice == 8:
-        cmd = _wizard_label_patches()
+        cmd = _wizard_label_density()
     elif choice == 9:
-        cmd = _wizard_eda()
+        cmd = _wizard_label_patches()
     elif choice == 10:
-        cmd = _wizard_data_audit()
+        cmd = _wizard_eda()
     elif choice == 11:
-        cmd = _wizard_eval_export()
+        cmd = _wizard_data_audit()
     elif choice == 12:
+        cmd = _wizard_eval_export()
+    elif choice == 13:
         cmd = _wizard_report_pack()
     else:
         print("Saindo do wizard.")

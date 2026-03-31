@@ -3,6 +3,7 @@
 # mammography-pipelines
 #
 # Centralizes default hyperparameters used across the mammography training pipelines.
+# DISCLAIMER: Educational project only - NOT for clinical or medical diagnostic purposes.
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
@@ -21,6 +22,26 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
         model_validator,
     )
 
+from mammography.utils.class_modes import normalize_classes_mode
+from mammography.models.nets import validate_arch_img_size
+
+
+def _validate_path_exists(value: Path, name: str) -> Path:
+    """Validate that a path exists, raising ValueError if not."""
+    if not value.exists():
+        raise ValueError(f"{name} nao encontrado: {value}")
+    return value
+
+
+def _validate_checkpoint_path(value: Path) -> Path:
+    """Validate that a checkpoint path exists and is a regular file."""
+    if not value.exists():
+        raise ValueError(f"checkpoint nao encontrado: {value}")
+    resolved_path = value.resolve()
+    if not resolved_path.is_file():
+        raise ValueError(f"checkpoint invalido: {value}")
+    return value
+
 
 def _normalize_dir_hint(path: Path) -> Path:
     """Apply simple path hints before validating existence."""
@@ -30,6 +51,11 @@ def _normalize_dir_hint(path: Path) -> Path:
     if candidate.exists():
         return candidate
     return path
+
+
+def _validate_arch_img_size_pair(arch: str, img_size: int) -> None:
+    """Validate architecture/image-size compatibility for model-based workflows."""
+    validate_arch_img_size(arch, img_size)
 
 
 @dataclass
@@ -56,6 +82,7 @@ class HP:
     ALLOW_TF32: bool = True
     PREFETCH_FACTOR: int = 4
     PERSISTENT_WORKERS: bool = True
+    PIN_MEMORY: bool = True
     CACHE_MODE: str = "auto"
     LOG_LEVEL: str = "info"
     TRAIN_AUGMENT: bool = True
@@ -68,6 +95,8 @@ class HP:
     LR_REDUCE_FACTOR: float = 0.5
     LR_REDUCE_MIN_LR: float = 1e-7
     LR_REDUCE_COOLDOWN: int = 0
+    N_FOLDS: int = 0
+    CV_STRATIFIED: bool = True
 
 
 class BaseConfig(BaseModel):
@@ -103,7 +132,7 @@ class TrainConfig(BaseConfig):
     subset: int = Field(default=0, ge=0)
 
     arch: str = "efficientnet_b0"
-    classes: str = "density"
+    classes: str = "multiclass"
     pretrained: bool = True
 
     view_specific_training: bool = False
@@ -153,6 +182,10 @@ class TrainConfig(BaseConfig):
     augment_color: bool = False
     augment_rotation_deg: float = Field(default=5.0, ge=0)
 
+    n_folds: int = Field(default=HP.N_FOLDS, ge=0)
+    cv_fold: Optional[int] = None
+    cv_stratified: bool = HP.CV_STRATIFIED
+
     gradcam: bool = False
     gradcam_limit: int = Field(default=4, ge=1)
     save_val_preds: bool = False
@@ -176,6 +209,16 @@ class TrainConfig(BaseConfig):
         if not value.exists():
             raise ValueError(f"embeddings_dir nao encontrado: {value}")
         return value
+
+    @field_validator("classes")
+    @classmethod
+    def _normalize_classes(cls, value: str) -> str:
+        return normalize_classes_mode(
+            value,
+            warn=True,
+            source=f"{cls.__name__}.classes",
+            allow_unknown=True,
+        )
 
     @field_validator("outdir", "profile_dir")
     @classmethod
@@ -235,6 +278,25 @@ class TrainConfig(BaseConfig):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_cv_consistency(self) -> "TrainConfig":
+        """Validate cross-validation parameters consistency."""
+        if self.cv_fold is not None:
+            if self.n_folds == 0:
+                raise ValueError(
+                    "cv_fold specified but n_folds=0. Set n_folds to a positive value to use cross-validation."
+                )
+            if self.cv_fold < 0 or self.cv_fold >= self.n_folds:
+                raise ValueError(
+                    f"cv_fold must be in range [0, {self.n_folds}). Got: {self.cv_fold}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_model_image_size(self) -> "TrainConfig":
+        _validate_arch_img_size_pair(self.arch, self.img_size)
+        return self
+
 
 class ExtractConfig(BaseConfig):
     dataset: Optional[str] = None
@@ -292,10 +354,25 @@ class ExtractConfig(BaseConfig):
             raise ValueError(f"dicom_root nao encontrado: {value}")
         return value
 
+    @field_validator("classes")
+    @classmethod
+    def _normalize_classes(cls, value: str) -> str:
+        return normalize_classes_mode(
+            value,
+            warn=True,
+            source=f"{cls.__name__}.classes",
+            allow_unknown=True,
+        )
+
     @model_validator(mode="after")
     def _validate_source(self) -> "ExtractConfig":
         if not self.csv and not self.dataset:
             raise ValueError("Informe --csv ou --dataset para extrair embeddings.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_model_image_size(self) -> "ExtractConfig":
+        _validate_arch_img_size_pair(self.arch, self.img_size)
         return self
 
 
@@ -315,17 +392,182 @@ class InferenceConfig(BaseConfig):
     @field_validator("checkpoint")
     @classmethod
     def _validate_checkpoint(cls, value: Path) -> Path:
-        if not value.exists():
-            raise ValueError(f"checkpoint nao encontrado: {value}")
-        # Resolve symlinks before checking if it's a file
-        resolved_path = value.resolve()
-        if not resolved_path.is_file():
-            raise ValueError(f"checkpoint invalido: {value}")
+        return _validate_checkpoint_path(value)
+
+    @field_validator("input")
+    @classmethod
+    def _validate_input(cls, value: Path) -> Path:
+        return _validate_path_exists(value, "input")
+
+    @field_validator("classes")
+    @classmethod
+    def _normalize_classes(cls, value: str) -> str:
+        return normalize_classes_mode(
+            value,
+            warn=True,
+            source=f"{cls.__name__}.classes",
+            allow_unknown=True,
+        )
+
+    @model_validator(mode="after")
+    def _validate_model_image_size(self) -> "InferenceConfig":
+        _validate_arch_img_size_pair(self.arch, self.img_size)
+        return self
+
+
+class BatchInferenceConfig(BaseConfig):
+    """Configuration for batch inference with progress tracking and resumable processing."""
+
+    checkpoint: Path
+    input: Path
+    arch: str = "resnet50"
+    classes: str = "multiclass"
+    img_size: int = Field(default=HP.IMG_SIZE, ge=1)
+    batch_size: int = Field(default=16, ge=1)
+    device: str = HP.DEVICE
+    output: Optional[str] = None
+    output_format: str = "csv"
+    resume: bool = False
+    checkpoint_file: Optional[Path] = None
+    checkpoint_interval: int = Field(default=100, ge=1)
+    num_workers: int = Field(default=HP.NUM_WORKERS, ge=0)
+    prefetch_factor: int = Field(default=HP.PREFETCH_FACTOR, ge=0)
+    persistent_workers: bool = HP.PERSISTENT_WORKERS
+    pin_memory: bool = HP.PIN_MEMORY
+    amp: bool = False
+    mean: Optional[str] = None
+    std: Optional[str] = None
+
+    @field_validator("checkpoint")
+    @classmethod
+    def _validate_checkpoint(cls, value: Path) -> Path:
+        return _validate_checkpoint_path(value)
+
+    @field_validator("input")
+    @classmethod
+    def _validate_input(cls, value: Path) -> Path:
+        return _validate_path_exists(value, "input")
+
+    @field_validator("checkpoint_file")
+    @classmethod
+    def _validate_checkpoint_file(cls, value: Optional[Path]) -> Optional[Path]:
+        """
+        Validate the checkpoint_file path by ensuring its parent directory exists.
+        
+        If `value` is None, returns None. If `value` is provided, verifies that its parent directory exists and returns `value`; raises ValueError if the parent directory does not exist.
+        
+        Parameters:
+            value (Optional[Path]): Path to the checkpoint file or None.
+        
+        Returns:
+            Optional[Path]: The original `value` if valid, or None.
+        """
+        if value is None:
+            return value
+        # For checkpoint_file, we only check if parent directory exists
+        # (the file itself may not exist yet if we're starting fresh)
+        parent = value.parent
+        if not parent.exists():
+            raise ValueError(f"checkpoint_file parent directory nao encontrado: {parent}")
         return value
+
+    @field_validator("classes")
+    @classmethod
+    def _normalize_classes(cls, value: str) -> str:
+        return normalize_classes_mode(
+            value,
+            warn=True,
+            source=f"{cls.__name__}.classes",
+            allow_unknown=True,
+        )
+
+    @field_validator("output_format")
+    @classmethod
+    def _validate_output_format(cls, value: str) -> str:
+        """
+        Ensure the output_format string is one of the supported formats.
+        
+        Supported values: "csv", "json", "jsonl".
+        
+        Parameters:
+            value (str): Requested output format.
+        
+        Returns:
+            str: The validated output format string.
+        
+        Raises:
+            ValueError: If `value` is not one of the supported formats.
+        """
+        allowed = {"csv", "json", "jsonl"}
+        if value not in allowed:
+            raise ValueError(
+                f"output_format deve ser um de: {sorted(allowed)}. Recebido: {value!r}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_model_image_size(self) -> "BatchInferenceConfig":
+        _validate_arch_img_size_pair(self.arch, self.img_size)
+        return self
+
+
+class PreprocessConfig(BaseConfig):
+    """Configuration for the dataset preprocessing CLI command."""
+
+    input: Path
+    output: Path
+    normalize: str = "per-image"
+    img_size: int = Field(default=HP.IMG_SIZE, ge=1)
+    resize: bool = True
+    crop: bool = False
+    format: str = "png"
+    preview: bool = False
+    preview_n: int = Field(default=8, ge=1)
+    report: bool = True
+    border_removal: bool = False
+    log_level: str = HP.LOG_LEVEL
 
     @field_validator("input")
     @classmethod
     def _validate_input(cls, value: Path) -> Path:
         if not value.exists():
             raise ValueError(f"input nao encontrado: {value}")
+        return value
+
+    @field_validator("output")
+    @classmethod
+    def _validate_output(cls, value: Path) -> Path:
+        """Attempt to create the output parent directory if it does not exist."""
+        import os
+
+        parent = value.parent
+        if not parent.exists():
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except (PermissionError, OSError) as e:
+                raise ValueError(
+                    f"Cannot create parent directory for output: {parent}. Error: {e}"
+                )
+        if not os.access(parent, os.W_OK):
+            raise ValueError(f"Output directory parent is not writable: {parent}")
+        return value
+
+    @field_validator("normalize")
+    @classmethod
+    def _validate_normalize(cls, value: str) -> str:
+        allowed = {"per-image", "per-dataset", "none"}
+        if value not in allowed:
+            raise ValueError(
+                f"normalize deve ser um de: {sorted(allowed)}. Recebido: {value!r}"
+            )
+        return value
+
+    @field_validator("format")
+    @classmethod
+    def _validate_format(cls, value: str) -> str:
+        allowed = {"png", "jpg", "keep"}
+        if value not in allowed:
+            raise ValueError(
+                f"format deve ser um de: {sorted(allowed)}. Recebido: {value!r}"
+            )
         return value
