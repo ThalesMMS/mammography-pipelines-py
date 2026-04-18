@@ -27,6 +27,41 @@ class SplitConfig:
     max_tries: int = 200
 
 
+def _train_test_split_with_optional_stratify(
+    indices: np.ndarray,
+    y: np.ndarray,
+    *,
+    test_size: float,
+    random_state: int,
+    allow_unstratified_fallback: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Use stratification when possible, with a deterministic random fallback."""
+
+    strat = y if len(np.unique(y)) > 1 and pd.Series(y).value_counts().min() >= 2 else None
+    try:
+        return train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=strat,
+        )
+    except ValueError as exc:
+        if strat is None:
+            raise
+        if not allow_unstratified_fallback:
+            raise
+        LOGGER.warning(
+            "Stratified split failed (%s); falling back to random split.",
+            exc,
+        )
+        return train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=random_state,
+            shuffle=True,
+        )
+
+
 def load_splits_from_csvs(
     train_csv: str,
     val_csv: str,
@@ -97,7 +132,8 @@ def load_splits_from_csvs(
     if train_val_overlap:
         sample = list(train_val_overlap)[:5]
         raise ValueError(
-            f"Sobreposicao encontrada entre train e val ({len(train_val_overlap)} amostras). "
+            f"Sobreposicao encontrada entre train e val; "
+            f"Sobreposição detectada entre train e val ({len(train_val_overlap)} amostras). "
             f"Exemplos: {sample}"
         )
 
@@ -140,6 +176,7 @@ def create_three_way_split(
     ensure_all_splits_have_all_classes: bool = True,
     max_tries: int = 200,
     group_col: Optional[str] = "accession",
+    allow_unstratified_fallback: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Create train/validation/test splits with group-aware stratification when possible.
 
@@ -152,6 +189,8 @@ def create_three_way_split(
         ensure_all_splits_have_all_classes: If True, ensure val and test have all classes
         max_tries: Maximum attempts to find valid split with all classes
         group_col: Column used for grouped splitting. Use None for pure random split.
+        allow_unstratified_fallback: If True, fall back to unstratified random
+            splitting when stratification is impossible.
 
     Returns:
         Tuple of (train_df, val_df, test_df)
@@ -186,6 +225,9 @@ def create_three_way_split(
     if df.empty:
         raise RuntimeError("Nenhuma amostra valida apos mapear os rotulos.")
     df["_target"] = df["_target"].astype(int)
+    allow_random_fallback = (
+        allow_unstratified_fallback or not ensure_all_splits_have_all_classes
+    )
 
     group_column = group_col if group_col else None
 
@@ -200,29 +242,27 @@ def create_three_way_split(
                 "Coluna '%s' ausente ou vazia; split sem agrupamento.",
                 group_column,
             )
-        y = df["_target"].values
-        strat = y if len(np.unique(y)) > 1 else None
-
         # First split off test set
-        train_val_idx, test_idx = train_test_split(
+        train_val_idx, test_idx = _train_test_split_with_optional_stratify(
             df.index.to_numpy(),
+            df["_target"].values,
             test_size=test_frac,
             random_state=seed,
-            stratify=strat,
+            allow_unstratified_fallback=allow_random_fallback,
         )
         test_df = df.loc[test_idx].copy()
         train_val_df = df.loc[train_val_idx].copy()
 
         # Then split train_val into train and val
         y_train_val = train_val_df["_target"].values
-        strat_train_val = y_train_val if len(np.unique(y_train_val)) > 1 else None
         # Adjust val_frac to be relative to train_val size
         val_frac_adjusted = val_frac / (1 - test_frac)
-        train_idx, val_idx = train_test_split(
+        train_idx, val_idx = _train_test_split_with_optional_stratify(
             train_val_df.index.to_numpy(),
+            y_train_val,
             test_size=val_frac_adjusted,
             random_state=seed,
-            stratify=strat_train_val,
+            allow_unstratified_fallback=allow_random_fallback,
         )
         train_df = train_val_df.loc[train_idx].copy()
         val_df = train_val_df.loc[val_idx].copy()
@@ -263,6 +303,8 @@ def create_three_way_split(
                     stratify=strat,
                 )
             except ValueError:
+                if not allow_random_fallback:
+                    raise
                 train_val_g, test_g = train_test_split(
                     group_ids, test_size=test_frac, random_state=rs, shuffle=True
                 )
@@ -281,6 +323,8 @@ def create_three_way_split(
                     stratify=strat_train_val,
                 )
             except ValueError:
+                if not allow_random_fallback:
+                    raise
                 tr_g, va_g = train_test_split(
                     train_val_g, test_size=val_frac_adjusted, random_state=rs, shuffle=True
                 )
@@ -296,6 +340,11 @@ def create_three_way_split(
                 break
 
         if train_df is None or val_df is None or test_df is None:
+            if not allow_random_fallback:
+                raise RuntimeError(
+                    "Nao foi possivel criar split com todas as classes em "
+                    f"{max_tries} tentativas."
+                )
             # Fallback: use GroupShuffleSplit for test, then split remaining
             LOGGER.warning(
                 "Nao foi possivel criar split com todas as classes em %d tentativas. "
@@ -354,6 +403,7 @@ def create_splits(
     ensure_val_has_all_classes: bool = True,
     max_tries: int = 200,
     group_col: Optional[str] = "accession",
+    allow_unstratified_fallback: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Create train/validation splits with group-aware stratification when possible.
 
@@ -365,6 +415,8 @@ def create_splits(
         ensure_val_has_all_classes: If True, ensure validation set has all classes
         max_tries: Maximum attempts to find valid split with all classes
         group_col: Column used for grouped splitting. Use None for pure random split.
+        allow_unstratified_fallback: If True, fall back to unstratified random
+            splitting when stratification is impossible.
 
     Returns:
         Tuple of (train_df, val_df)
@@ -399,15 +451,18 @@ def create_splits(
     if df.empty:
         raise RuntimeError("Nenhuma amostra valida apos mapear os rotulos.")
     df["_target"] = df["_target"].astype(int)
+    allow_random_fallback = (
+        allow_unstratified_fallback or not ensure_val_has_all_classes
+    )
 
     def _split_without_groups(source_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         y = source_df["_target"].values
-        strat = y if len(np.unique(y)) > 1 else None
-        train_idx, val_idx = train_test_split(
+        train_idx, val_idx = _train_test_split_with_optional_stratify(
             source_df.index.to_numpy(),
+            y,
             test_size=val_frac,
             random_state=seed,
-            stratify=strat,
+            allow_unstratified_fallback=allow_random_fallback,
         )
         train_df_local = source_df.loc[train_idx].copy()
         val_df_local = source_df.loc[val_idx].copy()
@@ -459,6 +514,8 @@ def create_splits(
                         stratify=strat,
                     )
                 except ValueError:
+                    if not allow_random_fallback:
+                        raise
                     tr_g, va_g = train_test_split(
                         group_ids, test_size=val_frac, random_state=rs, shuffle=True
                     )
@@ -470,6 +527,11 @@ def create_splits(
                     break
 
             if train_df is None or val_df is None:
+                if not allow_random_fallback:
+                    raise RuntimeError(
+                        "Nao foi possivel criar split com todas as classes em "
+                        f"{max_tries} tentativas."
+                    )
                 splitter = GroupShuffleSplit(n_splits=1, test_size=val_frac, random_state=seed)
                 train_idx, val_idx = next(
                     splitter.split(df, df["_target"], groups=df[group_column])

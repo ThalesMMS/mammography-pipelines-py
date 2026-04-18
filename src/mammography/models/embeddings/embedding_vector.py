@@ -22,9 +22,12 @@ Version: 1.0.0
 
 import torch
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Union
+from types import MappingProxyType
+from typing import Optional, Dict, Any, List, Union, ClassVar, Mapping, Sequence
 from pathlib import Path
 import logging
+
+import numpy as np
 
 # Configure logging for educational purposes
 logger = logging.getLogger(__name__)
@@ -60,16 +63,27 @@ class EmbeddingVector:
     
     # Define valid model configurations
     VALID_MODEL_CONFIGS = ["resnet50", "resnet50_pretrained"]
+    DEFAULT_MODEL_CONFIG: ClassVar[Mapping[str, Any]] = MappingProxyType({
+        "model_name": "resnet50_pretrained",
+        "pretrained": True,
+        "feature_layer": "avgpool",
+    })
+
+    @classmethod
+    def default_model_config(cls) -> Dict[str, Any]:
+        """Return a fresh mutable copy of the default model configuration."""
+        return dict(cls.DEFAULT_MODEL_CONFIG)
     
     def __init__(
         self,
         image_id: str,
         embedding: torch.Tensor,
-        model_config: Dict[str, Any],
-        input_adapter: str,
-        extraction_time: float,
+        model_config: Optional[Dict[str, Any]] = None,
+        input_adapter: str = "1to3_replication",
+        extraction_time: float = 0.0,
         device_used: Optional[str] = None,
-        created_at: Optional[datetime] = None
+        created_at: Optional[datetime] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize an EmbeddingVector instance.
@@ -82,6 +96,7 @@ class EmbeddingVector:
             extraction_time: Time taken for feature extraction (seconds)
             device_used: Device used for extraction (CPU/CUDA/MPS)
             created_at: Timestamp of extraction (default: now)
+            metadata: Optional caller-provided metadata for compatibility with older callers
 
         Raises:
             ValueError: If validation rules are violated
@@ -95,6 +110,7 @@ class EmbeddingVector:
         self.extraction_time = self._validate_extraction_time(extraction_time)
         self.device_used = device_used or "cpu"
         self.created_at = created_at or datetime.now()
+        self.metadata = dict(metadata or {})
         
         # Initialize tracking attributes
         self.validation_errors: List[str] = []
@@ -105,6 +121,16 @@ class EmbeddingVector:
         
         # Log creation for educational purposes
         logger.info(f"Created EmbeddingVector: {self.image_id} with dimension {self.embedding.shape[0]}")
+
+    @property
+    def vector(self) -> np.ndarray:
+        """Backward-compatible numpy copy of the embedding vector."""
+        return self.embedding.detach().cpu().numpy().copy()
+
+    @vector.setter
+    def vector(self, value: Union[np.ndarray, Sequence[float], torch.Tensor]) -> None:
+        self.embedding = self._validate_embedding(torch.as_tensor(value))
+        self._validate_embedding_dimension()
     
     def _validate_image_id(self, image_id: str) -> str:
         """
@@ -192,8 +218,17 @@ class EmbeddingVector:
             ValueError: If configuration is invalid
             TypeError: If configuration is not a dictionary
         """
+        if model_config is None:
+            model_config = self.default_model_config()
+
         if not isinstance(model_config, dict):
             raise TypeError(f"model_config must be a dictionary, got {type(model_config)}")
+
+        model_config = dict(model_config)
+        if "model_name" not in model_config and "architecture" in model_config:
+            model_config["model_name"] = model_config["architecture"]
+        model_config.setdefault("pretrained", False)
+        model_config.setdefault("feature_layer", "avgpool")
         
         # Check for required configuration keys
         required_keys = ["model_name", "pretrained", "feature_layer"]
@@ -356,6 +391,7 @@ class EmbeddingVector:
             "input_adapter": self.input_adapter,
             "extraction_time": self.extraction_time,
             "device_used": self.device_used,
+            "metadata": self.metadata,
             "embedding_stats": self.get_embedding_stats(),
             "created_at": self.created_at.isoformat(),
             "validation_errors": self.validation_errors
@@ -386,6 +422,7 @@ class EmbeddingVector:
                 "input_adapter": self.input_adapter,
                 "extraction_time": self.extraction_time,
                 "device_used": self.device_used,
+                "metadata": self.metadata,
                 "created_at": self.created_at.isoformat(),
                 "validation_errors": self.validation_errors
             }, file_path)
@@ -415,11 +452,11 @@ class EmbeddingVector:
             FileNotFoundError: If file doesn't exist
             ValueError: If file is corrupted or invalid
         """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Embedding file not found: {file_path}")
+
         try:
-            file_path = Path(file_path)
-            if not file_path.exists():
-                raise FileNotFoundError(f"Embedding file not found: {file_path}")
-            
             # Load embedding data
             data = torch.load(file_path, map_location="cpu")
             
@@ -434,7 +471,8 @@ class EmbeddingVector:
                 input_adapter=data["input_adapter"],
                 extraction_time=data["extraction_time"],
                 device_used=data.get("device_used", "cpu"),
-                created_at=created_at
+                created_at=created_at,
+                metadata=data.get("metadata", {}),
             )
             
             # Restore validation errors if any

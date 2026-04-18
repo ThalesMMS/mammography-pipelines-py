@@ -287,6 +287,34 @@ def test_create_three_way_split_no_accession_column() -> None:
     assert len(train_df) + len(val_df) + len(test_df) == len(df)
 
 
+def test_create_three_way_split_rejects_unstratified_fallback_when_ensuring_classes() -> None:
+    """Three-way stratification failures should raise unless fallback is allowed."""
+    df = pd.DataFrame({
+        "image_path": [f"/path/to/image_{i}.png" for i in range(12)],
+        "professional_label": [1, 2, 3, 4] * 3,
+    })
+
+    with pytest.raises(ValueError):
+        create_three_way_split(
+            df,
+            val_frac=0.2,
+            test_frac=0.2,
+            seed=42,
+            ensure_all_splits_have_all_classes=True,
+        )
+
+    train_df, val_df, test_df = create_three_way_split(
+        df,
+        val_frac=0.2,
+        test_frac=0.2,
+        seed=42,
+        ensure_all_splits_have_all_classes=False,
+    )
+    assert len(train_df) > 0
+    assert len(val_df) > 0
+    assert len(test_df) > 0
+
+
 def test_create_three_way_split_all_na_accession() -> None:
     """Test split works when accession column has all NaN values."""
     df = pd.DataFrame({

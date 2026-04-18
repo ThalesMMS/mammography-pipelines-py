@@ -34,6 +34,17 @@ DATASET_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
 ALLOWED_DENSITY_LABELS = (1, 2, 3, 4, 5)
 VALID_IMAGE_EXTS = DICOM_EXTS + (".png", ".jpg", ".jpeg")
 
+def _normalize_view_position(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    view = str(value).strip().upper()
+    return view if view in ("CC", "MLO") else None
+
 def _find_first_dicom(folder: str) -> Optional[str]:
     """Return the first DICOM path found under the given folder (depth-first)."""
     exts = (".dcm", ".dicom", ".DCM", ".DICOM")
@@ -69,13 +80,9 @@ def _extract_dicom_metadata(dcm_path: str) -> Tuple[Optional[str], Optional[str]
         return None, None
 
     view_position = getattr(dataset, "ViewPosition", "")
-    view: Optional[str] = None
-    if isinstance(view_position, str):
-        normalized_view = view_position.strip().upper()
-        if normalized_view in ("CC", "MLO"):
-            view = normalized_view
-        elif normalized_view:
-            logger.debug(f"ViewPosition not found or invalid in {dcm_path}")
+    view = _normalize_view_position(view_position)
+    if view is None and isinstance(view_position, str) and view_position.strip():
+        logger.debug(f"ViewPosition not found or invalid in {dcm_path}")
 
     patient_id = _normalize_accession(getattr(dataset, "PatientID", None))
     return view, patient_id
@@ -121,6 +128,20 @@ def _coerce_density_label(val: Any, strict: bool = False, warn: bool = True) -> 
         if warn:
             logger.warning(f"Could not coerce label {val!r} to valid density class, returning None")
         return None
+
+def _coerce_classification_label(val: Any) -> Optional[int]:
+    if val is None or pd.isna(val):
+        return None
+    if isinstance(val, str):
+        s = val.strip().upper()
+        if s in {"A", "B", "C", "D"}:
+            return {"A": 1, "B": 2, "C": 3, "D": 4}[s]
+        try:
+            return int(s)
+        except Exception:
+            logger.warning(f"Could not coerce label {val!r} to valid density class, returning None")
+            return None
+    return _coerce_density_label(val)
 
 def _normalize_accession(value: Any) -> Optional[str]:
     """Trim and normalize accession strings, returning None for empty values."""
@@ -257,6 +278,9 @@ def _read_csv_with_encoding(csv_path: str) -> pd.DataFrame:
     Raises:
         ValueError: If CSV cannot be decoded with any common encoding
     """
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+
     encodings = ["utf-8", "latin-1", "windows-1252", "iso-8859-1"]
 
     for encoding in encodings:
@@ -267,6 +291,8 @@ def _read_csv_with_encoding(csv_path: str) -> pd.DataFrame:
             return df
         except UnicodeDecodeError:
             continue
+        except FileNotFoundError:
+            raise
         except Exception as exc:
             # Other errors (file not found, etc.) should propagate immediately
             raise ValueError(f"Failed to read CSV {csv_path}: {exc}") from exc
@@ -460,12 +486,16 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
         classification_df, classification_error = _try_schema(CLASSIFICATION_SCHEMA, df)
         path_df, path_error = _try_schema(RAW_PATH_SCHEMA, df)
     if classification_df is not None and ("image_path" not in df.columns or path_df is None):
+        classification_df["AccessionNumber"] = classification_df["AccessionNumber"].apply(_normalize_accession)
+        classification_df["Classification"] = classification_df["Classification"].apply(_coerce_classification_label)
         if not dicom_root:
-            raise ValueError("dicom_root é obrigatório para CSV com AccessionNumber/Classification.")
+            raise ValueError(
+                "dicom_root is required for classificacao.csv datasets; "
+                "provide --dicom-root or use a dataset preset/configuration "
+                "that defines the DICOM archive root."
+            )
         dicom_root = _find_best_data_dir(dicom_root)
         rows = []
-        classification_df["AccessionNumber"] = classification_df["AccessionNumber"].apply(_normalize_accession)
-        classification_df["Classification"] = classification_df["Classification"].apply(_coerce_density_label)
         for _, r in classification_df.iterrows():
             lab = r["Classification"]
             if lab == 5 and exclude_class_5:
@@ -486,12 +516,13 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             if dcm is None:
                 continue
             view, patient_id = _extract_dicom_metadata(dcm)
+            csv_view = _normalize_view_position(r.get("view")) or _normalize_view_position(r.get("ViewPosition"))
             rows.append(
                 {
                     "accession": acc,
                     "image_path": dcm,
                     "professional_label": lab,
-                    "view": view,
+                    "view": view or csv_view,
                     "patient_id": patient_id,
                 }
             )
@@ -514,6 +545,12 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             accession_source = fallback_accession
         path_df["accession"] = accession_source.fillna(fallback_accession)
 
+        csv_view = None
+        for view_col in ("view", "ViewPosition"):
+            if view_col in path_df.columns:
+                csv_view = path_df[view_col].apply(_normalize_view_position)
+                break
+
         # Extract view from DICOM files if applicable
         def extract_view_safe(image_path):
             if pd.isna(image_path):
@@ -523,7 +560,8 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
                 return _extract_view_from_dicom(str(image_path))
             return None
 
-        path_df["view"] = path_df["image_path"].apply(extract_view_safe)
+        extracted_view = path_df["image_path"].apply(extract_view_safe)
+        path_df["view"] = extracted_view.combine_first(csv_view) if csv_view is not None else extracted_view
 
         keep_cols = ["image_path", "professional_label", "accession", "view"]
         for extra_col in ("patient_id", "PatientID"):

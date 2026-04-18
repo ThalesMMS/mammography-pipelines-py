@@ -160,6 +160,7 @@ def test_training_interruption_recovery(mock_data, tmp_path: Path):
         seed=42,
         architecture="efficientnet_b0",
         pretrained=False,
+        split_ensure_all_classes=False,
     )
 
     train_main(cfg)
@@ -183,6 +184,7 @@ def test_training_interruption_recovery(mock_data, tmp_path: Path):
         seed=42,
         architecture="efficientnet_b0",
         pretrained=False,
+        split_ensure_all_classes=False,
     )
 
     train_main(cfg_resume)
@@ -247,6 +249,7 @@ def test_training_with_partial_data_loading(mock_data_with_failures, tmp_path: P
         seed=42,
         architecture="efficientnet_b0",
         pretrained=False,
+        split_ensure_all_classes=False,
     )
 
     # This should complete or raise an informative error

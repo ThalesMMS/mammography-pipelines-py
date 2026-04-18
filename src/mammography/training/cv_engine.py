@@ -24,7 +24,7 @@ from mammography.config import TrainConfig
 from mammography.data.splits import create_kfold_splits
 from mammography.training.engine import train_one_epoch, validate, save_atomic
 from mammography.data.dataset import MammoDensityDataset, mammo_collate
-from mammography.data.csv_loader import load_dataset_dataframe, resolve_paths_from_preset
+from mammography.data.csv_loader import load_dataset_dataframe, resolve_dataset_cache_mode, resolve_paths_from_preset
 from mammography.models.nets import build_model
 from mammography.utils.class_modes import get_label_mapper, get_num_classes
 from mammography.utils.common import seed_everything, resolve_device
@@ -207,6 +207,17 @@ class CrossValidationEngine:
                 exclude_class_5=not self.config.include_class_5,
                 dataset=self.config.dataset,
             )
+            if self.config.csv and "image_path" in df.columns:
+                csv_dir = Path(str(self.config.csv)).expanduser().resolve().parent
+                df = df.copy()
+
+                def _resolve_image_path(value: Any) -> Any:
+                    if pd.isna(value):
+                        return value
+                    path = Path(str(value))
+                    return str(path if path.is_absolute() else csv_dir / path)
+
+                df["image_path"] = df["image_path"].apply(_resolve_image_path)
 
             # Apply subset if specified
             if self.config.subset > 0 and len(df) > self.config.subset:
@@ -251,6 +262,9 @@ class CrossValidationEngine:
         mapper = get_label_mapper(self.config.classes)
         train_rows = train_df.to_dict("records")
         val_rows = val_df.to_dict("records")
+        cache_mode_train = resolve_dataset_cache_mode(self.config.cache_mode, train_rows)
+        cache_mode_val = resolve_dataset_cache_mode(self.config.cache_mode, val_rows)
+        cache_dir = self.config.cache_dir or str(fold_dir / "cache")
 
         train_dataset = MammoDensityDataset(
             rows=train_rows,
@@ -260,8 +274,8 @@ class CrossValidationEngine:
             augment_vertical=self.config.augment_vertical,
             augment_color=self.config.augment_color,
             rotation_deg=self.config.augment_rotation_deg,
-            cache_mode=self.config.cache_mode,
-            cache_dir=self.config.cache_dir,
+            cache_mode=cache_mode_train,
+            cache_dir=cache_dir,
             split_name="train",
             label_mapper=mapper,
             mean=self.config.mean,
@@ -273,8 +287,8 @@ class CrossValidationEngine:
             img_size=self.config.img_size,
             train=False,
             augment=False,
-            cache_mode=self.config.cache_mode,
-            cache_dir=self.config.cache_dir,
+            cache_mode=cache_mode_val,
+            cache_dir=cache_dir,
             split_name="val",
             label_mapper=mapper,
             mean=self.config.mean,
@@ -328,7 +342,7 @@ class CrossValidationEngine:
         scaler = GradScaler(enabled=self.config.amp) if self.config.amp else None
 
         # Training loop
-        best_val_acc = 0.0
+        best_val_acc = -float("inf")
         best_val_kappa = 0.0
         best_val_macro_f1 = 0.0
         best_val_auc = None
@@ -558,6 +572,14 @@ class CrossValidationEngine:
             fold_results: List of FoldResult objects
         """
         summary_path = self.output_root / "cv_summary.json"
+        detailed_stats = aggregated.get("detailed_stats", {})
+
+        def _metric_summary(source_name: str) -> dict[str, Any]:
+            stats = detailed_stats.get(source_name, {})
+            return {
+                key: stats.get(key)
+                for key in ("mean", "std", "min", "max", "ci_lower", "ci_upper")
+            }
 
         # Add metadata
         summary = {
@@ -565,7 +587,14 @@ class CrossValidationEngine:
             "cv_seed": self.cv_seed,
             "config": self.config.model_dump(mode="json"),
             "results": aggregated,
+            "aggregated_metrics": {
+                "accuracy": _metric_summary("val_acc"),
+                "kappa": _metric_summary("val_kappa"),
+                "macro_f1": _metric_summary("val_macro_f1"),
+            },
         }
+        if "val_auc" in detailed_stats:
+            summary["aggregated_metrics"]["auc"] = _metric_summary("val_auc")
 
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)

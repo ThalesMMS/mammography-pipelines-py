@@ -219,6 +219,7 @@ parameters:
                         "--n-trials", "5",
                         "--epochs", "2",
                         "--subset", "4",
+                        "--no-split-ensure-all-classes",
                         "--dry-run",
                     ])
 

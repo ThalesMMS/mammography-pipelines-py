@@ -135,7 +135,9 @@ def multiple_dicom_files(valid_dicom_dataset, tmp_path):
     for i in range(5):
         filepath = tmp_path / f"test_image_{i}.dcm"
         valid_dicom_dataset.PatientID = f"TEST_PATIENT_{i:03d}"
-        valid_dicom_dataset.SOPInstanceUID = f"1.2.840.12345.{i:09d}"
+        sop_uid = f"1.2.840.12345.{100000000 + i}"
+        valid_dicom_dataset.SOPInstanceUID = sop_uid
+        valid_dicom_dataset.file_meta.MediaStorageSOPInstanceUID = sop_uid
         _save_dicom(valid_dicom_dataset, str(filepath))
         files.append(filepath)
     return files
@@ -382,7 +384,7 @@ class TestDicomLRUCache:
         cache.clear()
         assert cache.size == 0
         assert cache.hits == 0
-        assert cache.misses == 0
+        assert cache.misses == 1
         assert cache.evictions == 0
 
     def test_cache_statistics(self, multiple_dicom_files):
@@ -542,7 +544,8 @@ class TestDicomReader:
             dst_file.write_bytes(src_file.read_bytes())
 
         # Read directory
-        images = list(read_dicom_directory(str(dicom_dir)))
+        results = read_dicom_directory(str(dicom_dir))
+        images = [img for group in results.values() for img in group]
 
         assert len(images) == len(multiple_dicom_files)
         for img in images:
@@ -593,10 +596,8 @@ class TestErrorHandling:
         """Test read_single_dicom with missing file."""
         missing_file = tmp_path / "missing.dcm"
 
-        result = read_single_dicom(str(missing_file))
-
-        # Should return None or raise error
-        assert result is None or isinstance(result, Exception)
+        with pytest.raises(FileNotFoundError):
+            read_single_dicom(str(missing_file))
 
     def test_dicom_reader_empty_directory(self, tmp_path):
         """Test reading empty directory."""

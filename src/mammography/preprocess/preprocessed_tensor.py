@@ -72,16 +72,18 @@ class PreprocessedTensor:
 
     def __init__(
         self,
-        image_id: str,
-        tensor_data: torch.Tensor,
-        preprocessing_config: Dict[str, Any],
-        normalization_method: str,
-        target_size: Tuple[int, int],
-        input_adapter: str,
+        image_id: Optional[str] = None,
+        tensor_data: Optional[torch.Tensor] = None,
+        preprocessing_config: Optional[Dict[str, Any]] = None,
+        normalization_method: str = "z_score_per_image",
+        target_size: Tuple[int, int] = (512, 512),
+        input_adapter: str = "1to3_replication",
         border_removed: bool = False,
         original_shape: Optional[Tuple[int, int]] = None,
         processing_time: Optional[float] = None,
         created_at: Optional[datetime] = None,
+        data: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize a PreprocessedTensor instance.
@@ -102,9 +104,31 @@ class PreprocessedTensor:
             ValueError: If validation rules are violated
             TypeError: If data types are incorrect
         """
+        metadata = metadata or {}
+        if tensor_data is None and data is not None:
+            tensor_data = self._coerce_legacy_data(data)
+        if image_id is None:
+            image_id = str(
+                metadata.get("image_id")
+                or metadata.get("instance_id")
+                or metadata.get("patient_id")
+                or "unknown_image"
+            )
+        if preprocessing_config is None:
+            preprocessing_config = {
+                "target_size": target_size,
+                "normalization_method": normalization_method,
+                "input_adapter": input_adapter,
+            }
+        if tensor_data is None:
+            raise TypeError("tensor_data is required")
+
+        self.metadata = dict(metadata)
+
         # Initialize core attributes with validation
         self.image_id = self._validate_image_id(image_id)
         self.tensor_data = self._validate_tensor_data(tensor_data)
+        self.data = self.tensor_data
         self.preprocessing_config = self._validate_preprocessing_config(
             preprocessing_config
         )
@@ -129,6 +153,18 @@ class PreprocessedTensor:
         logger.info(
             f"Created PreprocessedTensor: {self.image_id} with shape {self.tensor_data.shape}"
         )
+
+    @staticmethod
+    def _coerce_legacy_data(data: Any) -> torch.Tensor:
+        """Convert legacy numpy/torch image data to a 3-channel CHW tensor."""
+        tensor = torch.as_tensor(data, dtype=torch.float32)
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0)
+        elif tensor.ndim == 3 and tensor.shape[-1] in {1, 3}:
+            tensor = tensor.permute(2, 0, 1)
+        if tensor.ndim == 3 and tensor.shape[0] == 1:
+            tensor = tensor.repeat(3, 1, 1)
+        return tensor
 
     def _validate_image_id(self, image_id: str) -> str:
         """
@@ -541,6 +577,8 @@ class PreprocessedTensor:
             logger.info(f"Loaded PreprocessedTensor from {file_path}")
             return preprocessed_tensor
 
+        except FileNotFoundError:
+            raise
         except Exception as e:
             raise ValueError(
                 f"Error loading PreprocessedTensor from {file_path}: {e!s}"
@@ -594,14 +632,20 @@ def create_preprocessed_tensor_from_config(
     normalization_method = config.get("normalization_method", "z_score_per_image")
     target_size = tuple(config.get("target_size", [512, 512]))
     input_adapter = config.get("input_adapter", "1to3_replication")
-    border_removed = config.get("border_removed", False)
+    border_removed = config.get("border_removed", config.get("border_removal", False))
     processing_time = config.get("processing_time", 0.0)
+    resolved_config = {
+        "target_size": target_size,
+        "normalization_method": normalization_method,
+        "input_adapter": input_adapter,
+        **config,
+    }
 
     # Create PreprocessedTensor instance
     preprocessed_tensor = PreprocessedTensor(
         image_id=image_id,
         tensor_data=tensor_data,
-        preprocessing_config=config,
+        preprocessing_config=resolved_config,
         normalization_method=normalization_method,
         target_size=target_size,
         input_adapter=input_adapter,

@@ -549,7 +549,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     logits = model(x)
 
                 # Convert to probabilities
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
+                probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
                 preds = probs.argmax(axis=1)
 
                 # Stream results for this batch

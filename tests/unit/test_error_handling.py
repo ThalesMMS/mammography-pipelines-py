@@ -17,6 +17,7 @@ It must NOT be used for clinical or medical diagnostic purposes.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -86,7 +87,7 @@ class TestFileIOErrors:
 
     def test_invalid_path_type(self):
         """Test that invalid path types raise appropriate errors."""
-        with pytest.raises((TypeError, FileNotFoundError)):
+        with pytest.raises(ValueError):
             load_dataset_dataframe(csv_path=None)
 
 
@@ -136,9 +137,13 @@ class TestDICOMErrors:
         dataset.Columns = 16
         dataset.BitsStored = 16
         dataset.BitsAllocated = 16
+        dataset.PixelRepresentation = 0
         dataset.SamplesPerPixel = 1
         dataset.PhotometricInterpretation = "MONOCHROME2"
-        dataset.PixelData = np.zeros((16, 16), dtype=np.uint16).tobytes()
+        dataset.PixelData = pydicom.encaps.encapsulate(
+            [np.zeros((16, 16), dtype=np.uint16).tobytes()]
+        )
+        dataset["PixelData"].is_undefined_length = True
 
         file_meta = pydicom.dataset.FileMetaDataset()
         file_meta.MediaStorageSOPClassUID = dataset.SOPClassUID
@@ -163,8 +168,8 @@ class TestDICOMErrors:
         assert not is_dicom_path(str(text_file))
 
     def test_is_dicom_path_with_nonexistent_file(self):
-        """Test is_dicom_path returns False for nonexistent file."""
-        assert not is_dicom_path("/nonexistent/path/file.dcm")
+        """Test is_dicom_path is extension-based and does not require existence."""
+        assert is_dicom_path("/nonexistent/path/file.dcm")
 
 
 # ==================== Configuration Error Tests ====================
@@ -176,13 +181,13 @@ class TestConfigurationErrors:
     @pytest.mark.parametrize("field,invalid_value", [
         ("epochs", -1),
         ("batch_size", 0),
-        ("learning_rate", -0.001),
+        ("lr", -0.001),
         ("img_size", -224),
         ("num_workers", -1),
     ])
     def test_train_config_invalid_numeric_values(self, field, invalid_value):
         """Test TrainConfig rejects invalid numeric values."""
-        config_dict = TrainConfig().model_dump()
+        config_dict = TrainConfig(dataset="mamografias").model_dump()
         config_dict[field] = invalid_value
 
         with pytest.raises((ValueError, Exception)):
@@ -196,7 +201,7 @@ class TestConfigurationErrors:
     ])
     def test_train_config_invalid_device_values(self, invalid_device):
         """Test TrainConfig with invalid device values."""
-        config_dict = TrainConfig().model_dump()
+        config_dict = TrainConfig(dataset="mamografias").model_dump()
         config_dict["device"] = invalid_device
 
         # Should either validate or be handled by device detection
@@ -207,18 +212,18 @@ class TestConfigurationErrors:
         except (ValueError, TypeError):
             pass  # Expected for invalid types
 
-    def test_extract_config_invalid_architecture(self):
-        """Test ExtractConfig rejects invalid architecture."""
-        config_dict = ExtractConfig().model_dump()
-        config_dict["architecture"] = "invalid_arch"
+    def test_extract_config_allows_unknown_architecture(self):
+        """Test ExtractConfig accepts unknown architecture and defers validation to model building."""
+        config_dict = ExtractConfig(dataset="mamografias").model_dump()
+        config_dict["arch"] = "invalid_arch"
 
         # Config may accept it, but it should fail during model building
         config = ExtractConfig(**config_dict)
-        assert config.architecture == "invalid_arch"
+        assert config.arch == "invalid_arch"
 
     def test_train_config_invalid_cache_mode(self):
         """Test TrainConfig with invalid cache mode."""
-        config_dict = TrainConfig().model_dump()
+        config_dict = TrainConfig(dataset="mamografias").model_dump()
         config_dict["cache_mode"] = "invalid_cache"
 
         # Config may accept it, but should be validated elsewhere
@@ -282,15 +287,13 @@ class TestDatasetErrors:
         """Test robust_collate with all None values."""
         batch = [None, None, None]
 
-        images, labels = robust_collate(batch)
-        # Should return empty tensors
-        assert len(images) == 0
-        assert len(labels) == 0
+        result = robust_collate(batch)
+        assert result is None
 
     def test_dataset_with_missing_image_files(self, tmp_path):
         """Test dataset when image files don't exist."""
         csv_path = tmp_path / "missing_files.csv"
-        csv_path.write_text("AccessionNumber,Classification\nTEST001,A\n")
+        csv_path.write_text("image_path,professional_label\nmissing.png,1\n")
 
         # Dataset should be created but __getitem__ would fail
         # This tests that the dataset itself can be instantiated
@@ -308,7 +311,7 @@ class TestDeviceErrors:
     def test_gpu_unavailable_fallback_to_cpu(self, mock_cuda):
         """Test fallback to CPU when GPU is unavailable."""
         device = detect_device()
-        assert device in ["cpu", "mps"]  # MPS for Apple Silicon
+        assert device.type in ["cpu", "mps"]  # MPS for Apple Silicon
 
     @patch("torch.cuda.is_available", return_value=True)
     @patch("torch.cuda.device_count", return_value=0)
@@ -316,7 +319,7 @@ class TestDeviceErrors:
         """Test when CUDA is available but no devices found."""
         device = detect_device()
         # Should still return a valid device
-        assert device in ["cpu", "cuda", "mps"]
+        assert device.type in ["cpu", "cuda", "mps"]
 
     def test_resolve_device_with_auto(self):
         """Test resolve_device with 'auto' parameter."""
@@ -356,7 +359,7 @@ class TestMemoryErrors:
     def test_large_batch_size_warning(self):
         """Test that large batch sizes are handled appropriately."""
         # This is a smoke test - actual OOM would crash the test
-        config = TrainConfig(batch_size=1024)
+        config = TrainConfig(dataset="mamografias", batch_size=1024)
         assert config.batch_size == 1024
 
     def test_tensor_creation_with_reasonable_size(self):
@@ -395,12 +398,12 @@ class TestModelInstantiationErrors:
         with pytest.raises((ValueError, AssertionError, Exception)):
             model = build_efficientnet(num_classes=-1)
 
-    @patch("torch.hub.load_state_dict_from_url")
-    def test_model_pretrained_download_failure(self, mock_download):
+    @patch("mammography.models.nets.efficientnet_b0")
+    def test_model_pretrained_download_failure(self, mock_efficientnet):
         """Test handling of pretrained weight download failure."""
         from mammography.models.nets import build_efficientnet
 
-        mock_download.side_effect = RuntimeError("Failed to download")
+        mock_efficientnet.side_effect = RuntimeError("Failed to download")
 
         # Should handle download failure gracefully
         with pytest.raises(RuntimeError):
@@ -479,8 +482,8 @@ class TestIntegrationErrors:
         checkpoint = torch.load(checkpoint_path)
         assert "model_state_dict" not in checkpoint
 
-    def test_dataset_loading_with_mixed_valid_invalid_samples(self, tmp_path):
-        """Test dataset with mix of valid and invalid samples."""
+    def test_missing_dicom_root_raises_value_error(self, tmp_path):
+        """Test load_dataset_dataframe raises ValueError when dicom_root is missing."""
         csv_path = tmp_path / "mixed_samples.csv"
         csv_path.write_text(
             "AccessionNumber,Classification\n"
@@ -489,9 +492,8 @@ class TestIntegrationErrors:
             "TEST003,B\n"
         )
 
-        df = load_dataset_dataframe(csv_path=csv_path)
-        # Should load all rows, invalid labels handled by coercion
-        assert len(df) == 3
+        with pytest.raises(ValueError, match="dicom_root"):
+            load_dataset_dataframe(csv_path=csv_path)
 
     def test_collate_function_with_different_sized_tensors(self):
         """Test collate function with tensors of different sizes."""
@@ -526,6 +528,11 @@ class TestPathValidationErrors:
 
     def test_read_only_output_directory(self, tmp_path):
         """Test handling of read-only output directory."""
+        if os.name == "nt":
+            pytest.skip("Windows chmod does not reliably prevent writes to temp directories")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("Permission checks are not reliable when running as root")
+
         read_only_dir = tmp_path / "readonly"
         read_only_dir.mkdir()
 

@@ -254,7 +254,7 @@ class ClusteringResult:
 
         # Validate algorithm-specific hyperparameters
         if self.algorithm == "kmeans":
-            required_params = ["n_clusters", "random_state"]
+            required_params = ["n_clusters"]
             for param in required_params:
                 if param not in hyperparameters:
                     raise ValueError(
@@ -262,7 +262,7 @@ class ClusteringResult:
                     )
 
         elif self.algorithm == "gmm":
-            required_params = ["n_components", "random_state"]
+            required_params = ["n_components"]
             for param in required_params:
                 if param not in hyperparameters:
                     raise ValueError(
@@ -270,7 +270,7 @@ class ClusteringResult:
                     )
 
         elif self.algorithm == "hdbscan":
-            required_params = ["min_cluster_size", "min_samples"]
+            required_params = ["min_cluster_size"]
             for param in required_params:
                 if param not in hyperparameters:
                     raise ValueError(
@@ -527,13 +527,11 @@ class ClusteringResult:
             FileNotFoundError: If file doesn't exist
             ValueError: If file is corrupted or invalid
         """
-        try:
-            file_path = Path(file_path)
-            if not file_path.exists():
-                raise FileNotFoundError(
-                    f"Clustering result file not found: {file_path}"
-                )
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Clustering result file not found: {file_path}")
 
+        try:
             # Load clustering result data
             data = torch.load(file_path, map_location="cpu")
 

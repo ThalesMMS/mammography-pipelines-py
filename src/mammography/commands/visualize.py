@@ -433,7 +433,9 @@ def main(argv: Sequence[str] | None = None):
     
     # Validate input
     if not args.input:
-        logger.error("--input is required. Use --help for usage.")
+        message = "--input is required. Use --help for usage."
+        logger.error(message)
+        print(message, file=sys.stderr)
         return 1
     
     if not Path(args.input).exists():
@@ -479,7 +481,9 @@ def main(argv: Sequence[str] | None = None):
     ])
     
     if not any_viz:
-        logger.warning("No visualization type specified. Use --report for full report or specify individual plots.")
+        message = "No visualization type specified. Use --report for full report or specify individual plots."
+        logger.warning(message)
+        print(message, file=sys.stderr)
         logger.info("Available: --tsne, --tsne-3d, --pca, --umap, --compare-embeddings, --heatmap, --feature-heatmap, --scatter-matrix, --confusion-matrix, --distribution, --class-separation, --learning-curves, --report")
         return 0
     
@@ -629,7 +633,9 @@ def main(argv: Sequence[str] | None = None):
         
         if args.confusion_matrix:
             if not args.predictions:
-                logger.warning("--confusion-matrix requires --predictions. Skipping.")
+                message = "--confusion-matrix requires --predictions. Skipping."
+                logger.warning(message)
+                print(message, file=sys.stderr)
             else:
                 logger.info("Generating confusion matrix...")
                 pred_df = load_predictions(args.predictions)
@@ -681,7 +687,7 @@ def main(argv: Sequence[str] | None = None):
             else:
                 logger.info("Generating class separation analysis...")
                 out_path = output_dir / f"{prefix}class_separation.png"
-                fig = plot_class_separation(
+                fig, _metrics = plot_class_separation(
                     features,
                     labels,
                     out_path=str(out_path),

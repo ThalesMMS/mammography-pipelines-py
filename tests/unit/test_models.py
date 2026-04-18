@@ -61,6 +61,65 @@ def test_build_efficientnet_with_fusion_without_download(monkeypatch) -> None:
     assert any(p.requires_grad for p in model.classifier.parameters())
 
 
+def test_build_efficientnet_rejects_negative_extra_feature_dim(monkeypatch) -> None:
+    monkeypatch.setattr(
+        nets,
+        "efficientnet_b0",
+        lambda *_args, **_kwargs: torchvision.models.efficientnet_b0(weights=None),
+    )
+
+    with pytest.raises(ValueError, match="extra_feature_dim must be non-negative"):
+        nets.build_efficientnet(pretrained=False, extra_feature_dim=-1)
+
+
+def test_build_efficientnet_pretrained_uses_torchvision_api(monkeypatch) -> None:
+    hub_calls = []
+
+    def fake_download(*args, **kwargs):
+        hub_calls.append((args, kwargs))
+
+    def fake_efficientnet(*_args, **kwargs):
+        assert kwargs["weights"] is nets.EfficientNet_B0_Weights.IMAGENET1K_V1
+        return torchvision.models.efficientnet_b0(weights=None)
+
+    monkeypatch.setattr(nets.torch.hub, "load_state_dict_from_url", fake_download)
+    monkeypatch.setattr(nets, "efficientnet_b0", fake_efficientnet)
+
+    model = nets.build_efficientnet(num_classes=2, pretrained=True)
+
+    assert hub_calls == []
+    assert model.model.classifier[-1].out_features == 2
+
+
+def test_build_efficientnet_pretrained_respects_freeze_flags(monkeypatch) -> None:
+    monkeypatch.setattr(
+        nets,
+        "efficientnet_b0",
+        lambda *_args, **_kwargs: torchvision.models.efficientnet_b0(weights=None),
+    )
+
+    guarded = nets.build_efficientnet(
+        num_classes=2,
+        pretrained=True,
+        train_backbone=False,
+        unfreeze_last_block=False,
+    )
+    model = guarded.model
+
+    assert not any(p.requires_grad for p in model.backbone.parameters())
+    assert all(p.requires_grad for p in model.classifier.parameters())
+
+    guarded = nets.build_efficientnet(
+        num_classes=2,
+        pretrained=True,
+        train_backbone=True,
+        unfreeze_last_block=False,
+    )
+    model = guarded.model
+
+    assert all(p.requires_grad for p in model.backbone.parameters())
+
+
 def test_efficientnet_fusion_gradient_flow(monkeypatch) -> None:
     monkeypatch.setattr(
         nets,

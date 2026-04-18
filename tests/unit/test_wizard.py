@@ -439,7 +439,7 @@ class TestRunWizard:
 
     def test_run_wizard_exits_on_last_option(self) -> None:
         """Test that selecting last option (Sair) exits."""
-        with patch("builtins.input", return_value="13"):  # Last option index
+        with patch("builtins.input", return_value="14"):  # Last option index
             result = wizard_module.run_wizard(dry_run=True)
             assert result == 0
 

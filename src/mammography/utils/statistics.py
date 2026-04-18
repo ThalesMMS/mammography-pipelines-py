@@ -263,6 +263,9 @@ def compute_pooled_std(
             f"got {len(fold_stds)} and {len(fold_sizes)}"
         )
 
+    if len(fold_stds) < 2:
+        return 0.0
+
     stds = np.array(fold_stds, dtype=np.float64)
     sizes = np.array(fold_sizes, dtype=np.int64)
 
@@ -318,9 +321,12 @@ def effect_size_cohen_d(
     var1 = np.var(arr1, ddof=1) if n1 > 1 else 0.0
     var2 = np.var(arr2, ddof=1) if n2 > 1 else 0.0
 
+    if n1 + n2 <= 2:
+        return 0.0
+
     pooled_std = math.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
 
-    if pooled_std == 0:
+    if pooled_std <= 1e-12:
         return 0.0
 
     return float((mean2 - mean1) / pooled_std)

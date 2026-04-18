@@ -273,12 +273,10 @@ class TestFileAssertions:
 
     def test_assert_file_exists_valid(self):
         """Test assert_file_exists with existing file."""
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            file_path = Path(f.name)
-            try:
-                assert_file_exists(file_path)
-            finally:
-                file_path.unlink()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "sample.txt"
+            file_path.write_text("", encoding="utf-8")
+            assert_file_exists(file_path)
 
     def test_assert_file_exists_invalid(self):
         """Test assert_file_exists with non-existent file."""

@@ -312,6 +312,23 @@ def test_detect_dataset_format_archive(tmp_path: Path) -> None:
     assert "archive" in fmt.dicom_root
 
 
+def test_detect_dataset_format_archive_without_archive_directory_name(tmp_path: Path) -> None:
+    """DICOM accession roots should not need to be named archive."""
+    dicom_root = tmp_path / "dicom_root"
+    dicom_root.mkdir()
+
+    # Put DICOMs after several empty accession directories to exercise full scan.
+    for name in ["ACC001", "ACC002", "ACC003", "ACC004"]:
+        (dicom_root / name).mkdir()
+    _write_fake_dicom(dicom_root / "ACC004" / "image_001.dcm")
+
+    fmt = detect_dataset_format(str(dicom_root))
+
+    assert fmt.dataset_type == "archive"
+    assert fmt.image_format == "dicom"
+    assert fmt.dicom_root == str(dicom_root)
+
+
 def test_detect_dataset_format_custom_csv(tmp_path: Path) -> None:
     # Create custom dataset with CSV
     for i in range(2):

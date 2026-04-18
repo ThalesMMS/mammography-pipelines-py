@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+from urllib.parse import urlparse
 
 from mammography.tools.data_audit_registry import (
     _resolve_tracking_root,
@@ -171,6 +172,15 @@ def _log_local_mlflow_run(
     return run_id
 
 
+def _is_plain_local_tracking_uri(tracking_uri: str | None) -> bool:
+    if not tracking_uri:
+        return False
+    parsed = urlparse(tracking_uri)
+    if parsed.scheme == "":
+        return True
+    return len(parsed.scheme) == 1 and tracking_uri[1:3] in {":\\", ":/"}
+
+
 def log_mlflow_run(
     *,
     run_name: str,
@@ -184,6 +194,16 @@ def log_mlflow_run(
     for path in artifacts:
         if not path.exists():
             raise FileNotFoundError(f"Artefato ausente: {path}")
+    if _is_plain_local_tracking_uri(tracking_uri):
+        return _log_local_mlflow_run(
+            run_name=run_name,
+            params=params,
+            metrics=metrics,
+            artifacts=artifacts,
+            preview_dir=preview_dir,
+            tracking_uri=tracking_uri,
+            experiment=experiment,
+        )
     try:
         import mlflow  # type: ignore
     except Exception:

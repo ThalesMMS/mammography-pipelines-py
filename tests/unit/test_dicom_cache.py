@@ -174,6 +174,28 @@ class TestDicomLRUCacheBehavior:
         assert cache.size == 1
         assert ds.PatientID == "TEST_PATIENT_001"
 
+    def test_cache_read_defaults_to_force_true(self, tmp_path, monkeypatch):
+        """Cache reads should default pydicom.dcmread to force=True."""
+        from mammography.io import dicom_cache
+
+        dicom_path = tmp_path / "nonconformant.dcm"
+        dicom_path.write_bytes(b"not a standard dicom preamble")
+        calls = []
+
+        def fake_dcmread(path, **kwargs):
+            calls.append(kwargs)
+            dataset = pydicom.Dataset()
+            dataset.PatientID = "TEST_PATIENT_001"
+            return dataset
+
+        monkeypatch.setattr(dicom_cache.pydicom, "dcmread", fake_dcmread)
+
+        cache = DicomLRUCache(max_size=10)
+        ds = cache.get(dicom_path)
+
+        assert ds.PatientID == "TEST_PATIENT_001"
+        assert calls[0]["force"] is True
+
     def test_cache_hit_on_second_access(self, dicom_file):
         """Test that second access to same file is a cache hit."""
         cache = DicomLRUCache(max_size=10)
@@ -257,6 +279,33 @@ class TestDicomLRUCacheBehavior:
         assert multiple_dicom_files[2] not in cache
         assert multiple_dicom_files[3] in cache
         assert multiple_dicom_files[4] in cache
+
+    def test_key_cache_stays_in_sync_with_lru_evictions(self, multiple_dicom_files):
+        """Test normalized path cache entries are removed with evicted files."""
+        cache = DicomLRUCache(max_size=2)
+
+        for dicom_file in multiple_dicom_files:
+            cache.get(dicom_file)
+
+        assert cache.size == 2
+        assert len(cache._key_cache) <= cache.size * 2
+        for evicted_file in multiple_dicom_files[:3]:
+            assert str(evicted_file) not in cache._key_cache
+            assert str(evicted_file.resolve()) not in cache._key_cache
+
+    def test_contains_uses_key_cache_before_resolving(self, dicom_file, monkeypatch):
+        """Test membership can use a cached raw key without resolving paths."""
+        cache = DicomLRUCache(max_size=10)
+        cache.get(dicom_file)
+        cached_key = str(dicom_file.resolve())
+        cache._key_cache["cached-alias.dcm"] = cached_key
+
+        def _fail_resolve(filepath):
+            raise AssertionError("__contains__ should not resolve cached aliases")
+
+        monkeypatch.setattr(cache, "_normalize_cache_key", _fail_resolve)
+
+        assert "cached-alias.dcm" in cache
 
     def test_stop_before_pixels_parameter(self, dicom_file):
         """Test that stop_before_pixels parameter is passed through."""
@@ -407,6 +456,7 @@ class TestDicomLRUCacheOperations:
         cache.clear()
 
         assert cache.size == 0
+        assert cache._key_cache == {}
         assert dicom_file not in cache
 
         # Stats should be preserved
@@ -426,6 +476,7 @@ class TestDicomLRUCacheOperations:
 
         assert result is True
         assert cache.size == 0
+        assert cache._key_cache == {}
         assert dicom_file not in cache
 
     def test_evict_operation_non_existing_file(self, tmp_path):
@@ -648,8 +699,8 @@ class TestDicomLRUCacheErrorHandling:
         assert "DICOM file not found" in str(exc_info.value)
         assert str(non_existent) in str(exc_info.value)
 
-    def test_invalid_dicom_error(self, tmp_path):
-        """Test that InvalidDicomError is raised for invalid DICOM file."""
+    def test_invalid_dicom_error_when_force_disabled(self, tmp_path):
+        """Test that InvalidDicomError is raised when force=False is requested."""
         cache = DicomLRUCache(max_size=10)
 
         # Create invalid DICOM file
@@ -657,7 +708,7 @@ class TestDicomLRUCacheErrorHandling:
         invalid_file.write_text("This is not a DICOM file")
 
         with pytest.raises(pydicom.errors.InvalidDicomError) as exc_info:
-            cache.get(invalid_file)
+            cache.get(invalid_file, force=False)
 
         assert "Failed to read DICOM file" in str(exc_info.value)
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import types
 from typing import Sequence
 
 try:
@@ -22,6 +23,8 @@ except Exception as exc:  # pragma: no cover - optional UI dependency
     _STREAMLIT_IMPORT_ERROR = exc
 else:
     _STREAMLIT_IMPORT_ERROR = None
+    if getattr(st, "web", None) is None:
+        st.web = types.SimpleNamespace(cli=types.SimpleNamespace())
 
 from mammography.apps.web_ui.utils import ensure_shared_session_state
 

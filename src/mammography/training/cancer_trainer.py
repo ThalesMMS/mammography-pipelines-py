@@ -58,6 +58,7 @@ Example usage:
     ... )
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -81,13 +82,41 @@ class DensityHistoryEntry:
     val_acc: Optional[float]
 
 
+class PredictionResults(dict):
+    """Dictionary result that also supports legacy tuple unpacking."""
+
+    def __iter__(self):
+        return iter((self["predictions"], self["labels"]))
+
+
+def _unpack_image_label_batch(batch: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return image and label tensors from tuple/list or mapping batches."""
+
+    if isinstance(batch, Mapping):
+        return batch["image"], batch["label"]
+    if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+        return batch[0], batch[1]
+    raise TypeError(f"Unsupported batch format: {type(batch)}")
+
+
+def _probabilities_from_outputs(outputs: torch.Tensor) -> np.ndarray:
+    """Convert model outputs to CPU probability values for metrics."""
+
+    values = outputs.detach().float().cpu().view(-1)
+    if torch.any((values < 0) | (values > 1)):
+        values = torch.sigmoid(values)
+    return values.numpy()
+
+
 def get_sens_spec(y_true, y_pred):
     """Compute sensitivity and specificity from the confusion matrix."""
 
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
 
-    sensitivity = tp / (tp + fn)
-    specificity = tn / (tn + fp)
+    sensitivity_denominator = tp + fn
+    specificity_denominator = tn + fp
+    sensitivity = tp / sensitivity_denominator if sensitivity_denominator else 0.0
+    specificity = tn / specificity_denominator if specificity_denominator else 0.0
 
     return sensitivity, specificity
 
@@ -136,7 +165,8 @@ def train_one_epoch(
     use_amp = amp_enabled and device.type in {"cuda", "mps"}
     use_scaler = scaler is not None and device.type == "cuda"
 
-    for images, labels, *_ in tqdm(loader, desc="Train", leave=False):
+    for batch in tqdm(loader, desc="Train", leave=False):
+        images, labels = _unpack_image_label_batch(batch)
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
@@ -167,7 +197,7 @@ def train_one_epoch(
         total_loss += loss.item() * labels_flat.size(0)
 
         # Store binary predictions (threshold 0.5) for accuracy computation
-        preds = outputs.detach().cpu().view(-1).numpy()
+        preds = _probabilities_from_outputs(outputs)
         preds_binary = (preds > 0.5).astype(float)
         all_preds.extend(preds_binary)
         all_labels.extend(labels_flat.cpu().numpy())
@@ -208,7 +238,8 @@ def evaluate(
 
     use_amp = amp_enabled and device.type in {"cuda", "mps"}
 
-    for images, labels, *_ in tqdm(loader, desc="Eval", leave=False):
+    for batch in tqdm(loader, desc="Eval", leave=False):
+        images, labels = _unpack_image_label_batch(batch)
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
@@ -226,7 +257,7 @@ def evaluate(
         total_loss += loss.item() * labels_flat.size(0)
 
         # Store binary predictions (threshold 0.5) for accuracy computation
-        preds = outputs.detach().cpu().view(-1).numpy()
+        preds = _probabilities_from_outputs(outputs)
         preds_binary = (preds > 0.5).astype(float)
         all_preds.extend(preds_binary)
         all_labels.extend(labels_flat.cpu().numpy())
@@ -267,7 +298,8 @@ def collect_predictions(
 
     use_amp = amp_enabled and device.type in {"cuda", "mps"}
 
-    for images, labels, *_ in tqdm(loader, desc="Collecting predictions", leave=False):
+    for batch in tqdm(loader, desc="Collecting predictions", leave=False):
+        images, labels = _unpack_image_label_batch(batch)
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
@@ -280,7 +312,7 @@ def collect_predictions(
             outputs = outputs.view(-1)
 
         # Store raw predictions (probabilities)
-        preds = outputs.detach().cpu().view(-1).numpy()
+        preds = _probabilities_from_outputs(outputs)
         all_preds.extend(preds)
         all_labels.extend(labels.view(-1).cpu().numpy())
 
@@ -288,11 +320,11 @@ def collect_predictions(
     labels_array = np.array(all_labels)
     binary_preds = (predictions_array > 0.5).astype(float)
 
-    return {
+    return PredictionResults({
         "predictions": predictions_array,
         "labels": labels_array,
         "binary_predictions": binary_preds,
-    }
+    })
 
 
 def fit_classifier(

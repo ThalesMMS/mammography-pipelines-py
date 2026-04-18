@@ -42,6 +42,7 @@ from mammography.vis.advanced import (
     plot_embedding_comparison,
     plot_class_separation,
     plot_feature_importance,
+    plot_learning_curves_from_arrays,
     plot_learning_curves,
     generate_visualization_report,
 )
@@ -356,6 +357,22 @@ def test_cluster_visualizer_create_pca_2d(tmp_path, mock_clustering_result, mock
         assert pca_path.exists()
 
 
+def test_cluster_visualizer_pca_2d_handles_single_component(tmp_path):
+    """PCA plotting should not fail when projection clips to one component."""
+    visualizer = ClusterVisualizer({'seed': 42})
+    embedding_matrix = np.random.RandomState(42).randn(7, 1)
+    cluster_labels = np.array([0, 0, 1, 1, 2, 2, -1])
+
+    output_path = visualizer._create_pca_2d_plot(
+        embedding_matrix,
+        cluster_labels,
+        output_dir=tmp_path,
+    )
+
+    assert output_path is not None
+    assert output_path.exists()
+
+
 def test_cluster_visualizer_create_metrics_plot(tmp_path, mock_clustering_result, mock_embedding_vectors):
     """Test creating metrics plot."""
     config = {
@@ -598,6 +615,17 @@ def test_plot_distribution(tmp_path):
     plt.close(fig)
 
 
+def test_plot_distribution_rejects_invalid_feature_idx():
+    """Multidimensional values should validate feature_idx before slicing."""
+    features = np.random.randn(10, 2)
+
+    with pytest.raises(ValueError, match="feature_idx"):
+        plot_distribution(features, feature_idx=2)
+
+    with pytest.raises(ValueError, match="feature_idx"):
+        plot_distribution(features, feature_idx="0")
+
+
 def test_plot_embedding_comparison(tmp_path):
     """Test embedding comparison plot."""
     np.random.seed(42)
@@ -606,13 +634,34 @@ def test_plot_embedding_comparison(tmp_path):
     labels = np.random.randint(0, 3, 50)
 
     out_path = tmp_path / "embedding_comp.png"
-    fig = plot_embedding_comparison(
+    embeddings, fig = plot_embedding_comparison(
         embedding1, embedding2, labels,
         method1_name="Method A", method2_name="Method B",
         out_path=str(out_path)
     )
 
     assert out_path.exists()
+    assert set(embeddings) == {"Method A", "Method B"}
+
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+
+def test_plot_embedding_comparison_legacy_respects_figsize():
+    """Legacy embedding comparison mode should honor the requested figsize."""
+    embedding1 = np.random.randn(12, 2)
+    embedding2 = np.random.randn(12, 2)
+    labels = np.random.randint(0, 2, 12)
+
+    _, fig = plot_embedding_comparison(
+        embedding1,
+        embedding2,
+        labels,
+        figsize=(8, 4),
+    )
+
+    width, height = fig.get_size_inches()
+    assert (width, height) == pytest.approx((8, 4))
 
     import matplotlib.pyplot as plt
     plt.close(fig)
@@ -634,6 +683,22 @@ def test_plot_class_separation(tmp_path):
 
     import matplotlib.pyplot as plt
     plt.close(fig)
+
+
+def test_plot_class_separation_single_class_raises_value_error(tmp_path):
+    """Single-class labels should fail fast before separation metrics are computed."""
+    features = np.random.randn(8, 4)
+    labels = np.zeros(8, dtype=int)
+
+    out_path = tmp_path / "class_sep_single.png"
+    with pytest.raises(ValueError, match="more than one unique label"):
+        plot_class_separation(
+            features,
+            labels,
+            out_path=str(out_path),
+        )
+
+    assert not out_path.exists()
 
 
 def test_plot_feature_importance(tmp_path):
@@ -660,13 +725,45 @@ def test_plot_learning_curves(tmp_path):
 
     out_path = tmp_path / "learning_curves.png"
     fig = plot_learning_curves(
-        train_sizes, train_scores, val_scores, out_path=str(out_path)
+        train_sizes,
+        train_scores,
+        validation_scores=val_scores,
+        out_path=str(out_path),
     )
 
     assert out_path.exists()
 
     import matplotlib.pyplot as plt
     plt.close(fig)
+
+
+def test_plot_learning_curves_from_arrays(tmp_path):
+    """Test explicit array-based learning curves helper."""
+    out_path = tmp_path / "learning_curves_arrays.png"
+    fig = plot_learning_curves_from_arrays(
+        [20, 40, 60],
+        [0.6, 0.7, 0.8],
+        [0.55, 0.65, 0.72],
+        title="Array Learning Curves",
+        out_path=str(out_path),
+    )
+
+    assert out_path.exists()
+
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+
+def test_plot_learning_curves_rejects_legacy_title_array():
+    """Array mode must use validation_scores instead of overloading title."""
+    with pytest.raises(TypeError, match="validation_scores"):
+        plot_learning_curves([20, 40], [0.6, 0.7], [0.5, 0.65])
+
+
+def test_plot_learning_curves_rejects_empty_history():
+    """History mode should fail with a clear error for empty history."""
+    with pytest.raises(ValueError, match="history must not be empty"):
+        plot_learning_curves([])
 
 
 def test_generate_visualization_report(tmp_path):
@@ -680,6 +777,8 @@ def test_generate_visualization_report(tmp_path):
 
     assert 'output_files' in report
     assert len(report['output_files']) > 0
+    assert 'class_separation_metrics' in report
+    assert report['class_separation_metrics'] is not None
 
     # Verify some files were created
     assert any(Path(f).exists() for f in report['output_files'].values())

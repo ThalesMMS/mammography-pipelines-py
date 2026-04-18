@@ -14,6 +14,7 @@ It must NOT be used for clinical or medical diagnostic purposes.
 import copy
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -193,14 +194,11 @@ class TestRescale:
         np.testing.assert_array_equal(result, arr)
 
     def test_apply_rescale_invalid_values(self):
-        """Test rescale with invalid slope/intercept falls back gracefully."""
-        dataset = pydicom.Dataset()
-        dataset.RescaleSlope = "invalid"
-        dataset.RescaleIntercept = "invalid"
+        """Test rescale with invalid slope/intercept fails clearly."""
+        dataset = SimpleNamespace(RescaleSlope="invalid", RescaleIntercept="invalid")
         arr = np.array([1000, 2000, 3000], dtype=np.float32)
-        # Should not raise, should fall back gracefully
-        result = _apply_rescale(dataset, arr)
-        assert result is not None
+        with pytest.raises(ValueError, match="Failed to apply DICOM rescale"):
+            _apply_rescale(dataset, arr)
 
 
 class TestRobustWindow:

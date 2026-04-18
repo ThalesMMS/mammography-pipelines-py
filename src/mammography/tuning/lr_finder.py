@@ -240,6 +240,16 @@ class LRFinder:
             if smoothed_loss < best_loss:
                 best_loss = smoothed_loss
 
+            # If an aggressive sweep drives the loss close to zero, the
+            # remaining high-LR points are not useful for choosing a stable LR.
+            if (
+                len(self.losses) >= 10
+                and current_lr > start_lr * 1000
+                and loss_val <= 0.01 * max(1.0, self.losses[0])
+            ):
+                self.logger.info("Loss saturated at lr=%.2e, stopping early", current_lr)
+                break
+
             # Check for divergence
             if smoothed_loss > diverge_th * best_loss:
                 self.logger.info("Loss diverging at lr=%.2e, stopping early", current_lr)
@@ -256,6 +266,14 @@ class LRFinder:
         # Restore initial model and optimizer state
         self.model.load_state_dict(self.initial_state["model"])
         self.optimizer.load_state_dict(self.initial_state["optimizer"])
+
+        if not self.losses:
+            self.best_lr = max(start_lr, 1e-7)
+            self.logger.warning(
+                "LR range test produced no valid losses; using fallback LR %.2e",
+                self.best_lr,
+            )
+            return self.best_lr
 
         # Suggest learning rate
         self.best_lr = self._suggest_lr()

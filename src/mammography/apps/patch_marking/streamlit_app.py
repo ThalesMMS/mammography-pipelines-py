@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 import sys
+import types
 from typing import Sequence
 
 import numpy as np
@@ -25,6 +26,8 @@ except Exception as exc:  # pragma: no cover - optional UI dependency
     _STREAMLIT_IMPORT_ERROR = exc
 else:
     _STREAMLIT_IMPORT_ERROR = None
+    if getattr(st, "web", None) is None:
+        st.web = types.SimpleNamespace(cli=types.SimpleNamespace())
 
 from .data_manager import DataManager
 from .dicom_loader import DicomImageLoader, apply_windowing
@@ -374,9 +377,19 @@ def run(argv: Sequence[str] | None = None) -> int:
     _require_streamlit()
     script_path = Path(__file__).resolve()
     args = list(argv) if argv else []
-    try:
-        from streamlit.web import cli as stcli
-    except Exception:
+    stcli = getattr(getattr(st, "web", None), "cli", None)
+    if not callable(getattr(stcli, "main", None)):
+        stcli = None
+    if stcli is None:
+        try:
+            from streamlit.web import cli as imported_stcli
+        except (ImportError, AttributeError):
+            stcli = None
+        else:
+            stcli = imported_stcli
+            if not callable(getattr(stcli, "main", None)):
+                stcli = None
+    if stcli is None:
         try:
             from streamlit.web import bootstrap
         except Exception as exc:  # pragma: no cover - optional UI dependency

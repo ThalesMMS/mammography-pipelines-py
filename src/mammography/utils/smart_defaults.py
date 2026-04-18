@@ -374,6 +374,9 @@ class SmartDefaults:
             >>> config['batch_size']
             32
         """
+        if dataset_size is None and self.dataset_format:
+            dataset_size = self.dataset_format.image_count
+
         return {
             "device": self.device_type,
             "batch_size": self.get_batch_size(
@@ -382,6 +385,7 @@ class SmartDefaults:
             "num_workers": self.get_num_workers(task="inference"),
             "mixed_precision": self.get_mixed_precision(),
             "pin_memory": self.get_pin_memory(),
+            "cache_mode": self.get_cache_mode(dataset_size=dataset_size),
         }
 
     def get_dataset_info(self) -> Dict[str, Any]:
@@ -443,6 +447,9 @@ class SmartDefaults:
         train_defaults = self.get_training_defaults(
             dataset_size=dataset_size, image_size=image_size
         )
+        inference_defaults = self.get_inference_defaults(
+            dataset_size=dataset_size, image_size=image_size
+        )
         dataset_info = self.get_dataset_info()
 
         result: Dict[str, Any] = {
@@ -452,6 +459,7 @@ class SmartDefaults:
                 "mixed_precision_available": self.get_mixed_precision(),
             },
             "training": train_defaults,
+            "inference": inference_defaults,
         }
 
         # Add dataset info if available

@@ -398,7 +398,7 @@ class LocalTracker:
                 FROM runs r
                 JOIN experiments e ON r.experiment_id = e.experiment_id
                 WHERE e.name = ?
-                ORDER BY r.started_at DESC
+                ORDER BY r.started_at DESC, r.run_id DESC
                 """,
                 (target_experiment,)
             )

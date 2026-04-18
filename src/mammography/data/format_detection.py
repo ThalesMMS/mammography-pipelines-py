@@ -234,6 +234,8 @@ def _find_metadata_files(directory: str) -> Dict[str, Optional[str]]:
 
     # Check for classificacao.csv (archive preset)
     class_csv = root_path / "classificacao.csv"
+    if not class_csv.is_file() and root_path.name.lower() == "archive":
+        class_csv = root_path.parent / "classificacao.csv"
     if class_csv.is_file():
         result["classification_csv"] = str(class_csv)
         result["csv"] = str(class_csv)
@@ -279,6 +281,61 @@ def _find_metadata_files(directory: str) -> Dict[str, Optional[str]]:
     return result
 
 
+def _has_dicom_accession_subdirs(path: Path) -> bool:
+    """Detect accession-style DICOM subdirectories under a candidate root.
+
+    Args:
+        path: Directory expected to contain accession folders such as
+            ``ACC001/image.dcm`` or ``000123/image.dicom``.
+
+    Returns:
+        True when at least one child directory contains a DICOM file, otherwise
+        False. Returns False for non-directories, empty folders, flat DICOM
+        folders, or inaccessible paths.
+
+    Side effects:
+        Swallows filesystem errors and logs a warning through ``logger``.
+    """
+    if not path.is_dir():
+        return False
+    try:
+        subdirs = sorted((d for d in path.iterdir() if d.is_dir()), key=lambda p: p.name)
+        for subdir in subdirs:
+            dicom_files = list(subdir.glob("*.dcm")) + list(subdir.glob("*.dicom"))
+            if dicom_files:
+                return True
+    except Exception as exc:
+        logger.warning(f"Error checking DICOM structure: {exc!r}")
+    return False
+
+
+def _resolve_dicom_root(directory: str) -> Optional[str]:
+    """Resolve the DICOM accession root for a dataset directory.
+
+    Checks ``directory`` itself and then ``directory/archive`` for
+    accession-style folders containing DICOM files.
+
+    Args:
+        directory: Dataset directory path, for example ``/data/archive`` or a
+            dataset root that contains an ``archive`` subfolder.
+
+    Returns:
+        The detected DICOM root path as a string, or None when neither
+        candidate contains accession subdirectories with ``.dcm`` or
+        ``.dicom`` files.
+
+    Side effects:
+        Calls ``_has_dicom_accession_subdirs()``, which may log warnings when
+        filesystem inspection fails.
+    """
+    root_path = Path(directory)
+    candidates = [root_path, root_path / "archive"]
+    for candidate in candidates:
+        if _has_dicom_accession_subdirs(candidate):
+            return str(candidate)
+    return None
+
+
 def _detect_dicom_structure(directory: str) -> bool:
     """
     Check if directory has DICOM structure with AccessionNumber subdirectories.
@@ -294,24 +351,7 @@ def _detect_dicom_structure(directory: str) -> bool:
     if not root_path.exists():
         return False
 
-    # Look for 'archive' subdirectory (common pattern)
-    archive_path = root_path / "archive"
-    if archive_path.is_dir():
-        # Check if archive has subdirectories (potential AccessionNumbers)
-        try:
-            subdirs = [d for d in archive_path.iterdir() if d.is_dir()]
-            if len(subdirs) > 0:
-                # Sample first subdirectory for DICOM files
-                for subdir in subdirs[:3]:  # Check up to 3 subdirs
-                    dicom_files = list(subdir.glob("*.dcm")) + list(
-                        subdir.glob("*.dicom")
-                    )
-                    if dicom_files:
-                        return True
-        except Exception as exc:
-            logger.warning(f"Error checking DICOM structure: {exc!r}")
-
-    return False
+    return _resolve_dicom_root(directory) is not None
 
 
 def _detect_delimiter(file_path: str, sample_size: int = 5) -> str:
@@ -606,21 +646,23 @@ def detect_dataset_format(path: str) -> DatasetFormat:
             fmt.dataset_type = "patches_completo"
             fmt.csv_path = metadata["features_txt"]
             fmt.has_features_txt = True
-    elif _detect_dicom_structure(path):
-        fmt.dataset_type = "archive"
-        fmt.dicom_root = str(Path(path) / "archive")
-        if metadata["classification_csv"]:
-            fmt.csv_path = metadata["classification_csv"]
-            fmt.has_csv = True
     else:
-        # Custom dataset - try to find metadata
-        fmt.dataset_type = "custom"
-        if metadata["csv"]:
-            fmt.csv_path = metadata["csv"]
-            fmt.has_csv = True
-        elif metadata["features_txt"]:
-            fmt.csv_path = metadata["features_txt"]
-            fmt.has_features_txt = True
+        dicom_root = _resolve_dicom_root(path)
+        if dicom_root:
+            fmt.dataset_type = "archive"
+            fmt.dicom_root = dicom_root
+            if metadata["classification_csv"]:
+                fmt.csv_path = metadata["classification_csv"]
+                fmt.has_csv = True
+        else:
+            # Custom dataset - try to find metadata
+            fmt.dataset_type = "custom"
+            if metadata["csv"]:
+                fmt.csv_path = metadata["csv"]
+                fmt.has_csv = True
+            elif metadata["features_txt"]:
+                fmt.csv_path = metadata["features_txt"]
+                fmt.has_features_txt = True
 
     # Validation warnings
     if fmt.image_count == 0:

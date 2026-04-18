@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -15,10 +15,10 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("sklearn")
 pytest.importorskip("pandas")
 
-import mammography.commands.train as train_module
 from torch import nn
 from torch.utils.data import DataLoader
 
+import mammography.commands.train as train_module
 from mammography.commands.train import (
     _resolve_best_model_path,
     _summarize_metrics_for_summary,
@@ -26,6 +26,12 @@ from mammography.commands.train import (
     resolve_loader_runtime,
     unfreeze_last_block,
 )
+from mammography.commands.train_artifacts import _find_resume_checkpoint
+from mammography.commands.train_resume import (
+    _checkpoint_model,
+    _resolve_view_resume_path,
+)
+from mammography.config import TrainConfig
 from mammography.training.engine import train_one_epoch, validate
 
 
@@ -34,7 +40,7 @@ class DummyModel(nn.Module):
         super().__init__()
         self.net = nn.Sequential(nn.Flatten(), nn.Linear(3 * 8 * 8, 4))
 
-    def forward(self, x: torch.Tensor, extra_features=None) -> torch.Tensor:  # noqa: ANN001
+    def forward(self, x: torch.Tensor, extra_features=None) -> torch.Tensor:
         return self.net(x)
 
 
@@ -48,7 +54,9 @@ class _DummyTransformerBackbone(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.encoder = nn.Module()
-        self.encoder.layers = nn.ModuleList([_DummyTransformerBlock(), _DummyTransformerBlock()])
+        self.encoder.layers = nn.ModuleList(
+            [_DummyTransformerBlock(), _DummyTransformerBlock()]
+        )
 
 
 class _DummyVitWrapper(nn.Module):
@@ -56,6 +64,104 @@ class _DummyVitWrapper(nn.Module):
         super().__init__()
         self.backbone = _DummyTransformerBackbone()
         self.classifier = nn.Linear(4, 2)
+
+
+def test_parse_args_train_config_maps_views_to_parser_namespace() -> None:
+    config = TrainConfig(
+        dataset="archive",
+        view_specific_training=True,
+        views_to_train=["CC", "MLO"],
+    )
+
+    args = train_module.parse_args(config)
+
+    assert args.views == "CC,MLO"
+
+
+def test_parse_args_train_config_applies_namespace_only_fields() -> None:
+    config = TrainConfig(dataset="archive", auto_normalize=True)
+
+    args = train_module.parse_args(config)
+
+    assert args.auto_normalize is True
+
+
+def test_parse_args_train_config_rejects_unmapped_explicit_fields() -> None:
+    config = TrainConfig(dataset="archive")
+    object.__setattr__(
+        config,
+        "model_dump",
+        lambda mode="python": {"dataset": "archive", "unsupported_field": True},
+    )
+    object.__setattr__(
+        config,
+        "__pydantic_fields_set__",
+        {"dataset", "unsupported_field"},
+    )
+
+    with pytest.raises(ValueError, match="unsupported_field"):
+        train_module.parse_args(config)
+
+
+def test_resolve_view_resume_path_uses_matching_sibling_checkpoint(
+    tmp_path: Path,
+) -> None:
+    cc_dir = tmp_path / "results_CC"
+    mlo_dir = tmp_path / "results_MLO"
+    cc_dir.mkdir()
+    mlo_dir.mkdir()
+    cc_checkpoint = cc_dir / "checkpoint_cc.pt"
+    mlo_checkpoint = mlo_dir / "checkpoint_mlo.pt"
+    cc_checkpoint.write_text("cc", encoding="utf-8")
+    mlo_checkpoint.write_text("mlo", encoding="utf-8")
+
+    resolved = _resolve_view_resume_path(
+        str(cc_checkpoint),
+        current_view="MLO",
+        checkpoint_name="checkpoint_mlo.pt",
+        view_outdir_path=mlo_dir,
+        views_to_train=["CC", "MLO"],
+    )
+
+    assert resolved == mlo_checkpoint
+
+
+def test_resolve_view_resume_path_rejects_single_checkpoint_for_multiple_views(
+    tmp_path: Path,
+) -> None:
+    cc_dir = tmp_path / "results_CC"
+    mlo_dir = tmp_path / "results_MLO"
+    cc_dir.mkdir()
+    mlo_dir.mkdir()
+    cc_checkpoint = cc_dir / "checkpoint_cc.pt"
+    cc_checkpoint.write_text("cc", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        _resolve_view_resume_path(
+            str(cc_checkpoint),
+            current_view="MLO",
+            checkpoint_name="checkpoint_mlo.pt",
+            view_outdir_path=mlo_dir,
+            views_to_train=["CC", "MLO"],
+        )
+
+
+def test_find_resume_checkpoint_detects_view_specific_checkpoint(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results_CC"
+    results_dir.mkdir()
+    checkpoint = results_dir / "checkpoint_cc.pt"
+    checkpoint.write_text("cc", encoding="utf-8")
+
+    assert _find_resume_checkpoint(str(tmp_path)) == checkpoint
+
+
+def test_checkpoint_model_unwraps_compiled_orig_mod() -> None:
+    original = object()
+    wrapper = SimpleNamespace(_orig_mod=original)
+
+    assert _checkpoint_model(wrapper) is original
 
 
 def _make_loader() -> DataLoader:
@@ -164,6 +270,45 @@ def test_resolve_loader_runtime_disables_windows_cuda_workers_on_python313(
     num_workers, prefetch, persistent = resolve_loader_runtime(
         args,
         torch.device("cuda"),
+    )
+
+    assert num_workers == 0
+    assert prefetch is None
+    assert persistent is False
+
+
+def test_resolve_loader_runtime_normalizes_zero_workers_without_heuristics() -> None:
+    args = SimpleNamespace(
+        num_workers=0,
+        prefetch_factor=4,
+        persistent_workers=True,
+        loader_heuristics=False,
+    )
+
+    num_workers, prefetch, persistent = resolve_loader_runtime(
+        args,
+        torch.device("cpu"),
+    )
+
+    assert num_workers == 0
+    assert prefetch is None
+    assert persistent is False
+
+
+def test_resolve_loader_runtime_normalizes_cpu_clamped_zero_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = SimpleNamespace(
+        num_workers=4,
+        prefetch_factor=4,
+        persistent_workers=True,
+        loader_heuristics=True,
+    )
+    monkeypatch.setattr(train_module.os, "cpu_count", lambda: 0)
+
+    num_workers, prefetch, persistent = resolve_loader_runtime(
+        args,
+        torch.device("cpu"),
     )
 
     assert num_workers == 0

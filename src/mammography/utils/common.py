@@ -22,6 +22,29 @@ try:
 except ImportError:
     TqdmLoggingHandler = logging.StreamHandler
 
+
+class NonLockingFileHandler(logging.Handler):
+    """File handler that does not keep Windows temp files locked."""
+
+    terminator = "\n"
+
+    def __init__(self, filename: str, mode: str = "a", encoding: str = "utf-8"):
+        super().__init__()
+        self.filename = filename
+        self.mode = mode
+        self.encoding = encoding
+        open(self.filename, mode, encoding=encoding).close()
+        self.mode = "a"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            with open(self.filename, self.mode, encoding=self.encoding) as stream:
+                stream.write(msg + self.terminator)
+        except Exception:
+            self.handleError(record)
+
+
 def seed_everything(seed: int = 42, deterministic: bool = False):
     """Make training more reproducible by seeding Python, NumPy, Torch, and CUDA/MPS."""
     random.seed(seed)
@@ -93,11 +116,13 @@ def setup_logging(outdir: str, level: str, name: str = "mammography") -> logging
     log_dir = outdir
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger(name)
-    logger.handlers.clear()
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
 
-    file_handler = logging.FileHandler(os.path.join(log_dir, "run.log"), mode="w", encoding="utf-8")
+    file_handler = NonLockingFileHandler(os.path.join(log_dir, "run.log"), mode="w", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)

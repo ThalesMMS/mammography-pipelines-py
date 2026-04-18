@@ -146,6 +146,21 @@ def test_save_atomic_with_normalization_stats() -> None:
         assert loaded["normalization_stats"]["mean"] == [0.5, 0.5, 0.5]
 
 
+def test_save_atomic_rejects_opaque_normalization_stats() -> None:
+    """Test normalization stats are validated before checkpoint persistence."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint_path = Path(tmpdir) / "model.pt"
+
+        with pytest.raises(TypeError, match="non-serializable object"):
+            save_atomic(
+                {"epoch": 1},
+                checkpoint_path,
+                normalization_stats={"mean": object()},
+            )
+
+        assert not checkpoint_path.exists()
+
+
 def test_save_atomic_overwrite_existing() -> None:
     """Test that save_atomic correctly overwrites existing files."""
     with tempfile.TemporaryDirectory() as tmpdir:

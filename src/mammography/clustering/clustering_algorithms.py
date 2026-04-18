@@ -244,7 +244,6 @@ class ClusteringAlgorithms:
         elif algorithm == "hdbscan":
             hyperparameters.setdefault("min_cluster_size", 10)
             hyperparameters.setdefault("min_samples", 5)
-            hyperparameters.setdefault("random_state", config["seed"])
 
         elif algorithm == "agglomerative":
             hyperparameters.setdefault("n_clusters", config["n_clusters"])
@@ -499,7 +498,10 @@ class ClusteringAlgorithms:
             Tuple of (cluster_labels, None, uncertainty_scores)
         """
         # Apply HDBSCAN
-        hdbscan_clusterer = hdbscan.HDBSCAN(**hyperparameters)
+        hdbscan_params = {
+            key: value for key, value in hyperparameters.items() if key != "random_state"
+        }
+        hdbscan_clusterer = hdbscan.HDBSCAN(**hdbscan_params)
         with suppress_numpy_matmul_warnings():
             cluster_labels = hdbscan_clusterer.fit_predict(embeddings)
 
@@ -563,7 +565,11 @@ class ClusteringAlgorithms:
             n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
             if n_clusters < 2:
                 logger.warning("Not enough clusters for evaluation metrics")
-                return None
+                return {
+                    "silhouette": -1.0,
+                    "davies_bouldin": float("inf"),
+                    "calinski_harabasz": 0.0,
+                }
 
             # Compute Silhouette score
             if "silhouette" in self.config["evaluation_metrics"]:

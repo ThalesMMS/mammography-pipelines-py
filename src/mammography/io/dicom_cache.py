@@ -20,7 +20,16 @@ from typing import Any, Dict, List, Optional, Union
 import pydicom
 from pydicom.errors import InvalidDicomError
 
+from mammography.io.dicom.pixel_processing import allow_invalid_decimal_strings_context
+
 logger = logging.getLogger(__name__)
+
+
+class _StatsDict(dict):
+    """Dictionary that also supports legacy ``cache.stats()`` calls."""
+
+    def __call__(self) -> Dict[str, Union[int, float]]:
+        return dict(self)
 
 
 class DicomLRUCache:
@@ -68,6 +77,7 @@ class DicomLRUCache:
         self.max_size = max_size
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self._cache: OrderedDict[str, pydicom.dataset.FileDataset] = OrderedDict()
+        self._key_cache: Dict[str, str] = {}
 
         # Cache statistics
         self._hits = 0
@@ -80,6 +90,23 @@ class DicomLRUCache:
             logger.debug(f"Initialized DicomLRUCache with max_size={max_size}, cache_dir={self.cache_dir}")
         else:
             logger.debug(f"Initialized DicomLRUCache with max_size={max_size}")
+
+    def _normalize_cache_key(self, filepath: Path) -> str:
+        return str(filepath if filepath.is_absolute() else filepath.resolve())
+
+    def _drop_key_cache_entries(self, cache_key: str) -> None:
+        stale_keys = [
+            raw_key
+            for raw_key, mapped_key in self._key_cache.items()
+            if mapped_key == cache_key
+        ]
+        for raw_key in stale_keys:
+            del self._key_cache[raw_key]
+
+    def _remember_cache_key(self, raw_key: str, cache_key: str) -> None:
+        self._drop_key_cache_entries(cache_key)
+        self._key_cache[cache_key] = cache_key
+        self._key_cache[raw_key] = cache_key
 
     def get(
         self,
@@ -105,9 +132,15 @@ class DicomLRUCache:
             FileNotFoundError: If the file does not exist
             InvalidDicomError: If the file is not a valid DICOM file
         """
-        # Normalize path for consistent cache keys
+        # Normalize path for consistent cache keys. Cache the normalized form so
+        # repeated cache hits do not pay filesystem resolution cost.
         filepath = Path(filepath)
-        cache_key = str(filepath.resolve())
+        raw_key = str(filepath)
+        cache_key = self._key_cache.get(raw_key)
+        if cache_key is None:
+            cache_key = self._normalize_cache_key(filepath)
+            if cache_key in self._cache:
+                self._remember_cache_key(raw_key, cache_key)
 
         # Check if in cache
         if cache_key in self._cache:
@@ -125,26 +158,29 @@ class DicomLRUCache:
             raise FileNotFoundError(f"DICOM file not found: {filepath}")
 
         try:
-            dataset = pydicom.dcmread(
-                str(filepath),
-                stop_before_pixels=stop_before_pixels,
-                force=True,
-                **kwargs
-            )
+            read_kwargs = dict(kwargs)
+            read_kwargs.setdefault("force", True)
+            with allow_invalid_decimal_strings_context():
+                dataset = pydicom.dcmread(
+                    str(filepath),
+                    stop_before_pixels=stop_before_pixels,
+                    **read_kwargs
+                )
         except Exception as exc:
             raise InvalidDicomError(
                 f"Failed to read DICOM file {filepath}: {exc!r}"
             ) from exc
 
         # Add to cache
-        self._add_to_cache(cache_key, dataset)
+        self._add_to_cache(cache_key, dataset, raw_key=raw_key)
 
         return dataset
 
     def _add_to_cache(
         self,
         cache_key: str,
-        dataset: pydicom.dataset.FileDataset
+        dataset: pydicom.dataset.FileDataset,
+        raw_key: Optional[str] = None,
     ) -> None:
         """
         Add dataset to cache, evicting oldest item if at capacity.
@@ -153,15 +189,23 @@ class DicomLRUCache:
             cache_key: Normalized file path used as cache key
             dataset: DICOM dataset to cache
         """
+        if cache_key in self._cache:
+            self._cache[cache_key] = dataset
+            self._cache.move_to_end(cache_key)
+            self._remember_cache_key(raw_key or cache_key, cache_key)
+            return
+
         # Check if we need to evict
-        if len(self._cache) >= self.max_size:
+        while len(self._cache) >= self.max_size:
             # Remove least recently used (first item in OrderedDict)
-            evicted_key, evicted_dataset = self._cache.popitem(last=False)
+            evicted_key, _ = self._cache.popitem(last=False)
+            self._drop_key_cache_entries(evicted_key)
             self._evictions += 1
             logger.debug(f"Evicted {evicted_key} from cache (max_size={self.max_size})")
 
         # Add new item (most recently used, at end)
         self._cache[cache_key] = dataset
+        self._remember_cache_key(raw_key or cache_key, cache_key)
 
     def clear(self) -> None:
         """
@@ -171,6 +215,7 @@ class DicomLRUCache:
         """
         num_items = len(self._cache)
         self._cache.clear()
+        self._key_cache.clear()
         logger.debug(f"Cleared {num_items} entries from cache")
 
     def evict(self, filepath: Union[str, Path]) -> bool:
@@ -184,10 +229,12 @@ class DicomLRUCache:
             True if the file was in cache and evicted, False otherwise
         """
         filepath = Path(filepath)
-        cache_key = str(filepath.resolve())
+        raw_key = str(filepath)
+        cache_key = self._key_cache.get(raw_key) or self._normalize_cache_key(filepath)
 
         if cache_key in self._cache:
             del self._cache[cache_key]
+            self._drop_key_cache_entries(cache_key)
             logger.debug(f"Manually evicted {filepath} from cache")
             return True
 
@@ -234,21 +281,21 @@ class DicomLRUCache:
         return self._hits / total
 
     @property
-    def stats(self) -> Dict[str, Union[int, float]]:
+    def stats(self) -> _StatsDict:
         """
         Get cache statistics as a dictionary.
 
         Returns:
             Dictionary with keys: size, max_size, hits, misses, evictions, hit_rate
         """
-        return {
+        return _StatsDict({
             "size": self.size,
             "max_size": self.max_size,
             "hits": self.hits,
             "misses": self.misses,
             "evictions": self.evictions,
             "hit_rate": self.hit_rate,
-        }
+        })
 
     def save(self) -> None:
         """
@@ -313,6 +360,7 @@ class DicomLRUCache:
 
         # Clear current cache
         self._cache.clear()
+        self._key_cache.clear()
 
         # Restore configuration
         self.max_size = metadata.get("max_size", self.max_size)
@@ -341,8 +389,15 @@ class DicomLRUCache:
         Returns:
             True if file is cached, False otherwise
         """
+        raw_key = str(filepath)
+        cache_key = self._key_cache.get(raw_key)
+        if cache_key is not None:
+            return cache_key in self._cache
+
         filepath = Path(filepath)
-        cache_key = str(filepath.resolve())
+        cache_key = self._normalize_cache_key(filepath)
+        if cache_key in self._cache:
+            self._remember_cache_key(raw_key, cache_key)
         return cache_key in self._cache
 
     def __len__(self) -> int:

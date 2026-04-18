@@ -198,6 +198,8 @@ class TrainConfig(BaseConfig):
             return value
         value = _normalize_dir_hint(value)
         if not value.exists():
+            if not value.is_absolute() and not value.anchor:
+                return value
             raise ValueError(f"Caminho critico nao encontrado: {value}")
         return value
 
@@ -219,6 +221,11 @@ class TrainConfig(BaseConfig):
             source=f"{cls.__name__}.classes",
             allow_unknown=True,
         )
+
+    @field_validator("scheduler", mode="before")
+    @classmethod
+    def _normalize_scheduler(cls, value: Optional[str]) -> str:
+        return "none" if value is None else value
 
     @field_validator("outdir", "profile_dir")
     @classmethod
@@ -378,8 +385,11 @@ class ExtractConfig(BaseConfig):
 
 class InferenceConfig(BaseConfig):
     checkpoint: Path
-    input: Path
+    input: Optional[Path] = None
+    csv: Optional[Path] = None
+    dicom_root: Optional[Path] = None
     arch: str = "resnet50"
+    architecture: Optional[str] = None
     classes: str = "multiclass"
     img_size: int = Field(default=HP.IMG_SIZE, ge=1)
     batch_size: int = Field(default=16, ge=1)
@@ -396,8 +406,24 @@ class InferenceConfig(BaseConfig):
 
     @field_validator("input")
     @classmethod
-    def _validate_input(cls, value: Path) -> Path:
+    def _validate_input(cls, value: Optional[Path]) -> Optional[Path]:
+        if value is None:
+            return value
         return _validate_path_exists(value, "input")
+
+    @field_validator("csv")
+    @classmethod
+    def _validate_csv(cls, value: Optional[Path]) -> Optional[Path]:
+        if value is None:
+            return value
+        return _validate_path_exists(value, "csv")
+
+    @field_validator("dicom_root")
+    @classmethod
+    def _validate_dicom_root(cls, value: Optional[Path]) -> Optional[Path]:
+        if value is None:
+            return value
+        return _validate_path_exists(value, "dicom_root")
 
     @field_validator("classes")
     @classmethod
@@ -411,7 +437,11 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_model_image_size(self) -> "InferenceConfig":
+        if self.architecture:
+            self.arch = self.architecture
         _validate_arch_img_size_pair(self.arch, self.img_size)
+        if not self.input and not self.csv and not self.dicom_root:
+            raise ValueError("Informe --input, --csv ou --dicom-root para inferencia.")
         return self
 
 

@@ -93,5 +93,8 @@ def test_search_space_loading():
     from mammography.tuning.search_space import SearchSpace
 
     space = SearchSpace.from_yaml("configs/tune.yaml")
-    assert len(space.parameters) == 6
+    assert len(space.parameters) == 11
+    assert "arch" in space.parameters
+    assert "augment" in space.parameters
+    assert "augment_rotation_deg" in space.parameters
     assert space.description is not None

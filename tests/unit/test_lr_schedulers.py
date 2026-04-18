@@ -69,11 +69,14 @@ def test_reduce_lr_on_plateau_reduces_lr_on_no_improvement() -> None:
     # Initial LR
     assert optimizer.param_groups[0]["lr"] == 0.1
 
-    # No improvement for patience epochs
+    # PyTorch reduces when num_bad_epochs > patience.
     scheduler.step(0.5)  # metric = 0.5
     assert optimizer.param_groups[0]["lr"] == 0.1  # no change yet
 
     scheduler.step(0.5)  # no improvement
+    assert optimizer.param_groups[0]["lr"] == 0.1  # no change yet
+
+    scheduler.step(0.5)  # patience reached
     assert optimizer.param_groups[0]["lr"] == 0.1  # no change yet
 
     scheduler.step(0.5)  # patience exceeded
@@ -139,10 +142,12 @@ def test_reduce_lr_on_plateau_cooldown() -> None:
 
     # Trigger first reduction
     scheduler.step(0.5)
+    scheduler.step(0.5)
     scheduler.step(0.5)  # patience exceeded, should reduce
     assert optimizer.param_groups[0]["lr"] == 0.05
 
     # During cooldown, should not reduce again
+    scheduler.step(0.5)
     scheduler.step(0.5)
     scheduler.step(0.5)
     assert optimizer.param_groups[0]["lr"] == 0.05  # still in cooldown
@@ -252,12 +257,14 @@ def test_cosine_annealing_restart() -> None:
         eta_min=0.0,
     )
 
-    # Run through full cycle
+    # Run to the cosine minimum at T_max.
     for _ in range(T_max):
         scheduler.step()
+    assert abs(optimizer.param_groups[0]["lr"] - 0.0) < 1e-6
 
-    # LR should restart back to initial value
-    scheduler.step()
+    # CosineAnnealingLR returns to the initial LR at 2 * T_max.
+    for _ in range(T_max):
+        scheduler.step()
     restarted_lr = optimizer.param_groups[0]["lr"]
     assert abs(restarted_lr - initial_lr) < 1e-6
 
@@ -302,6 +309,7 @@ def test_cosine_annealing_state_dict() -> None:
 
     # Create new scheduler and load state
     optimizer2 = torch.optim.SGD(model.parameters(), lr=0.1)
+    optimizer2.load_state_dict(optimizer.state_dict())
     scheduler2 = CosineAnnealingLR(
         optimizer2,
         T_max=10,
@@ -430,6 +438,7 @@ def test_step_lr_state_dict() -> None:
 
     # Create new scheduler and load state
     optimizer2 = torch.optim.SGD(model.parameters(), lr=0.1)
+    optimizer2.load_state_dict(optimizer.state_dict())
     scheduler2 = StepLR(
         optimizer2,
         step_size=3,
@@ -497,6 +506,7 @@ def test_schedulers_with_multiple_param_groups() -> None:
     assert optimizer.param_groups[1]["lr"] == 0.1
 
     # Trigger reduction
+    scheduler.step(0.5)
     scheduler.step(0.5)
     scheduler.step(0.5)
 

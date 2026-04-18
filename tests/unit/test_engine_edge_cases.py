@@ -102,10 +102,11 @@ class DummyModelNanLoss(nn.Module):
     def __init__(self, num_classes: int = 4) -> None:
         super().__init__()
         self.num_classes = num_classes
+        self.dummy = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: torch.Tensor, extra_features=None) -> torch.Tensor:  # noqa: ANN001
         batch_size = x.shape[0]
-        return torch.full((batch_size, self.num_classes), float('nan'))
+        return torch.full((batch_size, self.num_classes), float('nan'), device=x.device) + self.dummy
 
 
 class DummyModelWithLayer4(nn.Module):

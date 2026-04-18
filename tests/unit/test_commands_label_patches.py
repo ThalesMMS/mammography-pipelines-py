@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import numpy as np
 import pytest
@@ -241,8 +242,8 @@ def test_run_with_streamlit_cli(tmp_path: Path, monkeypatch) -> None:
     class MockStCli:
         @staticmethod
         def main():
-            script_path_called.append(monkeypatch.context["sys.argv"][2])
-            args_called.append(monkeypatch.context["sys.argv"][3:])
+            script_path_called.append(sys.argv[2])
+            args_called.append(sys.argv[3:])
             raise SystemExit(0)
 
     class MockStWeb:
@@ -250,17 +251,7 @@ def test_run_with_streamlit_cli(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(streamlit_app, "st", object())
     monkeypatch.setattr(streamlit_app, "_STREAMLIT_IMPORT_ERROR", None)
-    monkeypatch.context = {"sys.argv": []}
-    import sys
-
     original_argv = sys.argv[:]
-
-    def mock_setattr(obj, name, value):
-        if obj is sys and name == "argv":
-            monkeypatch.context["sys.argv"] = value
-            sys.argv = value
-
-    monkeypatch.setattr("builtins.setattr", mock_setattr)
     monkeypatch.setattr("streamlit.web", MockStWeb)
 
     sys.modules["streamlit.web.cli"] = MockStCli
@@ -273,6 +264,46 @@ def test_run_with_streamlit_cli(tmp_path: Path, monkeypatch) -> None:
             del sys.modules["streamlit.web.cli"]
 
     assert exit_code == 0
+    assert len(script_path_called) == 1
+    assert script_path_called[0] == str(Path(streamlit_app.__file__).resolve())
+    assert args_called == [["--server.port", "8501"]]
+
+
+def test_run_falls_back_to_bootstrap_when_cli_main_missing(monkeypatch) -> None:
+    """Test run() falls back to bootstrap when streamlit.web.cli.main is unavailable."""
+    bootstrap_called = []
+
+    class MockStCli:
+        main = None
+
+    class MockBootstrap:
+        @staticmethod
+        def run(script_path, flag, args, kwargs):
+            bootstrap_called.append((script_path, args))
+            raise SystemExit(0)
+
+    class MockStWeb:
+        cli = MockStCli
+        bootstrap = MockBootstrap
+
+    monkeypatch.setattr(streamlit_app, "st", object())
+    monkeypatch.setattr(streamlit_app, "_STREAMLIT_IMPORT_ERROR", None)
+    monkeypatch.setattr("streamlit.web", MockStWeb)
+
+    sys.modules["streamlit.web.cli"] = MockStCli
+    sys.modules["streamlit.web.bootstrap"] = MockBootstrap
+
+    try:
+        exit_code = streamlit_app.run(["--server.port", "8501"])
+    finally:
+        if "streamlit.web.cli" in sys.modules:
+            del sys.modules["streamlit.web.cli"]
+        if "streamlit.web.bootstrap" in sys.modules:
+            del sys.modules["streamlit.web.bootstrap"]
+
+    assert exit_code == 0
+    assert len(bootstrap_called) == 1
+    assert bootstrap_called[0][1] == ["--server.port", "8501"]
 
 
 def test_run_with_streamlit_bootstrap(tmp_path: Path, monkeypatch) -> None:
@@ -290,8 +321,6 @@ def test_run_with_streamlit_bootstrap(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(streamlit_app, "st", object())
     monkeypatch.setattr(streamlit_app, "_STREAMLIT_IMPORT_ERROR", None)
-
-    import sys
 
     if "streamlit.web.cli" in sys.modules:
         monkeypatch.delattr(sys.modules["streamlit.web"], "cli", raising=False)

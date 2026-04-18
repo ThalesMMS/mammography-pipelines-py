@@ -111,7 +111,7 @@ class TestDeviceDetectionSmoke:
 
         device = get_optimal_device()
         # Should return one of: cpu, cuda, mps
-        assert device in ["cpu", "cuda", "mps"]
+        assert device.type in ["cpu", "cuda", "mps"]
 
     def test_device_cpu_fallback(self):
         """Test that CPU fallback works."""

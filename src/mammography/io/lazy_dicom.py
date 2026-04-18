@@ -19,6 +19,8 @@ import numpy as np
 import pydicom
 from pydicom.errors import InvalidDicomError
 
+from mammography.io.dicom.pixel_processing import allow_invalid_decimal_strings_context
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,11 +71,12 @@ class LazyDicomDataset:
 
         try:
             # Load metadata only, defer pixel data
-            self._dataset = pydicom.dcmread(
-                str(self.filepath),
-                stop_before_pixels=stop_before_pixels,
-                force=True
-            )
+            with allow_invalid_decimal_strings_context():
+                self._dataset = pydicom.dcmread(
+                    str(self.filepath),
+                    stop_before_pixels=stop_before_pixels,
+                    force=True
+                )
         except Exception as exc:
             raise InvalidDicomError(
                 f"Failed to read DICOM metadata from {self.filepath}: {exc!r}"
@@ -105,11 +108,13 @@ class LazyDicomDataset:
                 # If we initially skipped pixels, reload with pixel data
                 if self._stop_before_pixels:
                     logger.debug(f"Loading pixel data from {self.filepath}")
-                    full_dataset = pydicom.dcmread(str(self.filepath), force=True)
-                    self._pixel_array = full_dataset.pixel_array
+                    with allow_invalid_decimal_strings_context():
+                        full_dataset = pydicom.dcmread(str(self.filepath), force=True)
+                        self._pixel_array = full_dataset.pixel_array
                 else:
                     # Pixel data was already loaded
-                    self._pixel_array = self._dataset.pixel_array
+                    with allow_invalid_decimal_strings_context():
+                        self._pixel_array = self._dataset.pixel_array
             except Exception as exc:
                 raise RuntimeError(
                     f"Failed to load pixel data from {self.filepath}: {exc!r}"

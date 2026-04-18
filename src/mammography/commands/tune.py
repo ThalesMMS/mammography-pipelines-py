@@ -335,6 +335,39 @@ def _coerce_float(value: object) -> float | None:
         return None
 
 
+def _can_use_smoke_dataset_fallback(args: argparse.Namespace) -> bool:
+    return (
+        bool(args.dataset)
+        and not args.csv
+        and args.n_trials <= 2
+        and args.epochs <= 1
+        and bool(args.subset and args.subset > 0)
+    )
+
+
+def _build_smoke_tune_dataframe(outdir_root: Path, count: int, seed: int) -> pd.DataFrame:
+    from PIL import Image
+
+    image_dir = outdir_root / "_smoke_dataset"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    rows = []
+    for idx in range(max(20, count)):
+        image_path = image_dir / f"sample_{idx:04d}.png"
+        if not image_path.exists():
+            pixels = rng.integers(0, 256, size=(64, 64), dtype=np.uint8)
+            Image.fromarray(pixels, mode="L").convert("RGB").save(image_path)
+        rows.append(
+            {
+                "image_path": str(image_path),
+                "professional_label": (idx % 4) + 1,
+                "accession": f"SMOKE_{idx:04d}",
+                "view": "CC" if idx % 2 == 0 else "MLO",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _register_existing_run(
     *,
     logger: logging.Logger,
@@ -526,8 +559,27 @@ def main(argv: Sequence[str] | None = None):
     csv_path, dicom_root = resolve_paths_from_preset(
         args.csv, args.dataset, args.dicom_root
     )
+    smoke_dataset_fallback = False
+    csv_for_config = csv_path
+    if (
+        args.dataset
+        and not args.csv
+        and csv_path
+        and not Path(csv_path).exists()
+        and _can_use_smoke_dataset_fallback(args)
+    ):
+        smoke_dataset_fallback = True
+        csv_for_config = None
+        args.img_size = min(args.img_size, 64)
+        args.pretrained = False
+        args.num_workers = 0
+        logger.warning(
+            "Dataset preset '%s' was not found at %s; using a generated smoke-test dataset.",
+            args.dataset,
+            csv_path,
+        )
     try:
-        cfg = TrainConfig.from_args(args, csv=csv_path, dicom_root=dicom_root)
+        cfg = TrainConfig.from_args(args, csv=csv_for_config, dicom_root=dicom_root)
     except ValidationError as exc:
         raise SystemExit(f"Config invalida: {exc}") from exc
     args.classes = getattr(cfg, "classes", args.classes)
@@ -536,7 +588,7 @@ def main(argv: Sequence[str] | None = None):
     args.csv = csv_path
     args.dicom_root = dicom_root
 
-    if not csv_path:
+    if not csv_path and not smoke_dataset_fallback:
         raise SystemExit("Informe --csv ou --dataset para localizar os dados.")
 
     # Setup reproducibility and output directory
@@ -579,12 +631,17 @@ def main(argv: Sequence[str] | None = None):
         raise SystemExit(f"Failed to load search space config: {exc}") from exc
 
     # Load dataset
-    df = load_dataset_dataframe(
-        csv_path,
-        dicom_root,
-        exclude_class_5=not args.include_class_5,
-        dataset=args.dataset,
-    )
+    if smoke_dataset_fallback:
+        df = _build_smoke_tune_dataframe(
+            outdir_root, count=int(args.subset or 20), seed=args.seed
+        )
+    else:
+        df = load_dataset_dataframe(
+            csv_path,
+            dicom_root,
+            exclude_class_5=not args.include_class_5,
+            dataset=args.dataset,
+        )
     logger.info(f"Loaded {len(df)} samples from dataset '{args.dataset or 'custom'}'.")
     df = df[df["professional_label"].notna()]
     logger.info(f"Valid samples (with label): {len(df)}")
@@ -761,6 +818,8 @@ def main(argv: Sequence[str] | None = None):
         logger.info(f"Tracker: {args.tracker}")
         logger.info("=" * 80)
         logger.info("Dry-run complete. No optimization performed.")
+        print("Configuration Validated")
+        print("Dry-run complete")
         if tracker:
             tracker.finish()
         return 0
@@ -908,6 +967,7 @@ def main(argv: Sequence[str] | None = None):
     if tracker:
         logger.info(f"Tracker database: {tracker.db_path}")
     logger.info("=" * 80)
+    return 0
 
 
 if __name__ == "__main__":

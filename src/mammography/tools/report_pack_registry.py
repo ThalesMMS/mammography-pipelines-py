@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from mammography.tools.data_audit_registry import (
+    _is_plain_local_tracking_uri,
     _resolve_tracking_root,
     _write_meta_yaml,
     _write_metric,
@@ -149,6 +150,15 @@ def log_mlflow_run(
     for path in artifacts:
         if not path.exists():
             raise FileNotFoundError(f"Artefato ausente: {path}")
+    if _is_plain_local_tracking_uri(tracking_uri):
+        return _log_local_mlflow_run(
+            run_name=run_name,
+            params=params,
+            metrics=metrics,
+            artifacts=artifacts,
+            tracking_uri=tracking_uri,
+            experiment=experiment,
+        )
     try:
         import mlflow  # type: ignore
     except Exception:

@@ -18,6 +18,20 @@ from mammography.tuning.search_space import (
     FloatParam,
 )
 
+EXPECTED_TUNE_KEYS = {
+    "arch",
+    "lr",
+    "backbone_lr",
+    "batch_size",
+    "warmup_epochs",
+    "early_stop_patience",
+    "unfreeze_last_block",
+    "augment",
+    "augment_vertical",
+    "augment_color",
+    "augment_rotation_deg",
+}
+
 
 class TestSearchSpace:
     """Test SearchSpace YAML loading and validation."""
@@ -25,13 +39,7 @@ class TestSearchSpace:
     def test_from_yaml_valid(self):
         """Test loading valid search space from YAML."""
         space = SearchSpace.from_yaml("configs/tune.yaml")
-        assert len(space.parameters) == 6
-        assert "lr" in space.parameters
-        assert "backbone_lr" in space.parameters
-        assert "batch_size" in space.parameters
-        assert "warmup_epochs" in space.parameters
-        assert "early_stop_patience" in space.parameters
-        assert "unfreeze_last_block" in space.parameters
+        assert set(space.parameters) == EXPECTED_TUNE_KEYS
 
     def test_from_yaml_missing_file(self):
         """Test error handling for missing YAML file."""
@@ -51,7 +59,7 @@ class TestSearchSpace:
         result = space.to_dict()
         assert "parameters" in result
         assert "description" in result
-        assert len(result["parameters"]) == 6
+        assert set(result["parameters"]) == EXPECTED_TUNE_KEYS
 
 
 class TestCategoricalParam:

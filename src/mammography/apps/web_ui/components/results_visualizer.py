@@ -53,7 +53,7 @@ def plot_confusion_matrix(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     class_names: Optional[List[str]] = None,
-    normalize: bool = True,
+    normalize: Union[bool, str, None] = True,
     title: str = "Confusion Matrix",
     cmap: str = "Blues",
     figsize: tuple[int, int] = (8, 7),
@@ -72,7 +72,9 @@ def plot_confusion_matrix(
         y_true: Ground truth labels (1D array)
         y_pred: Predicted labels (1D array)
         class_names: Names for each class (e.g., ["A", "B", "C", "D"] for BI-RADS)
-        normalize: If True, normalize by true labels (show proportions)
+        normalize: True normalizes by true labels; False disables normalization.
+            String values are passed through to sklearn (``"true"``, ``"pred"``,
+            or ``"all"``).
         title: Plot title
         cmap: Colormap name
         figsize: Figure size (width, height)
@@ -92,12 +94,8 @@ def plot_confusion_matrix(
         >>> # Display in Streamlit
         >>> st.pyplot(fig)
     """
-    # Compute confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
-
-    # Normalize if requested
-    if normalize:
-        cm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+    normalize_arg = "true" if normalize is True else None if normalize is False else normalize
+    cm = confusion_matrix(y_true, y_pred, normalize=normalize_arg)
 
     n_classes = cm.shape[0]
     if class_names is None:
@@ -107,7 +105,7 @@ def plot_confusion_matrix(
     fig, ax = plt.subplots(figsize=figsize)
 
     # Plot heatmap
-    fmt = ".2f" if normalize else "d"
+    fmt = ".2f" if normalize_arg else "d"
 
     if sns is not None:
         # Use seaborn if available for better styling
@@ -121,7 +119,7 @@ def plot_confusion_matrix(
             yticklabels=class_names,
             square=True,
             linewidths=0.5,
-            cbar_kws={"label": "Proportion" if normalize else "Count"},
+            cbar_kws={"label": "Proportion" if normalize_arg else "Count"},
         )
     else:
         # Fallback to matplotlib
@@ -129,7 +127,7 @@ def plot_confusion_matrix(
 
         # Add colorbar
         cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label("Proportion" if normalize else "Count")
+        cbar.set_label("Proportion" if normalize_arg else "Count")
 
         # Add annotations
         for i in range(n_classes):

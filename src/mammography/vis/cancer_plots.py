@@ -71,12 +71,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 import pydicom
-from pydicom.pixel_data_handlers.util import apply_modality_lut
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.utils import make_grid
 
+from mammography.io.dicom.pixel_processing import (
+    _apply_rescale,
+    _is_mono1,
+    _to_float32,
+    allow_invalid_decimal_strings_context,
+    robust_window,
+)
 
 class HP:
     """Core hyperparameters for DICOM preprocessing and visualization."""
@@ -87,49 +93,10 @@ class HP:
     WINDOW_P_HIGH: float = 99.5
 
 
-def _is_mono1(ds: "pydicom.dataset.FileDataset") -> bool:
-    """Check whether the image uses MONOCHROME1 (inverted black/white)."""
-    photometric = getattr(ds, "PhotometricInterpretation", "").upper()
-    return photometric == "MONOCHROME1"
-
-
-def _to_float32(arr: np.ndarray) -> np.ndarray:
-    """Ensure float32 for numerically stable downstream math."""
-    if arr.dtype != np.float32:
-        arr = arr.astype(np.float32, copy=False)
-    return arr
-
-
-def _apply_rescale(ds: "pydicom.dataset.FileDataset", arr: np.ndarray) -> np.ndarray:
-    """Apply RescaleSlope/Intercept (or modality LUT) when present."""
-    slope = getattr(ds, "RescaleSlope", 1.0)
-    intercept = getattr(ds, "RescaleIntercept", 0.0)
-    try:
-        arr = arr * float(slope) + float(intercept)
-    except Exception:
-        try:
-            arr = apply_modality_lut(arr, ds)
-        except Exception:
-            pass
-    return arr
-
-
-def robust_window(arr: np.ndarray, p_low: float = 0.5, p_high: float = 99.5) -> np.ndarray:
-    """Percentile-based windowing to normalize contrast while being outlier-robust."""
-    lo, hi = np.percentile(arr, [p_low, p_high])
-    if hi <= lo:
-        lo, hi = arr.min(), arr.max()
-        if hi <= lo:
-            return np.zeros_like(arr, dtype=np.float32)
-    arr = np.clip(arr, lo, hi)
-    arr = (arr - lo) / (hi - lo)
-    return arr
-
-
 def get_transforms() -> Tuple[transforms.Compose, transforms.Compose]:
-    """Return model/visualization transforms aligned with ResNet50 expectations."""
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
+    """Return model/visualization transforms for single-channel mammography."""
+    mean = [0.485]
+    std = [0.229]
     transform_model = transforms.Compose([
         transforms.Resize(HP.IMG_RESIZE, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.CenterCrop(HP.IMG_CROP),
@@ -145,8 +112,9 @@ def get_transforms() -> Tuple[transforms.Compose, transforms.Compose]:
 
 def dicom_debug_preprocess(dcm_path: str) -> Dict[str, object]:
     """Detailed preprocessing pipeline for debugging/visualization."""
-    ds = pydicom.dcmread(dcm_path, force=True)
-    arr = ds.pixel_array
+    with allow_invalid_decimal_strings_context():
+        ds = pydicom.dcmread(dcm_path, force=True)
+        arr = ds.pixel_array
     arr = _to_float32(arr)
     arr = _apply_rescale(ds, arr)
     if _is_mono1(ds):

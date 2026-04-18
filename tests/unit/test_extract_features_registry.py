@@ -26,6 +26,24 @@ def _write_embedding_artifacts(outdir: Path) -> None:
     (outdir / "clustering_metrics.json").write_text("{}", encoding="utf-8")
 
 
+def test_sanitize_json_metrics_replaces_non_finite_values() -> None:
+    metrics = extract_features._sanitize_json_metrics(
+        {"k": np.int64(3), "silhouette": np.float64("-inf"), "davies_bouldin": np.inf}
+    )
+
+    assert metrics == {"k": 3, "silhouette": None, "davies_bouldin": None}
+
+
+def test_run_reduction_respects_explicit_no_flags() -> None:
+    args = argparse.Namespace(run_reduction=True, pca=False, tsne=None, umap=True)
+
+    extract_features._resolve_reduction_flags(args)
+
+    assert args.pca is False
+    assert args.tsne is True
+    assert args.umap is True
+
+
 def test_register_embedding_run_defaults_run_name(tmp_path: Path) -> None:
     outdir = tmp_path / "outputs" / "mamografias_embeddings"
     _write_embedding_artifacts(outdir)

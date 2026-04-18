@@ -59,8 +59,7 @@ def resolve_device() -> torch.device:
     Returns:
         torch.device: The preferred device (CUDA, MPS, or CPU) for the running environment
     """
-    device_str = get_optimal_device()
-    return torch.device(device_str)
+    return get_optimal_device()
 
 
 def _load_with_fallback(factory, weights, arch_name: str) -> nn.Module:
@@ -75,6 +74,19 @@ def _load_with_fallback(factory, weights, arch_name: str) -> nn.Module:
             RuntimeWarning,
         )
         return factory(weights=None)
+
+
+def _adapt_rgb_to_grayscale_input(module: nn.Module, inputs: tuple) -> tuple:
+    x = inputs[0]
+    if (
+        isinstance(module, nn.Conv2d)
+        and module.in_channels == 1
+        and isinstance(x, torch.Tensor)
+        and x.ndim == 4
+        and x.shape[1] == 3
+    ):
+        return (x.mean(dim=1, keepdim=True), *inputs[1:])
+    return inputs
 
 
 def build_resnet50_classifier(num_classes: int = 1, pretrained: bool = True) -> nn.Module:
@@ -92,6 +104,7 @@ def build_resnet50_classifier(num_classes: int = 1, pretrained: bool = True) -> 
 
     # Modify first conv layer for single-channel grayscale input
     model.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+    model.conv1.register_forward_pre_hook(_adapt_rgb_to_grayscale_input)
 
     # Replace final fc layer with custom number of classes
     in_features = model.fc.in_features
@@ -202,8 +215,22 @@ class ViewSpecificModel:
 
         model = self.models[view]
         if model is None:
-            raise RuntimeError(f"Model for view '{view}' has not been initialized")
+            raise RuntimeError(
+                f"Model for view '{view}' is not initialized "
+                f"(has not been initialized)"
+            )
 
+        first_conv = getattr(model, "conv1", None)
+        if first_conv is None:
+            wrapped_model = getattr(model, "rnet", None)
+            first_conv = getattr(wrapped_model, "conv1", None)
+        if (
+            isinstance(first_conv, nn.Conv2d)
+            and first_conv.in_channels == 1
+            and x.ndim == 4
+            and x.shape[1] == 3
+        ):
+            x = x.mean(dim=1, keepdim=True)
         return model(x)
 
 
@@ -254,7 +281,10 @@ class EnsemblePredictor:
 
         supported_methods = ["average", "weighted", "max"]
         if method not in supported_methods:
-            raise ValueError(f"Method '{method}' not supported. Choose from {supported_methods}")
+            raise ValueError(
+                f"Unsupported ensemble method: Method '{method}' not supported. "
+                f"Choose from {supported_methods}"
+            )
 
         self.models = models
         self.method = method

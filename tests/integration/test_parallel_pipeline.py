@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 """
 Integration tests for parallel pipeline processing.
 
@@ -21,7 +22,7 @@ Version: 1.0.0
 from pathlib import Path
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
@@ -72,6 +73,10 @@ def _create_sample_dicom_file(file_path: Path, patient_id: str, size: tuple = (1
     ds.SOPInstanceUID = meta.MediaStorageSOPInstanceUID
     ds.SOPClassUID = meta.MediaStorageSOPClassUID
     ds.Modality = "MG"
+    ds.Manufacturer = "SIEMENS"
+    ds.PixelSpacing = [0.1, 0.1]
+    ds.ViewPosition = "CC"
+    ds.ImageLaterality = "L"
 
     # Create pixel data
     arr = np.random.randint(0, 4096, size, dtype=np.uint16)

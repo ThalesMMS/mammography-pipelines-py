@@ -1,3 +1,4 @@
+# ruff: noqa
 #!/usr/bin/env python3
 """Utilities to validate and consolidate the official rerun benchmark."""
 
@@ -7,7 +8,6 @@ import csv
 import json
 import logging
 import platform
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -16,185 +16,35 @@ try:  # pragma: no cover - torch is optional for report generation
 except Exception:  # pragma: no cover - fallback when torch is unavailable
     torch = None  # type: ignore[assignment]
 
-from mammography.utils.class_modes import classes_mode_aliases, normalize_classes_mode
+from mammography.tools.benchmark_constants import (
+    ARCH_CONFIG,
+    ARCH_ORDER,
+    ARTICLE_COLUMNS,
+    COMMON_CONFIG,
+    DATASET_ORDER,
+    EXPECTED_SPLITS,
+    MASTER_COLUMNS,
+    TASK_ORDER,
+)
+from mammography.tools.benchmark_models import (
+    BenchmarkValidationError,
+    CollectedRun,
+    ExpectedRun,
+)
+from mammography.tools.benchmark_render import (
+    _environment_from_runs,
+    _render_docs_report,
+    _write_article_tex,
+    _write_csv_table,
+    _write_json_table,
+    _write_markdown_table,
+    _write_master_tex,
+)
+from mammography.utils.class_modes import normalize_classes_mode
+
 
 LOGGER = logging.getLogger("benchmark_report")
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
-DATASET_ORDER = ("archive", "mamografias", "patches_completo")
-TASK_ORDER = ("multiclass", "binary")
-ARCH_ORDER = ("efficientnet_b0", "resnet50", "vit_b_16")
-
-EXPECTED_SPLITS = {
-    "archive": "patient",
-    "mamografias": "random",
-    "patches_completo": "random",
-}
-
-COMMON_CONFIG = {
-    "seed": 42,
-    "deterministic": True,
-    "allow_tf32": True,
-    "amp": True,
-    "pretrained": True,
-    "train_backbone": True,
-    "unfreeze_last_block": True,
-    "augment": True,
-    "class_weights": "auto",
-    "sampler_weighted": True,
-    "test_frac": 0.1,
-    "tracker": "local",
-    "view_specific_training": False,
-}
-
-ARCH_CONFIG = {
-    "efficientnet_b0": {
-        "img_size": 512,
-        "batch_size": 16,
-        "epochs": 30,
-        "lr": 1e-4,
-        "backbone_lr": 1e-5,
-        "warmup_epochs": 2,
-        "early_stop_patience": 5,
-    },
-    "resnet50": {
-        "img_size": 512,
-        "batch_size": 16,
-        "epochs": 30,
-        "lr": 1e-4,
-        "backbone_lr": 1e-5,
-        "warmup_epochs": 2,
-        "early_stop_patience": 5,
-    },
-    "vit_b_16": {
-        "img_size": 224,
-        "batch_size": 8,
-        "epochs": 30,
-        "lr": 1e-3,
-        "backbone_lr": 1e-4,
-        "warmup_epochs": 3,
-        "early_stop_patience": 10,
-    },
-}
-
-MASTER_COLUMNS = [
-    "dataset",
-    "task",
-    "split_mode",
-    "arch",
-    "seed",
-    "img_size",
-    "batch_size",
-    "epochs",
-    "accuracy",
-    "kappa",
-    "macro_f1",
-    "auc",
-    "best_epoch",
-    "run_path",
-    "status",
-]
-
-ARTICLE_COLUMNS = [
-    "dataset",
-    "task",
-    "split",
-    "modelo",
-    "accuracy",
-    "kappa",
-    "macro-F1",
-    "AUC",
-]
-
-
-class BenchmarkValidationError(RuntimeError):
-    """Raised when the official benchmark namespace is incomplete or invalid."""
-
-
-@dataclass(frozen=True)
-class ExpectedRun:
-    """Expected benchmark combination for the official rerun battery."""
-
-    dataset: str
-    task: str
-    arch: str
-    split_mode: str
-    seed: int = 42
-
-    @property
-    def seed_dir_name(self) -> str:
-        return f"seed{self.seed}"
-
-    @property
-    def run_name(self) -> str:
-        return f"{self.dataset}_{self.task}_{self.arch}_seed{self.seed}"
-
-    @property
-    def relative_seed_dir(self) -> Path:
-        return Path(self.dataset) / self.task / self.arch / self.seed_dir_name
-
-    @property
-    def relative_seed_dirs(self) -> tuple[Path, ...]:
-        return tuple(
-            Path(self.dataset) / task / self.arch / self.seed_dir_name
-            for task in classes_mode_aliases(self.task)
-        )
-
-    @property
-    def run_name_aliases(self) -> tuple[str, ...]:
-        return tuple(
-            f"{self.dataset}_{task}_{self.arch}_seed{self.seed}"
-            for task in classes_mode_aliases(self.task)
-        )
-
-
-@dataclass(frozen=True)
-class CollectedRun:
-    """Validated run plus resolved artifacts and normalized metrics."""
-
-    expected: ExpectedRun
-    results_dir: Path
-    summary: dict[str, Any]
-    metrics: dict[str, Any]
-    accuracy: float
-    kappa: float
-    macro_f1: float
-    auc: float
-    best_epoch: int
-    export_dir: Path | None
-    export_manifest_path: Path | None
-
-    def master_row(self) -> dict[str, Any]:
-        return {
-            "dataset": self.expected.dataset,
-            "task": self.expected.task,
-            "split_mode": self.expected.split_mode,
-            "arch": self.expected.arch,
-            "seed": self.expected.seed,
-            "img_size": int(self.summary["img_size"]),
-            "batch_size": int(self.summary["batch_size"]),
-            "epochs": int(self.summary["epochs"]),
-            "accuracy": self.accuracy,
-            "kappa": self.kappa,
-            "macro_f1": self.macro_f1,
-            "auc": self.auc,
-            "best_epoch": self.best_epoch,
-            "run_path": str(self.results_dir),
-            "status": "accepted",
-        }
-
-    def article_row(self) -> dict[str, Any]:
-        return {
-            "dataset": self.expected.dataset,
-            "task": self.expected.task,
-            "split": self.expected.split_mode,
-            "modelo": self.expected.arch,
-            "accuracy": self.accuracy,
-            "kappa": self.kappa,
-            "macro-F1": self.macro_f1,
-            "AUC": self.auc,
-        }
-
 
 def expected_runs() -> list[ExpectedRun]:
     """Return the official 18-run matrix defined for the rerun battery."""
@@ -231,43 +81,43 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _normalize_output_prefix(path: Path) -> Path:
+    """
+    Resolve `path` under the repository root and return the same path with any file extension removed.
+    
+    Parameters:
+        path (Path): A path (file or directory) to resolve relative to the repository root.
+    
+    Returns:
+        Path: The resolved path with its suffix removed if one was present; otherwise the resolved path unchanged.
+    """
     resolved = _resolve_path(path)
     if resolved.suffix:
         return resolved.with_suffix("")
     return resolved
 
 
-def _format_float(value: float) -> str:
-    return f"{value:.4f}"
 
 
-def _format_cell(value: Any) -> str:
-    if isinstance(value, float):
-        return _format_float(value)
-    return str(value)
 
 
-def _markdown_escape(value: Any) -> str:
-    return _format_cell(value).replace("|", "\\|")
 
 
-def _tex_escape(value: Any) -> str:
-    text = _format_cell(value)
-    replacements = {
-        "\\": "\\textbackslash{}",
-        "_": "\\_",
-        "%": "\\%",
-        "&": "\\&",
-        "#": "\\#",
-        "{": "\\{",
-        "}": "\\}",
-    }
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    return text
 
 
 def _require_file(path: Path, description: str) -> Path:
+    """
+    Ensure the given filesystem path exists, raising a validation error if it does not.
+    
+    Parameters:
+        path (Path): Path to the required file or directory.
+        description (str): Human-readable name used in the error message when the path is missing.
+    
+    Returns:
+        Path: The same `path` if it exists.
+    
+    Raises:
+        BenchmarkValidationError: If `path` does not exist.
+    """
     if not path.exists():
         raise BenchmarkValidationError(f"{description} ausente: {path}")
     return path
@@ -759,6 +609,12 @@ def _collect_run(
 
 
 def _sort_runs(runs: list[CollectedRun]) -> list[CollectedRun]:
+    """
+    Sort collected runs by dataset, task, and architecture using the canonical orderings.
+    
+    Returns:
+    	A list of `CollectedRun` instances sorted first by `dataset` according to `DATASET_ORDER`, then by `task` according to `TASK_ORDER`, and finally by `arch` according to `ARCH_ORDER`.
+    """
     dataset_index = {name: index for index, name in enumerate(DATASET_ORDER)}
     task_index = {name: index for index, name in enumerate(TASK_ORDER)}
     arch_index = {name: index for index, name in enumerate(ARCH_ORDER)}
@@ -772,233 +628,6 @@ def _sort_runs(runs: list[CollectedRun]) -> list[CollectedRun]:
     )
 
 
-def _write_csv_table(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-
-def _write_json_table(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _markdown_lines(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:
-    header = "| " + " | ".join(columns) + " |"
-    divider = "| " + " | ".join(["---"] * len(columns)) + " |"
-    body = [
-        "| "
-        + " | ".join(_markdown_escape(row[column]) for column in columns)
-        + " |"
-        for row in rows
-    ]
-    return [header, divider, *body]
-
-
-def _write_markdown_table(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(_markdown_lines(rows, columns)) + "\n", encoding="utf-8")
-
-
-def _write_master_tex(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    latex_lines = [
-        "% Auto-generated by mammography benchmark-report",
-        "\\begin{table}[ht]",
-        "  \\centering",
-        "  \\scriptsize",
-        "  \\caption{Tabela mestre do rerun oficial 2026Q1.}",
-        "  \\label{tab:rerun-2026q1-master}",
-        "  \\resizebox{\\textwidth}{!}{%",
-        "  \\begin{tabular}{llllrrrrrrrrrll}",
-        "    \\toprule",
-        "    dataset & task & split\\_mode & arch & seed & img\\_size & batch\\_size & epochs & accuracy & kappa & macro\\_f1 & auc & best\\_epoch & run\\_path & status \\\\",
-        "    \\midrule",
-    ]
-    for row in rows:
-        latex_lines.append(
-            "    " + " & ".join(_tex_escape(row[column]) for column in MASTER_COLUMNS) + " \\\\"
-        )
-    latex_lines.extend(
-        [
-            "    \\bottomrule",
-            "  \\end{tabular}%",
-            "  }",
-            "\\end{table}",
-        ]
-    )
-    path.write_text("\n".join(latex_lines) + "\n", encoding="utf-8")
-
-
-def _write_article_tex(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    latex_lines = [
-        "% Auto-generated by mammography benchmark-report",
-        "\\subsection{Tabela Consolidada do Rerun Oficial 2026Q1}",
-        "\\label{sec:rerun-2026q1-table}",
-        (
-            "A tabela a seguir deriva automaticamente da tabela mestre do rerun oficial "
-            "e resume um resultado por combinacao de dataset, tarefa e modelo."
-        ),
-        "\\begin{table}[ht]",
-        "  \\centering",
-        "  \\scriptsize",
-        "  \\caption{Rerun oficial 2026Q1 consolidado por dataset, tarefa e modelo.}",
-        "  \\label{tab:rerun-2026q1-article}",
-        "  \\begin{tabular}{llllrrrr}",
-        "    \\toprule",
-        "    dataset & task & split & modelo & accuracy & kappa & macro-F1 & AUC \\\\",
-        "    \\midrule",
-    ]
-    for row in rows:
-        latex_lines.append(
-            "    " + " & ".join(_tex_escape(row[column]) for column in ARTICLE_COLUMNS) + " \\\\"
-        )
-    latex_lines.extend(
-        [
-            "    \\bottomrule",
-            "  \\end{tabular}",
-            "\\end{table}",
-        ]
-    )
-    path.write_text("\n".join(latex_lines) + "\n", encoding="utf-8")
-
-
-def _current_environment() -> dict[str, str]:
-    env = {
-        "python": platform.python_version(),
-        "platform": platform.platform(),
-        "torch": "unavailable",
-        "cuda": "unavailable",
-        "gpu": "unavailable",
-    }
-    if torch is None:
-        return env
-
-    env["torch"] = getattr(torch, "__version__", "unknown")
-    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
-    env["cuda"] = str(cuda_version or "cpu")
-    try:
-        env["gpu"] = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
-    except Exception:
-        env["gpu"] = "unknown"
-    return env
-
-
-def _environment_from_runs(runs: list[CollectedRun]) -> dict[str, str]:
-    env = _current_environment()
-
-    def _value_from_summaries(summary_key: str, fallback_key: str) -> str:
-        values = sorted(
-            {
-                str(run.summary.get("reproducibility", {}).get(summary_key)).strip()
-                for run in runs
-                if str(run.summary.get("reproducibility", {}).get(summary_key) or "").strip()
-            }
-        )
-        if not values:
-            return env[fallback_key]
-        if len(values) == 1:
-            return values[0]
-        return ", ".join(values)
-
-    return {
-        "python": _value_from_summaries("python_version", "python"),
-        "platform": _value_from_summaries("platform", "platform"),
-        "torch": _value_from_summaries("torch_version", "torch"),
-        "cuda": _value_from_summaries("cuda_version", "cuda"),
-        "gpu": _value_from_summaries("gpu_name", "gpu"),
-    }
-
-
-def _render_docs_report(
-    path: Path,
-    namespace: Path,
-    runs: list[CollectedRun],
-    master_rows: list[dict[str, Any]],
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    env = _environment_from_runs(runs)
-    commits = sorted(
-        {
-            str(run.summary.get("reproducibility", {}).get("git_commit", "unknown"))
-            for run in runs
-        }
-    )
-    execution_timestamps = sorted(
-        {
-            str(
-                run.summary.get("created_at")
-                or run.summary.get("reproducibility", {}).get("timestamp")
-                or "unknown"
-            )
-            for run in runs
-        }
-    )
-
-    matrix_rows = [
-        {
-            "dataset": run.expected.dataset,
-            "task": run.expected.task,
-            "split_mode": run.expected.split_mode,
-            "arch": run.expected.arch,
-            "run_path": str(run.results_dir),
-            "status": "accepted",
-        }
-        for run in runs
-    ]
-    matrix_columns = ["dataset", "task", "split_mode", "arch", "run_path", "status"]
-
-    lines = [
-        "# Technical Report: rerun_2026q1",
-        "",
-        "## Header",
-        f"- Namespace: `{namespace}`",
-        f"- Official runs validated: `{len(runs)}`",
-        f"- Git commits seen in summaries: `{', '.join(commits)}`",
-        f"- Execution timestamps seen in summaries: `{', '.join(execution_timestamps)}`",
-        f"- Python: `{env['python']}`",
-        f"- PyTorch: `{env['torch']}`",
-        f"- CUDA: `{env['cuda']}`",
-        f"- GPU: `{env['gpu']}`",
-        "",
-        "## Protocol",
-        "- Official matrix: 3 datasets x 2 tasks x 3 models, one seed (42).",
-        "- Official metrics come from a held-out test split; the best checkpoint is still selected on validation macro-F1.",
-        "- Common settings enforced: deterministic=true, amp=true, allow_tf32=true, pretrained=true, train_backbone=true, unfreeze_last_block=true, augment=true, class_weights=auto, sampler_weighted=true, test_frac=0.1, tracker=local.",
-        "- CNN profile: img_size=512, batch_size=16, epochs=30, lr=1e-4, backbone_lr=1e-5, warmup_epochs=2, early_stop_patience=5.",
-        "- ViT profile: img_size=224, batch_size=8, epochs=30, lr=1e-3, backbone_lr=1e-4, warmup_epochs=3, early_stop_patience=10.",
-        "- Explainability artifacts are explicitly out of scope for rerun acceptance.",
-        "",
-        "## Run Matrix",
-        *_markdown_lines(matrix_rows, matrix_columns),
-        "",
-        "## Split Limitations",
-        "- `archive` uses `split_mode=patient`, and leakage validation is checked against saved split manifests when available.",
-        "- `mamografias` uses `split_mode=random` because the current loader does not expose a reliable patient grouping key for this benchmark.",
-        "- `patches_completo` uses `split_mode=random` for the same limitation: no reliable patient grouping key is exposed in the current data format.",
-        "",
-        "## Master Table",
-        *_markdown_lines(master_rows, MASTER_COLUMNS),
-        "",
-        "## Export References",
-    ]
-    for run in runs:
-        export_dir_text = str(run.export_dir) if run.export_dir is not None else "not found"
-        export_manifest_text = (
-            str(run.export_manifest_path)
-            if run.export_manifest_path is not None
-            else "not found"
-        )
-        lines.append(
-            f"- `{run.expected.run_name}`: export_dir=`{export_dir_text}` | manifest=`{export_manifest_text}`"
-        )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def generate_benchmark_report(
     *,
     namespace: Path,
@@ -1007,7 +636,19 @@ def generate_benchmark_report(
     article_table_path: Path,
     exports_search_root: Path,
 ) -> list[CollectedRun]:
-    """Validate the official rerun namespace and write consolidated artifacts."""
+    """
+    Generate the official benchmark report and write consolidated master/article artifacts.
+    
+    Parameters:
+        namespace (Path): Root path of the benchmark namespace to validate and collect runs from.
+        output_prefix (Path): Base path used to derive master output files; suffixes `.csv`, `.md`, `.json`, and `.tex` will be appended.
+        docs_report_path (Path): Destination path for the generated technical documentation report.
+        article_table_path (Path): Destination path for the article table TeX file.
+        exports_search_root (Path): Root directory to search for export manifests to associate export metadata with runs.
+    
+    Returns:
+        list[CollectedRun]: Collected and validated runs sorted by dataset, task, and architecture.
+    """
     namespace = _resolve_path(namespace)
     output_prefix = _normalize_output_prefix(output_prefix)
     docs_report_path = _resolve_path(docs_report_path)

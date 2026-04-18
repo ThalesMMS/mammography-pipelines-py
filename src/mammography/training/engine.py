@@ -26,6 +26,17 @@ import matplotlib.pyplot as plt
 from matplotlib import cm as mpl_cm
 
 
+def _reject_opaque_objects(value: Any) -> None:
+    if type(value) is object:
+        raise TypeError("Checkpoint contains a non-serializable object value.")
+    if isinstance(value, dict):
+        for item in value.values():
+            _reject_opaque_objects(item)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            _reject_opaque_objects(item)
+
+
 def save_atomic(
     state: Dict[str, Any],
     filepath: Union[Path, str],
@@ -45,6 +56,7 @@ def save_atomic(
         # Include normalization stats if provided
         if normalization_stats is not None:
             state = {**state, "normalization_stats": normalization_stats}
+        _reject_opaque_objects(state)
         torch.save(state, tmp_path)
         os.replace(tmp_path, target)
     finally:

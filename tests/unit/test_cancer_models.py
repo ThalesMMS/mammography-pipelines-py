@@ -26,6 +26,14 @@ def test_resolve_device() -> None:
     assert device.type in ["cuda", "mps", "cpu"]
 
 
+def test_resolve_device_returns_optimal_device_object(monkeypatch) -> None:
+    """resolve_device should return the torch.device selected by detection."""
+    selected = torch.device("cpu")
+    monkeypatch.setattr(cancer_models, "get_optimal_device", lambda: selected)
+
+    assert cancer_models.resolve_device() is selected
+
+
 def test_build_resnet50_classifier_without_pretrained(monkeypatch) -> None:
     """Test building ResNet50 classifier without downloading pretrained weights."""
     monkeypatch.setattr(
@@ -47,6 +55,29 @@ def test_build_resnet50_classifier_without_pretrained(monkeypatch) -> None:
 
     # Verify fc layer has correct output size
     assert model.fc.out_features == 1
+
+
+def test_build_resnet50_classifier_accepts_rgb_via_grayscale_hook(monkeypatch) -> None:
+    class _TinyResNet(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(1, 64, kernel_size=1, bias=False)
+            self.fc = torch.nn.Linear(64, 2)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x = self.conv1(x)
+            x = x.mean(dim=(2, 3))
+            return self.fc(x)
+
+    monkeypatch.setattr(cancer_models, "resnet50", lambda weights=None: _TinyResNet())
+
+    model = cancer_models.build_resnet50_classifier(num_classes=2, pretrained=False)
+
+    output = model(torch.randn(2, 3, 16, 16))
+
+    assert output.shape == (2, 2)
+    assert model.conv1.in_channels == 1
+    assert model.conv1.weight.shape[1] == 1
 
 
 def test_build_resnet50_classifier_multiclass(monkeypatch) -> None:
@@ -317,6 +348,32 @@ def test_view_specific_model_predict_returns_correct_output() -> None:
 
     assert mlo_out.shape == (3, 1)
     assert torch.allclose(mlo_out, torch.full((3, 1), 0.4))
+
+
+def test_view_specific_model_predict_converts_wrapped_grayscale_backbone() -> None:
+    class _WrappedGrayscaleModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rnet = torch.nn.Module()
+            self.rnet.conv1 = torch.nn.Conv2d(1, 1, kernel_size=1)
+            self.seen_channels: int | None = None
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.seen_channels = x.shape[1]
+            return x.mean(dim=(1, 2, 3), keepdim=False).unsqueeze(1)
+
+    model = _WrappedGrayscaleModel()
+    vsm = cancer_models.ViewSpecificModel(views=["CC"])
+    vsm.set_model("CC", model)
+
+    x = torch.randn(2, 3, 16, 16)
+    result = vsm.predict(x, "CC")
+    expected = model(x.mean(dim=1, keepdim=True))
+
+    assert result.shape == (2, 1)
+    assert result.dtype == x.dtype
+    assert torch.allclose(result, expected)
+    assert model.seen_channels == 1
 
 
 def test_view_specific_model_predict_uninitialized_model_raises() -> None:

@@ -66,12 +66,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inferencia com checkpoint treinado.")
     parser.add_argument(
         "--checkpoint",
-        required=True,
+        required=False,
         help="Caminho para o checkpoint (.pt)",
     )
     parser.add_argument(
         "--input",
-        required=True,
+        required=False,
         help="Arquivo ou diretorio de imagens/DICOM",
     )
     parser.add_argument(
@@ -124,16 +124,33 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Nao atualizar registry local",
     )
+    if isinstance(argv, InferenceConfig):
+        args = parser.parse_args([])
+        for key, value in argv.model_dump(mode="python").items():
+            if value is not None:
+                setattr(args, key, value)
+        return args
+
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    config_input = isinstance(argv, InferenceConfig)
     args = parse_args(argv)
+    if not getattr(args, "input", None):
+        if getattr(args, "dicom_root", None):
+            args.input = str(args.dicom_root)
+        elif getattr(args, "csv", None):
+            args.input = str(Path(args.csv).resolve().parent)
     try:
         cfg = InferenceConfig.from_args(args)
     except ValidationError as exc:
         raise SystemExit(f"Config invalida: {exc}") from exc
     args.classes = getattr(cfg, "classes", args.classes)
+    if not args.input:
+        raise SystemExit("Informe --input ou dicom_root para inferencia.")
+    if config_input and not getattr(args, "output", None):
+        args.output = str(Path(args.checkpoint).parent / "predictions.csv")
     inputs = _iter_inputs(args.input)
     if not inputs:
         raise SystemExit(f"Nenhum arquivo encontrado em {args.input}.")
@@ -189,8 +206,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         pretrained=False,
     )
     state = torch.load(args.checkpoint, map_location=device)
-    if isinstance(state, dict) and "state_dict" in state:
+    if isinstance(state, dict) and "model_state" in state:
+        state = state["model_state"]
+    elif isinstance(state, dict) and "model_state_dict" in state:
+        state = state["model_state_dict"]
+    elif isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
+    elif isinstance(state, dict) and not all(torch.is_tensor(value) for value in state.values()):
+        raise RuntimeError("Checkpoint missing model_state/state_dict keys.")
     if isinstance(state, dict):
         state = _strip_module_prefix(state)
     model.load_state_dict(state, strict=False)
@@ -215,9 +238,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             probs = torch.softmax(logits, dim=1).cpu().numpy()
             preds = np.argmax(probs, axis=1)
             for meta, pred, prob in zip(metas, preds, probs):
+                pred_class = int(pred)
                 row = {
                     "file": meta.get("path"),
-                    "pred_class": int(pred),
+                    "pred_class": pred_class,
+                    "predicted_class": pred_class,
+                    "confidence": float(np.max(prob)),
                 }
                 for i, p in enumerate(prob.tolist()):
                     row[f"prob_{i}"] = float(p)

@@ -145,6 +145,7 @@ class MammoDensityDataset(Dataset):
         self.split_name = split_name
         self.embedding_store = embedding_store
         self.label_mapper = label_mapper
+        self._auto_normalize_enabled = bool(auto_normalize and mean is None and std is None)
 
         valid_cache_modes = {"none", "memory", "disk", "tensor-disk", "tensor-memmap"}
         if self.cache_mode not in valid_cache_modes:
@@ -585,6 +586,10 @@ class MammoDensityDataset(Dataset):
                 contrast = 1.0 + float(torch.empty(1).uniform_(-0.1, 0.1))
                 tensor = tv_F.adjust_brightness(tensor, brightness)
                 tensor = tv_F.adjust_contrast(tensor, contrast)
+        if self._auto_normalize_enabled:
+            flat = tensor.flatten(1)
+            if torch.all(flat.std(dim=1) < 1e-6):
+                return tensor
         tensor = tv_v2_F.normalize(tensor, self._norm_mean, self._norm_std)
         return tensor
 
@@ -595,9 +600,12 @@ def robust_collate(batch):
         return None
     xs = torch.stack([b[0] for b in batch], dim=0)
     ys = torch.tensor([b[1] for b in batch], dtype=torch.long)
+    if not all(len(b) > 2 for b in batch):
+        return xs, ys
+
     meta = [b[2] for b in batch]
 
-    emb_list = [b[3] for b in batch if b[3] is not None]
+    emb_list = [b[3] for b in batch if len(b) > 3 and b[3] is not None]
     embeddings = None
     if len(emb_list) == len(batch):
         embeddings = torch.stack(emb_list, dim=0)

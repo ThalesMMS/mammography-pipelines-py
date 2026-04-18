@@ -56,6 +56,22 @@ from mammography.training.engine import extract_embeddings
 from mammography.analysis.clustering import run_pca, run_tsne, run_kmeans, run_umap
 from mammography.vis.plots import plot_scatter, plot_clustering_metrics
 
+def _json_safe_number(value: Any) -> Any:
+    if isinstance(value, (float, np.floating)):
+        value = float(value)
+        return value if np.isfinite(value) else None
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    return value
+
+def _sanitize_json_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {key: _json_safe_number(value) for key, value in metrics.items()}
+
+def _resolve_reduction_flags(args: argparse.Namespace) -> None:
+    args.pca = (args.run_reduction or args.pca is True) and args.pca is not False
+    args.tsne = (args.run_reduction or args.tsne is True) and args.tsne is not False
+    args.umap = (args.run_reduction or args.umap is True) and args.umap is not False
+
 def _tensor_to_uint8_image(tensor: torch.Tensor) -> np.ndarray:
     """Convert a normalized tensor back to uint8 HWC for previews."""
     arr = tensor.permute(1, 2, 0).numpy()
@@ -189,7 +205,7 @@ def _infer_dataset_name(args: argparse.Namespace, csv_path: str | None) -> str:
 
 def _json_safe(value: object) -> object:
     if isinstance(value, Path):
-        return str(value)
+        return value.as_posix()
     if isinstance(value, dict):
         return {key: _json_safe(val) for key, val in value.items()}
     if isinstance(value, (list, tuple)):
@@ -276,16 +292,20 @@ def main(argv: Sequence[str] | None = None):
     parser.add_argument("--save-csv", action="store_true", help="Salva joined.csv com projeções")
     parser.add_argument("--run-reduction", action="store_true", help="Atalho para PCA + t-SNE + UMAP")
     parser.add_argument("--run-clustering", action="store_true", help="Atalho para k-means")
-    parser.add_argument("--pca", action="store_true")
+    parser.add_argument("--pca", dest="pca", action="store_true", default=None)
+    parser.add_argument("--no-pca", dest="pca", action="store_false")
     parser.add_argument(
         "--pca-svd-solver",
         default="auto",
         choices=["auto", "full", "randomized", "arpack"],
         help="Solver do PCA (auto/full/randomized/arpack).",
     )
-    parser.add_argument("--tsne", action="store_true", help="Run t-SNE")
-    parser.add_argument("--umap", action="store_true", help="Run UMAP")
+    parser.add_argument("--tsne", dest="tsne", action="store_true", default=None, help="Run t-SNE")
+    parser.add_argument("--no-tsne", dest="tsne", action="store_false")
+    parser.add_argument("--umap", dest="umap", action="store_true", default=None, help="Run UMAP")
+    parser.add_argument("--no-umap", dest="umap", action="store_false")
     parser.add_argument("--cluster", dest="cluster_auto", action="store_true", help="Auto k-means (usa silhouette)")
+    parser.add_argument("--no-clustering", dest="disable_clustering", action="store_true", help="Disable clustering")
     parser.add_argument("--cluster-k", type=int, default=0, help="Força K fixo (>=2) em k-means")
     parser.add_argument("--n-clusters", type=int, default=0, help="Alias para --cluster-k")
     parser.add_argument("--sample-grid", type=int, default=16, help="Número de exemplos na grade de pré-visualização")
@@ -310,6 +330,8 @@ def main(argv: Sequence[str] | None = None):
     parser.add_argument("--no-registry", action="store_true", help="Nao atualizar registry local")
     args = parser.parse_args(argv)
 
+    _resolve_reduction_flags(args)
+
     # Handle --data_dir shortcut for testing
     if args.data_dir:
         data_dir = Path(args.data_dir)
@@ -332,10 +354,10 @@ def main(argv: Sequence[str] | None = None):
 
     if args.n_clusters and args.cluster_k <= 0:
         args.cluster_k = args.n_clusters
-    if args.run_reduction:
-        args.pca = True
-        args.tsne = True
-        args.umap = True
+    if args.disable_clustering:
+        args.run_clustering = False
+        args.cluster_auto = False
+        args.cluster_k = 0
     if args.run_clustering and not args.cluster_auto and args.cluster_k <= 0:
         args.cluster_auto = True
     
@@ -427,6 +449,7 @@ def main(argv: Sequence[str] | None = None):
 
     # Save raw
     np.save(os.path.join(outdir, "features.npy"), features)
+    np.savez(os.path.join(outdir, "embeddings.npz"), embeddings=features)
     pd.DataFrame(metadata).to_csv(os.path.join(outdir, "metadata.csv"), index=False)
 
     # Analysis
@@ -472,7 +495,12 @@ def main(argv: Sequence[str] | None = None):
             except Exception:
                 sil = -np.inf
                 db = np.inf
-            history.append({"k": k, "silhouette": float(sil), "davies_bouldin": float(db)})
+            metrics_row = _sanitize_json_metrics(
+                {"k": k, "silhouette": float(sil), "davies_bouldin": float(db)}
+            )
+            history.append(metrics_row)
+            with open(os.path.join(outdir, f"clustering_kmeans_k{k}.json"), "w", encoding="utf-8") as f:
+                json.dump({"k": k, "labels": labels.tolist(), "metrics": metrics_row}, f, indent=2, allow_nan=False)
             if sil > best_score:
                 best_score = sil
                 best_k = k
@@ -485,7 +513,7 @@ def main(argv: Sequence[str] | None = None):
             if "tsne_x" in joined.columns:
                 plot_scatter(joined, "tsne_x", "tsne_y", hue="cluster", title=f"t-SNE by Cluster (K={best_k})", out_path=os.path.join(outdir, "tsne_cluster.png"))
             with open(os.path.join(outdir, "clustering_metrics.json"), "w", encoding="utf-8") as f:
-                json.dump({"best_k": best_k, "history": history}, f, indent=2)
+                json.dump({"best_k": best_k, "history": history}, f, indent=2, allow_nan=False)
 
     if args.save_csv and not joined.empty:
         joined.to_csv(os.path.join(outdir, "joined.csv"), index=False)

@@ -107,8 +107,12 @@ class SearchSpace(BaseModel):
             raise ValueError(f"Invalid YAML format in {path}: expected dict")
 
         # Parse parameters with type discrimination
+        if "parameters" not in data:
+            raise ValueError(
+                f"Invalid YAML format in {path}: expected dict with 'parameters'"
+            )
         parameters = {}
-        raw_params = data.get("parameters", {})
+        raw_params = data["parameters"]
         if not isinstance(raw_params, dict):
             raise ValueError("'parameters' must be a dict")
 

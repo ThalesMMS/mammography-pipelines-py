@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software in a manuscript, poster, or report, please cite it using the metadata below."
+title: "Mammography Pipelines"
+type: software
+authors:
+  - family-names: "Mendonça Santos"
+    given-names: "Thales Matheus"
+version: "1.0.0"
+date-released: "2026-02-04"
+license: "MIT"
+repository-code: "https://github.com/ThalesMMS/mammography-pipelines-py"
+url: "https://github.com/ThalesMMS/mammography-pipelines-py#readme"
+commit: "476a1e6bb1f14cfd4309b26058db8da1101f2c1d"
+abstract: "Research software for mammography workflows focused on breast density analysis and reproducible reporting artifacts."
+keywords:
+  - mammography
+  - breast-density
+  - medical-imaging
+  - reproducibility

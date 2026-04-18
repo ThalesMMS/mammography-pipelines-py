@@ -80,6 +80,14 @@ def _load_with_fallback(factory, weights, arch_name: str) -> nn.Module:
         )
         return factory(weights=None)
 
+
+def _validate_extra_feature_dim(extra_feature_dim: int) -> int:
+    value = int(extra_feature_dim or 0)
+    if value < 0:
+        raise ValueError("extra_feature_dim must be non-negative")
+    return value
+
+
 class EfficientNetWithFusion(nn.Module):
     """Wrapper that optionally concatenates tabular embeddings before classification."""
 
@@ -88,7 +96,7 @@ class EfficientNetWithFusion(nn.Module):
         self.backbone = base_model
         self.features = base_model.features
         self.avgpool = base_model.avgpool
-        self.extra_feature_dim = int(extra_feature_dim or 0)
+        self.extra_feature_dim = _validate_extra_feature_dim(extra_feature_dim)
 
         # Safely extract classifier input features
         # EfficientNet typically has Sequential(Dropout, Linear) but check to be safe
@@ -142,7 +150,7 @@ class ResNetWithFusion(nn.Module):
     def __init__(self, base_model: nn.Module, num_classes: int, extra_feature_dim: int = 0):
         super().__init__()
         self.backbone = base_model
-        self.extra_feature_dim = int(extra_feature_dim or 0)
+        self.extra_feature_dim = _validate_extra_feature_dim(extra_feature_dim)
 
         in_features = base_model.fc.in_features
         # Replace the default fc with identity so we can attach our own head.
@@ -188,7 +196,7 @@ class ViTWithFusion(nn.Module):
     def __init__(self, base_model: nn.Module, num_classes: int, extra_feature_dim: int = 0):
         super().__init__()
         self.backbone = base_model
-        self.extra_feature_dim = int(extra_feature_dim or 0)
+        self.extra_feature_dim = _validate_extra_feature_dim(extra_feature_dim)
 
         in_features = base_model.heads.head.in_features
         # Replace the default head with identity so we can attach our own head.
@@ -226,7 +234,7 @@ class DeiTWithFusion(nn.Module):
     def __init__(self, base_model: nn.Module, num_classes: int, extra_feature_dim: int = 0):
         super().__init__()
         self.backbone = base_model
-        self.extra_feature_dim = int(extra_feature_dim or 0)
+        self.extra_feature_dim = _validate_extra_feature_dim(extra_feature_dim)
 
         # timm DeiT models have a 'head' attribute
         in_features = base_model.head.in_features if hasattr(base_model, 'head') else base_model.num_features
@@ -263,6 +271,43 @@ class DeiTWithFusion(nn.Module):
             x = torch.cat([x, extra_features], dim=1)
         return self.classifier(x)
 
+
+class _EfficientNetInputGuard(nn.Module):
+    """Legacy EfficientNet wrapper that preserves older input-shape validation."""
+
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor, *args, **kwargs):
+        if x.ndim != 4 or x.shape[1] != 3 or x.shape[-2] < 224 or x.shape[-1] < 224:
+            raise ValueError("EfficientNet expects input shape (N, 3, H, W) with H/W >= 224")
+        return self.model(x, *args, **kwargs)
+
+
+def _configure_efficientnet_trainability(
+    model: EfficientNetWithFusion,
+    *,
+    train_backbone: bool,
+    unfreeze_last_block: bool,
+) -> None:
+    """Apply the EfficientNet backbone freeze policy used by public builders."""
+    for p in model.backbone.parameters():
+        p.requires_grad = False
+    for p in model.classifier.parameters():
+        p.requires_grad = True
+
+    if unfreeze_last_block:
+        num_blocks = len(model.features)
+        for i in range(max(0, num_blocks - 2), num_blocks):
+            for p in model.features[i].parameters():
+                p.requires_grad = True
+
+    if train_backbone:
+        for p in model.backbone.parameters():
+            p.requires_grad = True
+
+
 def build_model(
     arch: str = "efficientnet_b0",
     num_classes: int = 4,
@@ -278,23 +323,12 @@ def build_model(
         weights = EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
         base = _load_with_fallback(efficientnet_b0, weights, "efficientnet_b0")
         m = EfficientNetWithFusion(base, num_classes=num_classes, extra_feature_dim=extra_feature_dim)
-        
-        # Configure initial freezing
-        for p in m.backbone.parameters():
-            p.requires_grad = False
-        for p in m.classifier.parameters():
-            p.requires_grad = True
-            
-        if unfreeze_last_block:
-            # EfficientNetB0: last 2 blocks
-            num_blocks = len(m.features)
-            for i in range(max(0, num_blocks - 2), num_blocks):
-                for p in m.features[i].parameters():
-                    p.requires_grad = True
-                    
-        if train_backbone:
-            for p in m.backbone.parameters():
-                p.requires_grad = True
+
+        _configure_efficientnet_trainability(
+            m,
+            train_backbone=train_backbone,
+            unfreeze_last_block=unfreeze_last_block,
+        )
                 
         return m
 
@@ -464,6 +498,44 @@ def build_model(
 
     else:
         raise ValueError(f"Architecture {arch} not supported.")
+
+
+def build_efficientnet(
+    num_classes: int = 4,
+    pretrained: bool = True,
+    train_backbone: bool = False,
+    unfreeze_last_block: bool = True,
+    extra_feature_dim: int = 0,
+) -> nn.Module:
+    """Legacy EfficientNetB0 constructor kept for older callers and tests."""
+    if num_classes <= 0:
+        raise ValueError("num_classes must be positive")
+    extra_feature_dim = _validate_extra_feature_dim(extra_feature_dim)
+
+    if pretrained:
+        base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
+        model = EfficientNetWithFusion(
+            base,
+            num_classes=num_classes,
+            extra_feature_dim=extra_feature_dim,
+        )
+        _configure_efficientnet_trainability(
+            model,
+            train_backbone=train_backbone,
+            unfreeze_last_block=unfreeze_last_block,
+        )
+    else:
+        model = build_model(
+            arch="efficientnet_b0",
+            num_classes=num_classes,
+            train_backbone=train_backbone,
+            unfreeze_last_block=unfreeze_last_block,
+            extra_feature_dim=extra_feature_dim,
+            pretrained=False,
+        )
+
+    return _EfficientNetInputGuard(model)
+
 
 def create_model(
     arch: str = "efficientnet_b0",

@@ -3,6 +3,7 @@
 import logging
 import os
 import platform
+import warnings
 from typing import Any, Dict
 
 import torch
@@ -148,14 +149,14 @@ class DeviceDetector:
             print(f"  {key}: {value}")
 
 
-def get_optimal_device() -> str:
-    """Return the preferred device for the running environment as a string.
+def get_optimal_device() -> torch.device:
+    """Return the preferred device for the running environment.
 
     Returns:
-        str: Device type - one of "cuda", "mps", or "cpu"
+        torch.device: Device object for the selected backend
     """
     detector = DeviceDetector()
-    return detector.best_device
+    return detector.get_device()
 
 
 def get_device_config() -> Dict[str, Any]:
@@ -205,8 +206,20 @@ def resolve_device(device: str | torch.device | None) -> torch.device:
         return device
     elif isinstance(device, str):
         device_lower = device.lower()
-        if device_lower in ("cpu", "cuda", "mps"):
-            return torch.device(device_lower)
+        if device_lower == "auto":
+            return detect_device()
+        if device_lower == "cpu":
+            return torch.device("cpu")
+        if device_lower.startswith("cuda"):
+            if torch.cuda.is_available():
+                return torch.device(device_lower)
+            warnings.warn("CUDA requested but not available; falling back to CPU.", UserWarning)
+            return torch.device("cpu")
+        if device_lower == "mps":
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return torch.device("mps")
+            warnings.warn("MPS requested but not available; falling back to CPU.", UserWarning)
+            return torch.device("cpu")
         else:
             raise ValueError(f"Invalid device string: {device}")
     else:

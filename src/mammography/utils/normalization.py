@@ -414,6 +414,14 @@ def z_score_normalize(
     elif isinstance(std, np.ndarray):
         std = torch.from_numpy(std).to(dtype=data_tensor.dtype, device=data_tensor.device)
 
+    if isinstance(mean, torch.Tensor) and mean.ndim == 1 and isinstance(std, torch.Tensor) and std.ndim == 1:
+        if data_tensor.ndim == 4 and mean.numel() == data_tensor.shape[1]:
+            mean = mean.view(1, -1, 1, 1)
+            std = std.view(1, -1, 1, 1)
+        elif data_tensor.ndim == 3 and mean.numel() == data_tensor.shape[0]:
+            mean = mean.view(-1, 1, 1)
+            std = std.view(-1, 1, 1)
+
     # Clamp std to avoid division by zero
     std = torch.clamp(std, min=eps)
 

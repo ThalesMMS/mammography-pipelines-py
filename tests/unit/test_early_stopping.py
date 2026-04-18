@@ -406,7 +406,7 @@ def test_early_stopping_no_patience() -> None:
             patience_ctr += 1
 
         # Early stopping check
-        should_stop = early_stop_patience and patience_ctr >= early_stop_patience
+        should_stop = bool(early_stop_patience and patience_ctr >= early_stop_patience)
         assert should_stop is False  # Should never trigger when patience is 0
 
 
