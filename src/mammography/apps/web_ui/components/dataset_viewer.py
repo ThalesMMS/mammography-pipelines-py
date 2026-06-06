@@ -21,7 +21,7 @@ from PIL import Image
 
 from mammography.data.csv_loader import load_dataset_dataframe
 from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
-from mammography.utils.security import redact_path, resolve_path, resolve_within_base
+from mammography.utils.security import redact_path, resolve_within_base
 
 try:
     import streamlit as st
@@ -157,10 +157,7 @@ class DatasetViewer:
             return self._image_cache[cache_key]
 
         try:
-            path = resolve_path(image_path)
-            if not path.exists():
-                LOGGER.warning("Image file not found: %s", redact_path(path))
-                return None
+            path = _resolve_dataset_path(image_path, must_exist=True)
 
             # Load based on file type
             if is_dicom_path(str(path)):
