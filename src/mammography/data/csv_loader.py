@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
 try:
     import pandera.pandas as pa
 except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments
@@ -20,7 +21,12 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
 import pydicom
 
 from ..io.dicom import DICOM_EXTS
-from .format_detection import detect_dataset_format, validate_format, suggest_preprocessing
+from ..utils.security import redact_path, resolve_path, safe_child_path
+from .format_detection import (
+    detect_dataset_format,
+    validate_format,
+    suggest_preprocessing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,7 @@ DATASET_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
 ALLOWED_DENSITY_LABELS = (1, 2, 3, 4, 5)
 VALID_IMAGE_EXTS = DICOM_EXTS + (".png", ".jpg", ".jpeg")
 
+
 def _normalize_view_position(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -45,18 +52,19 @@ def _normalize_view_position(value: Any) -> Optional[str]:
     view = str(value).strip().upper()
     return view if view in ("CC", "MLO") else None
 
+
 def _find_first_dicom(folder: str) -> Optional[str]:
     """Return the first DICOM path found under the given folder (depth-first)."""
     exts = (".dcm", ".dicom", ".DCM", ".DICOM")
-    dicoms: List[str] = []
-    for curr, _, files in os.walk(folder):
-        for f in files:
-            fp = os.path.join(curr, f)
-            lower = f.lower()
-            if fp.endswith(exts) or lower.endswith(".dcm") or lower.endswith(".dicom"):
-                dicoms.append(fp)
+    folder_path = resolve_path(folder, must_exist=True)
+    dicoms = [
+        path
+        for path in folder_path.rglob("*")
+        if path.is_file() and path.name.lower().endswith((".dcm", ".dicom"))
+    ]
     dicoms.sort()
-    return dicoms[0] if dicoms else None
+    return str(dicoms[0]) if dicoms else None
+
 
 def _extract_view_from_dicom(dcm_path: str) -> Optional[str]:
     """Extract ViewPosition from DICOM file, returning None if missing or invalid.
@@ -76,18 +84,21 @@ def _extract_dicom_metadata(dcm_path: str) -> Tuple[Optional[str], Optional[str]
     try:
         dataset = pydicom.dcmread(dcm_path, stop_before_pixels=True, force=True)
     except Exception as exc:
-        logger.debug(f"Failed to extract metadata from {dcm_path}: {exc}")
+        logger.debug(f"Failed to extract metadata from {redact_path(dcm_path)}: {exc}")
         return None, None
 
     view_position = getattr(dataset, "ViewPosition", "")
     view = _normalize_view_position(view_position)
     if view is None and isinstance(view_position, str) and view_position.strip():
-        logger.debug(f"ViewPosition not found or invalid in {dcm_path}")
+        logger.debug(f"ViewPosition not found or invalid in {redact_path(dcm_path)}")
 
     patient_id = _normalize_accession(getattr(dataset, "PatientID", None))
     return view, patient_id
 
-def _coerce_density_label(val: Any, strict: bool = False, warn: bool = True) -> Optional[int]:
+
+def _coerce_density_label(
+    val: Any, strict: bool = False, warn: bool = True
+) -> Optional[int]:
     """Normalize label inputs to integers in {1, 2, 3, 4, 5} when possible.
 
     Args:
@@ -116,7 +127,9 @@ def _coerce_density_label(val: Any, strict: bool = False, warn: bool = True) -> 
             if strict:
                 raise ValueError(f"Invalid density label: {val!r}")
             if warn:
-                logger.warning(f"Could not coerce label {val!r} to valid density class, returning None")
+                logger.warning(
+                    f"Could not coerce label {val!r} to valid density class, returning None"
+                )
             return None
     if isinstance(val, (int, np.integer)):
         return int(val)
@@ -126,8 +139,11 @@ def _coerce_density_label(val: Any, strict: bool = False, warn: bool = True) -> 
         if strict:
             raise ValueError(f"Invalid density label: {val!r}")
         if warn:
-            logger.warning(f"Could not coerce label {val!r} to valid density class, returning None")
+            logger.warning(
+                f"Could not coerce label {val!r} to valid density class, returning None"
+            )
         return None
+
 
 def _coerce_classification_label(val: Any) -> Optional[int]:
     if val is None or pd.isna(val):
@@ -139,9 +155,12 @@ def _coerce_classification_label(val: Any) -> Optional[int]:
         try:
             return int(s)
         except Exception:
-            logger.warning(f"Could not coerce label {val!r} to valid density class, returning None")
+            logger.warning(
+                f"Could not coerce label {val!r} to valid density class, returning None"
+            )
             return None
     return _coerce_density_label(val)
+
 
 def _normalize_accession(value: Any) -> Optional[str]:
     """Trim and normalize accession strings, returning None for empty values."""
@@ -150,13 +169,16 @@ def _normalize_accession(value: Any) -> Optional[str]:
     text = str(value).strip()
     return text or None
 
+
 def _has_valid_image_ext(series: pd.Series) -> pd.Series:
     """Validate file extensions against the allowed imaging formats."""
     return series.astype(str).str.lower().str.endswith(VALID_IMAGE_EXTS)
 
+
 def _accession_is_valid(series: pd.Series) -> pd.Series:
     """Ensure accession values are non-empty when provided."""
     return series.isna() | series.astype(str).str.strip().str.len().gt(0)
+
 
 def _label_is_valid(value: Any) -> bool:
     """Check if a label can be coerced into an allowed density class."""
@@ -164,23 +186,34 @@ def _label_is_valid(value: Any) -> bool:
         return True
     return _coerce_density_label(value) in ALLOWED_DENSITY_LABELS
 
+
 def _derive_accession_from_path(path: str) -> str:
     """Fallback accession derived from the parent directory or filename."""
     path_obj = Path(path)
     parent = path_obj.parent.name
     return parent or path_obj.stem
 
+
 IMAGE_PATH_CHECK = pa.Check(_has_valid_image_ext, name="image_path_ext")
 ACCESSION_CHECK = pa.Check(_accession_is_valid, name="accession_non_empty")
 LABEL_CHECK = pa.Check(_label_is_valid, element_wise=True, name="density_label_valid")
 
-def _label_column(required: bool = False) -> pa.Column:
-    return pa.Column(object, nullable=True, required=required, coerce=True, checks=LABEL_CHECK)
 
-def _accession_column(required: bool = False, nullable: Optional[bool] = None) -> pa.Column:
+def _label_column(required: bool = False) -> pa.Column:
+    return pa.Column(
+        object, nullable=True, required=required, coerce=True, checks=LABEL_CHECK
+    )
+
+
+def _accession_column(
+    required: bool = False, nullable: Optional[bool] = None
+) -> pa.Column:
     if nullable is None:
         nullable = not required
-    return pa.Column(str, nullable=nullable, required=required, coerce=True, checks=ACCESSION_CHECK)
+    return pa.Column(
+        str, nullable=nullable, required=required, coerce=True, checks=ACCESSION_CHECK
+    )
+
 
 CLASSIFICATION_SCHEMA = pa.DataFrameSchema(
     {
@@ -240,28 +273,38 @@ DATASET_SCHEMA = pa.DataFrameSchema(
 
 PANDERA_ERRORS = (pa.errors.SchemaError, pa.errors.SchemaErrors)
 
-def _validate_schema(schema: pa.DataFrameSchema, df: pd.DataFrame, context: str) -> pd.DataFrame:
+
+def _validate_schema(
+    schema: pa.DataFrameSchema, df: pd.DataFrame, context: str
+) -> pd.DataFrame:
     try:
         return schema.validate(df, lazy=True)
     except PANDERA_ERRORS as exc:
         raise ValueError(f"Falha de validacao ({context}): {exc}") from exc
 
-def _try_schema(schema: pa.DataFrameSchema, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[Exception]]:
+
+def _try_schema(
+    schema: pa.DataFrameSchema, df: pd.DataFrame
+) -> Tuple[Optional[pd.DataFrame], Optional[Exception]]:
     try:
         return schema.validate(df, lazy=True), None
     except PANDERA_ERRORS as exc:
         return None, exc
 
+
 def _find_best_data_dir(pref: Optional[str]) -> Optional[str]:
     """Try common typos so the CLI is more forgiving for frequently used paths."""
     if not pref:
         return pref
-    if os.path.isdir(pref):
-        return pref
+    pref_path = resolve_path(pref)
+    if pref_path.is_dir():
+        return str(pref_path)
     alt = pref.replace("archieve", "archive")
-    if os.path.isdir(alt):
-        return alt
+    alt_path = resolve_path(alt)
+    if alt_path.is_dir():
+        return str(alt_path)
     return pref
+
 
 def _read_csv_with_encoding(csv_path: str) -> pd.DataFrame:
     """Read CSV with automatic encoding detection and fallback.
@@ -278,16 +321,19 @@ def _read_csv_with_encoding(csv_path: str) -> pd.DataFrame:
     Raises:
         ValueError: If CSV cannot be decoded with any common encoding
     """
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    csv_file = resolve_path(csv_path, must_exist=True)
+    if not csv_file.is_file():
+        raise FileNotFoundError(f"CSV file not found: {redact_path(csv_file)}")
 
     encodings = ["utf-8", "latin-1", "windows-1252", "iso-8859-1"]
 
     for encoding in encodings:
         try:
-            df = pd.read_csv(csv_path, encoding=encoding)
+            df = pd.read_csv(csv_file, encoding=encoding)
             if encoding != "utf-8":
-                logger.info(f"Successfully read {csv_path} with {encoding} encoding")
+                logger.info(
+                    f"Successfully read {redact_path(csv_file)} with {encoding} encoding"
+                )
             return df
         except UnicodeDecodeError:
             continue
@@ -295,12 +341,15 @@ def _read_csv_with_encoding(csv_path: str) -> pd.DataFrame:
             raise
         except Exception as exc:
             # Other errors (file not found, etc.) should propagate immediately
-            raise ValueError(f"Failed to read CSV {csv_path}: {exc}") from exc
+            raise ValueError(
+                f"Failed to read CSV {redact_path(csv_file)}: {exc}"
+            ) from exc
 
     raise ValueError(
-        f"Could not decode CSV {csv_path} with any common encoding: {encodings}. "
+        f"Could not decode CSV {redact_path(csv_file)} with any common encoding: {encodings}. "
         f"Try converting to UTF-8 or specify encoding explicitly."
     )
+
 
 def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
     """Load dataset rows from directories containing featureS.txt files.
@@ -321,6 +370,7 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
     Raises:
         ValueError: If no valid images found
     """
+    root = resolve_path(root, must_exist=True)
     rows: List[Dict[str, Any]] = []
 
     # Determine search strategy:
@@ -331,7 +381,9 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
         search_dirs = [root]
     else:
         # Look for subdirectories with featureS.txt
-        search_dirs = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        search_dirs = [
+            p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
+        ]
 
     for folder in search_dirs:
         feat_path = folder / "featureS.txt"
@@ -340,7 +392,9 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
 
         # Read and clean lines (remove comments and empty lines)
         raw_lines = feat_path.read_text(encoding="utf-8").splitlines()
-        lines = [l.strip() for l in raw_lines if l.strip() and not l.strip().startswith("#")]
+        lines = [
+            l.strip() for l in raw_lines if l.strip() and not l.strip().startswith("#")
+        ]
 
         # Warn if odd number of lines
         if len(lines) % 2 != 0:
@@ -359,11 +413,15 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
             try:
                 birads = int(cls_raw) + 1
                 if birads not in ALLOWED_DENSITY_LABELS:
-                    logger.warning(f"Skipping {fname}: invalid label {cls_raw} (birads={birads})")
+                    logger.warning(
+                        f"Skipping {fname}: invalid label {cls_raw} (birads={birads})"
+                    )
                     skipped_count += 1
                     continue
             except Exception as exc:
-                logger.warning(f"Skipping {fname}: could not parse label '{cls_raw}': {exc}")
+                logger.warning(
+                    f"Skipping {fname}: could not parse label '{cls_raw}': {exc}"
+                )
                 skipped_count += 1
                 continue
 
@@ -372,16 +430,16 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
                 fname = f"{fname}.png"
 
             # Construct full path - try both with and without space normalization
-            full_path = folder / fname
+            full_path = safe_child_path(folder, fname)
             if not full_path.exists():
                 # Try adding space before parenthesis (old format)
                 fname_with_space = fname
                 if "(" in fname and " (" not in fname:
                     fname_with_space = fname.replace("(", " (")
-                    full_path = folder / fname_with_space
+                    full_path = safe_child_path(folder, fname_with_space)
 
                 if not full_path.exists():
-                    logger.warning(f"Skipping {fname}: file not found at {folder / fname}")
+                    logger.warning(f"Skipping {fname}: file not found")
                     skipped_count += 1
                     continue
 
@@ -396,7 +454,9 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
             parsed_count += 1
 
         if skipped_count > 0:
-            logger.info(f"{feat_path}: parsed {parsed_count} entries, skipped {skipped_count}")
+            logger.info(
+                f"{feat_path}: parsed {parsed_count} entries, skipped {skipped_count}"
+            )
 
     if not rows:
         raise ValueError(
@@ -405,7 +465,10 @@ def _rows_from_features_dir(root: Path) -> List[Dict[str, Any]]:
         )
     return rows
 
-def resolve_paths_from_preset(csv_path: Optional[str], dataset: Optional[str], dicom_root: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+
+def resolve_paths_from_preset(
+    csv_path: Optional[str], dataset: Optional[str], dicom_root: Optional[str]
+) -> Tuple[Optional[str], Optional[str]]:
     """Fill `csv_path` and `dicom_root` using the named preset when the user did not pass explicit paths."""
     if dataset and dataset in DATASET_PRESETS:
         preset = DATASET_PRESETS[dataset]
@@ -414,7 +477,14 @@ def resolve_paths_from_preset(csv_path: Optional[str], dataset: Optional[str], d
             dicom_root = preset.get("dicom_root")
     return csv_path, dicom_root
 
-def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = None, exclude_class_5: bool = True, dataset: Optional[str] = None, auto_detect: bool = True) -> pd.DataFrame:
+
+def load_dataset_dataframe(
+    csv_path: Optional[str],
+    dicom_root: Optional[str] = None,
+    exclude_class_5: bool = True,
+    dataset: Optional[str] = None,
+    auto_detect: bool = True,
+) -> pd.DataFrame:
     """Load a canonical DataFrame from CSVs, featureS.txt directories, or known presets.
 
     Args:
@@ -432,10 +502,14 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
     """
     csv_path, dicom_root = resolve_paths_from_preset(csv_path, dataset, dicom_root)
     if not csv_path:
-        raise ValueError("csv_path não definido; use --csv ou --dataset com preset válido.")
+        raise ValueError(
+            "csv_path não definido; use --csv ou --dataset com preset válido."
+        )
 
     # Auto-detect format when csv_path is a directory
-    if auto_detect and os.path.isdir(csv_path):
+    csv_path = str(resolve_path(csv_path))
+
+    if auto_detect and Path(csv_path).is_dir():
         try:
             detected_format = detect_dataset_format(csv_path)
             logger.info(f"Formato detectado: {detected_format.dataset_type}")
@@ -472,7 +546,7 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             logger.warning(f"Auto-detecção falhou: {exc!r}. Usando lógica padrão.")
 
     # Directory with featureS.txt (mammograms/patches)
-    if os.path.isdir(csv_path):
+    if Path(csv_path).is_dir():
         rows = _rows_from_features_dir(Path(csv_path))
         return _validate_schema(DATASET_SCHEMA, pd.DataFrame(rows), "featureS.txt")
 
@@ -485,9 +559,15 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
     else:
         classification_df, classification_error = _try_schema(CLASSIFICATION_SCHEMA, df)
         path_df, path_error = _try_schema(RAW_PATH_SCHEMA, df)
-    if classification_df is not None and ("image_path" not in df.columns or path_df is None):
-        classification_df["AccessionNumber"] = classification_df["AccessionNumber"].apply(_normalize_accession)
-        classification_df["Classification"] = classification_df["Classification"].apply(_coerce_classification_label)
+    if classification_df is not None and (
+        "image_path" not in df.columns or path_df is None
+    ):
+        classification_df["AccessionNumber"] = classification_df[
+            "AccessionNumber"
+        ].apply(_normalize_accession)
+        classification_df["Classification"] = classification_df["Classification"].apply(
+            _coerce_classification_label
+        )
         if not dicom_root:
             raise ValueError(
                 "dicom_root is required for classificacao.csv datasets; "
@@ -503,20 +583,26 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             acc = r.get("AccessionNumber")
             if not acc:
                 continue
-            folder = os.path.join(dicom_root, acc)
-            if not os.path.isdir(folder) and str(acc).isdigit():
-                padded = str(acc).zfill(6)
-                padded_folder = os.path.join(dicom_root, padded)
-                if os.path.isdir(padded_folder):
-                    acc = padded
-                    folder = padded_folder
-            if not os.path.isdir(folder):
+            try:
+                folder_path = safe_child_path(dicom_root, acc)
+            except ValueError:
+                logger.warning("Skipping unsafe accession path component")
                 continue
-            dcm = _find_first_dicom(folder)
+            if not folder_path.is_dir() and str(acc).isdigit():
+                padded = str(acc).zfill(6)
+                padded_folder = safe_child_path(dicom_root, padded)
+                if padded_folder.is_dir():
+                    acc = padded
+                    folder_path = padded_folder
+            if not folder_path.is_dir():
+                continue
+            dcm = _find_first_dicom(str(folder_path))
             if dcm is None:
                 continue
             view, patient_id = _extract_dicom_metadata(dcm)
-            csv_view = _normalize_view_position(r.get("view")) or _normalize_view_position(r.get("ViewPosition"))
+            csv_view = _normalize_view_position(
+                r.get("view")
+            ) or _normalize_view_position(r.get("ViewPosition"))
             rows.append(
                 {
                     "accession": acc,
@@ -533,7 +619,9 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
         if lab_col is None:
             path_df["professional_label"] = None
         else:
-            path_df["professional_label"] = path_df[lab_col].apply(_coerce_density_label)
+            path_df["professional_label"] = path_df[lab_col].apply(
+                _coerce_density_label
+            )
 
         accession_source = None
         if "AccessionNumber" in path_df.columns:
@@ -561,7 +649,11 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
             return None
 
         extracted_view = path_df["image_path"].apply(extract_view_safe)
-        path_df["view"] = extracted_view.combine_first(csv_view) if csv_view is not None else extracted_view
+        path_df["view"] = (
+            extracted_view.combine_first(csv_view)
+            if csv_view is not None
+            else extracted_view
+        )
 
         keep_cols = ["image_path", "professional_label", "accession", "view"]
         for extra_col in ("patient_id", "PatientID"):
@@ -580,7 +672,10 @@ def load_dataset_dataframe(csv_path: Optional[str], dicom_root: Optional[str] = 
         f"Detalhes: {detail_text}"
     )
 
-def validate_split_overlap(splits: Dict[str, pd.DataFrame], key: str = "accession") -> None:
+
+def validate_split_overlap(
+    splits: Dict[str, pd.DataFrame], key: str = "accession"
+) -> None:
     """Ensure train/val/test splits don't share samples.
 
     Args:
@@ -600,7 +695,7 @@ def validate_split_overlap(splits: Dict[str, pd.DataFrame], key: str = "accessio
             continue
         set_a = set(df_a[key].dropna().unique())
 
-        for name_b in split_names[i + 1:]:
+        for name_b in split_names[i + 1 :]:
             df_b = splits[name_b]
             if key not in df_b.columns:
                 continue
@@ -616,7 +711,13 @@ def validate_split_overlap(splits: Dict[str, pd.DataFrame], key: str = "accessio
                     f"{len(overlap)} amostras compartilhadas ({key}): {sample_list}"
                 )
 
-def load_multiple_csvs(csv_paths: Dict[str, str], dicom_root: Optional[str] = None, exclude_class_5: bool = True, dataset: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+
+def load_multiple_csvs(
+    csv_paths: Dict[str, str],
+    dicom_root: Optional[str] = None,
+    exclude_class_5: bool = True,
+    dataset: Optional[str] = None,
+) -> Dict[str, pd.DataFrame]:
     """Load multiple CSV files for train/val/test splits and validate them.
 
     Args:
@@ -638,10 +739,16 @@ def load_multiple_csvs(csv_paths: Dict[str, str], dicom_root: Optional[str] = No
     for split_name, csv_path in csv_paths.items():
         if not csv_path:
             continue
-        df = load_dataset_dataframe(csv_path, dicom_root=dicom_root, exclude_class_5=exclude_class_5, dataset=dataset)
+        df = load_dataset_dataframe(
+            csv_path,
+            dicom_root=dicom_root,
+            exclude_class_5=exclude_class_5,
+            dataset=dataset,
+        )
         result[split_name] = df
 
     return result
+
 
 def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -> str:
     """Pick a cache strategy based on dataset size and whether paths point to DICOM files."""
@@ -653,7 +760,11 @@ def resolve_dataset_cache_mode(requested_mode: str, rows_or_df: Sequence[Any]) -
             return override_value
         if override_value != "auto":
             logger.warning("Cache mode override invalido (%s). Ignorando.", override)
-    mode = (override.strip().lower() if override and override.strip().lower() == "auto" else (requested_mode or "none")).lower()
+    mode = (
+        override.strip().lower()
+        if override and override.strip().lower() == "auto"
+        else (requested_mode or "none")
+    ).lower()
     if mode != "auto":
         return mode
 

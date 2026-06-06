@@ -24,6 +24,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+from mammography.utils.security import fingerprint_value, redact_path
+
 # Configure logging for educational purposes
 logger = logging.getLogger(__name__)
 
@@ -99,8 +101,17 @@ class Patient:
 
         # Log creation for educational purposes
         logger.info(
-            f"Created Patient: {self.patient_id} with {self.image_count} images"
+            "Created Patient: %s with %d images",
+            fingerprint_value(self.patient_id, "patient"),
+            self.image_count,
         )
+
+    def _patient_token(self) -> str:
+        return fingerprint_value(self.patient_id, "patient")
+
+    @staticmethod
+    def _image_token(image_id: str) -> str:
+        return fingerprint_value(image_id, "image")
 
     def _validate_patient_id(self, patient_id: str) -> str:
         """
@@ -292,12 +303,17 @@ class Patient:
             self.image_count = len(self.image_ids)
             self.updated_at = datetime.now()
 
-            logger.debug(f"Added image {image_id} to patient {self.patient_id}")
+            logger.debug(
+                "Added image %s to patient %s",
+                self._image_token(image_id),
+                self._patient_token(),
+            )
             return True
 
         except Exception as e:
             error_msg = (
-                f"Error adding image {image_id} to patient {self.patient_id}: {e!s}"
+                f"Error adding image {self._image_token(image_id)} "
+                f"to patient {self._patient_token()}: {e!s}"
             )
             self.validation_errors.append(error_msg)
             logger.warning(error_msg)
@@ -325,17 +341,24 @@ class Patient:
                 # Update projections and laterality if needed
                 self._update_metadata_from_images()
 
-                logger.debug(f"Removed image {image_id} from patient {self.patient_id}")
+                logger.debug(
+                    "Removed image %s from patient %s",
+                    self._image_token(image_id),
+                    self._patient_token(),
+                )
                 return True
             else:
                 logger.warning(
-                    f"Image {image_id} not found in patient {self.patient_id}"
+                    "Image %s not found in patient %s",
+                    self._image_token(image_id),
+                    self._patient_token(),
                 )
                 return False
 
         except Exception as e:
             error_msg = (
-                f"Error removing image {image_id} from patient {self.patient_id}: {e!s}"
+                f"Error removing image {self._image_token(image_id)} "
+                f"from patient {self._patient_token()}: {e!s}"
             )
             self.validation_errors.append(error_msg)
             logger.warning(error_msg)
@@ -376,12 +399,17 @@ class Patient:
             self.updated_at = datetime.now()
 
             logger.info(
-                f"Changed patient {self.patient_id} split from {old_split} to {new_split}"
+                "Changed patient %s split from %s to %s",
+                self._patient_token(),
+                old_split,
+                new_split,
             )
             return True
 
         except Exception as e:
-            error_msg = f"Error changing split for patient {self.patient_id}: {e!s}"
+            error_msg = (
+                f"Error changing split for patient {self._patient_token()}: {e!s}"
+            )
             self.validation_errors.append(error_msg)
             logger.warning(error_msg)
             return False
@@ -426,7 +454,7 @@ class Patient:
             for other_patient in other_patients:
                 if other_patient.patient_id == self.patient_id:
                     if other_patient.split_assignment != self.split_assignment:
-                        error_msg = f"Patient {self.patient_id} appears in multiple splits: {self.split_assignment} and {other_patient.split_assignment}"
+                        error_msg = f"Patient {self._patient_token()} appears in multiple splits: {self.split_assignment} and {other_patient.split_assignment}"
                         self.validation_errors.append(error_msg)
                         logger.error(error_msg)
                         return False
@@ -436,7 +464,13 @@ class Patient:
                 if other_patient.split_assignment != self.split_assignment:
                     shared_images = self.image_ids.intersection(other_patient.image_ids)
                     if shared_images:
-                        error_msg = f"Patient {self.patient_id} shares images with patient {other_patient.patient_id} in different splits: {shared_images}"
+                        shared_tokens = sorted(
+                            self._image_token(image_id) for image_id in shared_images
+                        )
+                        other_token = fingerprint_value(
+                            other_patient.patient_id, "patient"
+                        )
+                        error_msg = f"Patient {self._patient_token()} shares images with patient {other_token} in different splits: {shared_tokens}"
                         self.validation_errors.append(error_msg)
                         logger.error(error_msg)
                         return False
@@ -444,9 +478,7 @@ class Patient:
             return True
 
         except Exception as e:
-            error_msg = (
-                f"Error validating split isolation for patient {self.patient_id}: {e!s}"
-            )
+            error_msg = f"Error validating split isolation for patient {self._patient_token()}: {e!s}"
             self.validation_errors.append(error_msg)
             logger.warning(error_msg)
             return False
@@ -477,11 +509,13 @@ class Patient:
             with open(file_path, "w") as f:
                 json.dump(patient_data, f, indent=2)
 
-            logger.info(f"Saved Patient data to {file_path}")
+            logger.info(f"Saved Patient data to {redact_path(file_path)}")
             return True
 
         except Exception as e:
-            logger.error(f"Error saving Patient data to {file_path}: {e!s}")
+            logger.error(
+                f"Error saving Patient data to {redact_path(file_path)}: {e!s}"
+            )
             return False
 
     @classmethod
@@ -536,11 +570,13 @@ class Patient:
             if patient_data.get("validation_errors"):
                 patient.validation_errors = patient_data["validation_errors"]
 
-            logger.info(f"Loaded Patient data from {file_path}")
+            logger.info(f"Loaded Patient data from {redact_path(file_path)}")
             return patient
 
         except Exception as e:
-            raise ValueError(f"Error loading Patient data from {file_path}: {e!s}")
+            raise ValueError(
+                f"Error loading Patient data from {redact_path(file_path)}: {e!s}"
+            )
 
     def __repr__(self) -> str:
         """String representation for debugging and logging."""

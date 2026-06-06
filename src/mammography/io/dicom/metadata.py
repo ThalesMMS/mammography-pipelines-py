@@ -178,9 +178,7 @@ class MammographyImage:
         self, pixel_spacing: tuple[float, float]
     ) -> tuple[float, float]:
         if not isinstance(pixel_spacing, tuple):
-            raise TypeError(
-                f"pixel_spacing must be a tuple, got {type(pixel_spacing)}"
-            )
+            raise TypeError(f"pixel_spacing must be a tuple, got {type(pixel_spacing)}")
         if len(pixel_spacing) != 2:
             raise ValueError(
                 f"pixel_spacing must have exactly 2 elements, got {len(pixel_spacing)}"
@@ -191,9 +189,7 @@ class MammographyImage:
                     f"pixel_spacing[{i}] must be a number, got {type(spacing)}"
                 )
             if spacing <= 0:
-                raise ValueError(
-                    f"pixel_spacing[{i}] must be positive, got {spacing}"
-                )
+                raise ValueError(f"pixel_spacing[{i}] must be positive, got {spacing}")
         return tuple(float(spacing) for spacing in pixel_spacing)
 
     def _validate_bits_stored(self, bits_stored: int) -> int:
@@ -332,9 +328,7 @@ class MammographyImage:
                         tag_name, expected_value
                     )
                     actual_display = _format_validation_value(tag_name, actual_value)
-                    error_msg = (
-                        f"DICOM tag {tag_name} mismatch: expected {expected_display}, got {actual_display}"
-                    )
+                    error_msg = f"DICOM tag {tag_name} mismatch: expected {expected_display}, got {actual_display}"
                     self.validation_errors.append(error_msg)
 
             if not validate_pixel_data:
@@ -371,9 +365,9 @@ class MammographyImage:
                 return True
 
             logger.warning(
-                "DICOM validation failed: %s, errors: %s",
+                "DICOM validation failed: %s, error_count=%d",
                 fingerprint_uid(self.instance_id),
-                self.validation_errors,
+                len(self.validation_errors),
             )
             return False
 
@@ -470,16 +464,14 @@ def create_mammography_image_from_dicom(
 
         patient_id = getattr(dataset, "PatientID", None) or "<MISSING_PATIENT_ID>"
         study_id = (
-            getattr(dataset, "StudyInstanceUID", None)
-            or "<MISSING_STUDY_INSTANCE_UID>"
+            getattr(dataset, "StudyInstanceUID", None) or "<MISSING_STUDY_INSTANCE_UID>"
         )
         series_id = (
             getattr(dataset, "SeriesInstanceUID", None)
             or "<MISSING_SERIES_INSTANCE_UID>"
         )
         instance_id = (
-            getattr(dataset, "SOPInstanceUID", None)
-            or "<MISSING_SOP_INSTANCE_UID>"
+            getattr(dataset, "SOPInstanceUID", None) or "<MISSING_SOP_INSTANCE_UID>"
         )
         raw_projection_type = str(getattr(dataset, "ViewPosition", "CC"))
         projection_type = (

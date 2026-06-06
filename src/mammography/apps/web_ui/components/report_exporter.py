@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import zipfile
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -30,6 +32,7 @@ from mammography.vis.export import (
     export_training_curves,
     export_confusion_matrix,
 )
+from mammography.utils.security import resolve_within_base
 
 try:
     import streamlit as st
@@ -48,6 +51,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 LOGGER = logging.getLogger("mammography")
+REPORT_EXPORT_ROOT_ENV = "MAMMOGRAPHY_REPORT_EXPORT_ROOT"
 
 
 def _require_streamlit() -> None:
@@ -56,6 +60,22 @@ def _require_streamlit() -> None:
         raise ImportError(
             "Streamlit is required to run the web UI dashboard."
         ) from _STREAMLIT_IMPORT_ERROR
+
+
+def _report_export_root() -> Path:
+    """Return the base directory for report export file operations."""
+    return Path(os.environ.get(REPORT_EXPORT_ROOT_ENV, ".")).expanduser().resolve()
+
+
+def _resolve_report_path(path: Union[str, Path], *, must_exist: bool = False) -> Path:
+    """Resolve a report path and reject escapes outside the export root."""
+    root = _report_export_root()
+    try:
+        return resolve_within_base(path, root, must_exist=must_exist)
+    except ValueError as exc:
+        raise ValueError(
+            f"Report path must stay within {REPORT_EXPORT_ROOT_ENV} ({root})"
+        ) from exc
 
 
 @dataclass
@@ -75,7 +95,9 @@ class ExportManifest:
     export_dir: str
     exported_files: List[str] = field(default_factory=list)
     missing_files: List[str] = field(default_factory=list)
-    generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    generated_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -95,7 +117,7 @@ class ExportManifest:
         Args:
             path: Output path for manifest JSON file
         """
-        path = Path(path)
+        path = _resolve_report_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
@@ -169,7 +191,7 @@ class ReportExporter:
             formats = ["png", "pdf"]
 
         client = self._get_mlflow_client()
-        output_path = Path(output_dir)
+        output_path = _resolve_report_path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Get run info
@@ -203,7 +225,9 @@ class ReportExporter:
 
         for artifact in artifacts:
             try:
-                artifact_path = client.download_artifacts(run_id, artifact, dst_path=str(output_path))
+                artifact_path = client.download_artifacts(
+                    run_id, artifact, dst_path=str(output_path)
+                )
                 if Path(artifact_path).exists():
                     exported_files.append(artifact)
                     LOGGER.info(f"Downloaded artifact: {artifact}")
@@ -301,11 +325,11 @@ class ReportExporter:
         if formats is None:
             formats = ["png", "pdf"]
 
-        run_path = Path(run_dir)
+        run_path = _resolve_report_path(run_dir, must_exist=True)
         if not run_path.exists():
             raise FileNotFoundError(f"Run directory not found: {run_dir}")
 
-        output_path = Path(output_dir)
+        output_path = _resolve_report_path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         manifest = ExportManifest(
@@ -416,11 +440,11 @@ class ReportExporter:
         Raises:
             FileNotFoundError: If source_dir doesn't exist
         """
-        source_path = Path(source_dir)
+        source_path = _resolve_report_path(source_dir, must_exist=True)
         if not source_path.exists():
             raise FileNotFoundError(f"Source directory not found: {source_dir}")
 
-        output_file = Path(output_path)
+        output_file = _resolve_report_path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
         with zipfile.ZipFile(output_file, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -532,11 +556,11 @@ class ReportExporter:
                     # Create ZIP archive
                     st.markdown("### Create Archive")
                     if st.button("📦 Create ZIP Archive"):
-                        zip_path = Path(output_dir).with_suffix(".zip")
+                        zip_path = _resolve_report_path(output_dir).with_suffix(".zip")
                         zip_file = self.create_zip_archive(output_dir, zip_path)
 
                         # Provide download button
-                        with open(zip_file, "rb") as f:
+                        with zip_file.open("rb") as f:
                             st.download_button(
                                 label="⬇️ Download ZIP Archive",
                                 data=f.read(),

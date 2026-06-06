@@ -29,6 +29,8 @@ import logging
 
 import numpy as np
 
+from mammography.utils.security import fingerprint_value
+
 # Configure logging for educational purposes
 logger = logging.getLogger(__name__)
 
@@ -60,20 +62,22 @@ class EmbeddingVector:
 
     # Define valid input adapters
     VALID_INPUT_ADAPTERS = ["1to3_replication", "conv1_adapted"]
-    
+
     # Define valid model configurations
     VALID_MODEL_CONFIGS = ["resnet50", "resnet50_pretrained"]
-    DEFAULT_MODEL_CONFIG: ClassVar[Mapping[str, Any]] = MappingProxyType({
-        "model_name": "resnet50_pretrained",
-        "pretrained": True,
-        "feature_layer": "avgpool",
-    })
+    DEFAULT_MODEL_CONFIG: ClassVar[Mapping[str, Any]] = MappingProxyType(
+        {
+            "model_name": "resnet50_pretrained",
+            "pretrained": True,
+            "feature_layer": "avgpool",
+        }
+    )
 
     @classmethod
     def default_model_config(cls) -> Dict[str, Any]:
         """Return a fresh mutable copy of the default model configuration."""
         return dict(cls.DEFAULT_MODEL_CONFIG)
-    
+
     def __init__(
         self,
         image_id: str,
@@ -111,16 +115,20 @@ class EmbeddingVector:
         self.device_used = device_used or "cpu"
         self.created_at = created_at or datetime.now()
         self.metadata = dict(metadata or {})
-        
+
         # Initialize tracking attributes
         self.validation_errors: List[str] = []
         self.updated_at = datetime.now()
-        
+
         # Validate embedding dimension
         self._validate_embedding_dimension()
-        
+
         # Log creation for educational purposes
-        logger.info(f"Created EmbeddingVector: {self.image_id} with dimension {self.embedding.shape[0]}")
+        logger.info(
+            "Created EmbeddingVector: %s with dimension %d",
+            fingerprint_value(self.image_id, "image"),
+            self.embedding.shape[0],
+        )
 
     @property
     def vector(self) -> np.ndarray:
@@ -131,52 +139,52 @@ class EmbeddingVector:
     def vector(self, value: Union[np.ndarray, Sequence[float], torch.Tensor]) -> None:
         self.embedding = self._validate_embedding(torch.as_tensor(value))
         self._validate_embedding_dimension()
-    
+
     def _validate_image_id(self, image_id: str) -> str:
         """
         Validate image ID.
-        
+
         Educational Note: Image ID links this embedding back to the original
         MammographyImage and PreprocessedTensor for complete traceability.
-        
+
         Args:
             image_id: Image identifier to validate
-            
+
         Returns:
             str: Validated image ID
-            
+
         Raises:
             ValueError: If image ID is invalid
             TypeError: If image ID is not a string
         """
         if not isinstance(image_id, str):
             raise TypeError(f"image_id must be a string, got {type(image_id)}")
-        
+
         if not image_id.strip():
             raise ValueError("image_id cannot be empty or whitespace")
-        
+
         return image_id.strip()
-    
+
     def _validate_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
         """
         Validate embedding tensor.
-        
+
         Educational Note: Embedding validation ensures proper format for
         clustering algorithms and dimensionality reduction techniques.
-        
+
         Args:
             embedding: Embedding tensor to validate
-            
+
         Returns:
             torch.Tensor: Validated embedding tensor
-            
+
         Raises:
             ValueError: If embedding is invalid
             TypeError: If embedding is not a PyTorch tensor
         """
         if not isinstance(embedding, torch.Tensor):
             raise TypeError(f"embedding must be a torch.Tensor, got {type(embedding)}")
-        
+
         # Check tensor dimensions (should be 1D)
         if embedding.ndim != 1:
             raise ValueError(f"embedding must be 1D, got {embedding.ndim}D")
@@ -190,16 +198,16 @@ class EmbeddingVector:
         if embedding.dtype != torch.float32:
             logger.warning(f"Converting embedding from {embedding.dtype} to float32")
             embedding = embedding.float()
-        
+
         # Check for NaN or infinite values
         if torch.any(torch.isnan(embedding)):
             raise ValueError("embedding contains NaN values")
-        
+
         if torch.any(torch.isinf(embedding)):
             raise ValueError("embedding contains infinite values")
-        
+
         return embedding
-    
+
     def _validate_model_config(self, model_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Validate model configuration.
@@ -207,13 +215,13 @@ class EmbeddingVector:
         Educational Note: Model configuration validation ensures all necessary
         parameters for CNN feature extraction are present and valid
         (supports ResNet-50, EfficientNet, and other architectures).
-        
+
         Args:
             model_config: Model configuration dictionary to validate
-            
+
         Returns:
             Dict[str, Any]: Validated configuration
-            
+
         Raises:
             ValueError: If configuration is invalid
             TypeError: If configuration is not a dictionary
@@ -222,85 +230,95 @@ class EmbeddingVector:
             model_config = self.default_model_config()
 
         if not isinstance(model_config, dict):
-            raise TypeError(f"model_config must be a dictionary, got {type(model_config)}")
+            raise TypeError(
+                f"model_config must be a dictionary, got {type(model_config)}"
+            )
 
         model_config = dict(model_config)
         if "model_name" not in model_config and "architecture" in model_config:
             model_config["model_name"] = model_config["architecture"]
         model_config.setdefault("pretrained", False)
         model_config.setdefault("feature_layer", "avgpool")
-        
+
         # Check for required configuration keys
         required_keys = ["model_name", "pretrained", "feature_layer"]
         for key in required_keys:
             if key not in model_config:
                 raise ValueError(f"Missing required model configuration key: {key}")
-        
+
         # Validate model name
         model_name = model_config.get("model_name")
         if model_name not in self.VALID_MODEL_CONFIGS:
             logger.warning(f"Unknown model configuration: {model_name}")
-        
+
         # Validate feature layer
         feature_layer = model_config.get("feature_layer")
         if feature_layer != "avgpool":
             logger.warning(f"Expected feature_layer 'avgpool', got '{feature_layer}'")
-        
+
         return model_config
-    
+
     def _validate_input_adapter(self, input_adapter: str) -> str:
         """
         Validate input adapter.
-        
+
         Educational Note: Input adapter validation ensures the correct
         grayscale to RGB conversion method was used.
-        
+
         Args:
             input_adapter: Input adapter to validate
-            
+
         Returns:
             str: Validated input adapter
-            
+
         Raises:
             ValueError: If input adapter is invalid
             TypeError: If input adapter is not a string
         """
         if not isinstance(input_adapter, str):
-            raise TypeError(f"input_adapter must be a string, got {type(input_adapter)}")
-        
+            raise TypeError(
+                f"input_adapter must be a string, got {type(input_adapter)}"
+            )
+
         if input_adapter not in self.VALID_INPUT_ADAPTERS:
-            raise ValueError(f"input_adapter must be one of {self.VALID_INPUT_ADAPTERS}, got {input_adapter}")
-        
+            raise ValueError(
+                f"input_adapter must be one of {self.VALID_INPUT_ADAPTERS}, got {input_adapter}"
+            )
+
         return input_adapter
-    
+
     def _validate_extraction_time(self, extraction_time: float) -> float:
         """
         Validate extraction time.
-        
+
         Educational Note: Extraction time validation ensures reasonable
         performance metrics for feature extraction.
-        
+
         Args:
             extraction_time: Extraction time to validate (seconds)
-            
+
         Returns:
             float: Validated extraction time
-            
+
         Raises:
             ValueError: If extraction time is invalid
             TypeError: If extraction time is not a number
         """
         if not isinstance(extraction_time, (int, float)):
-            raise TypeError(f"extraction_time must be a number, got {type(extraction_time)}")
-        
+            raise TypeError(
+                f"extraction_time must be a number, got {type(extraction_time)}"
+            )
+
         if extraction_time < 0:
-            raise ValueError(f"extraction_time must be non-negative, got {extraction_time}")
-        
+            raise ValueError(
+                f"extraction_time must be non-negative, got {extraction_time}"
+            )
+
         if extraction_time > 3600:  # 1 hour
             logger.warning(f"extraction_time seems unusually long: {extraction_time}s")
-        
+
         return float(extraction_time)
-    
+
     def _validate_embedding_dimension(self) -> None:
         """
         Validate and store embedding dimension.
@@ -312,14 +330,14 @@ class EmbeddingVector:
         # Store actual dimension instead of validating against fixed value
         self.embedding_dim = self.embedding.shape[0]
         logger.info(f"Embedding dimension: {self.embedding_dim}")
-    
+
     def get_embedding_stats(self) -> Dict[str, float]:
         """
         Get statistical information about the embedding.
-        
+
         Educational Note: Embedding statistics are useful for understanding
         the feature distribution and ensuring proper normalization.
-        
+
         Returns:
             Dict[str, float]: Dictionary containing embedding statistics
         """
@@ -330,22 +348,22 @@ class EmbeddingVector:
             "max": float(torch.max(self.embedding).item()),
             "norm": float(torch.norm(self.embedding).item()),
             "dimension": int(self.embedding.shape[0]),
-            "dtype": str(self.embedding.dtype)
+            "dtype": str(self.embedding.dtype),
         }
-    
+
     def normalize_embedding(self, method: str = "l2") -> torch.Tensor:
         """
         Normalize the embedding vector.
-        
+
         Educational Note: Normalization can improve clustering performance
         and ensure consistent feature scales across different images.
-        
+
         Args:
             method: Normalization method ("l2", "l1", "min_max")
-            
+
         Returns:
             torch.Tensor: Normalized embedding vector
-            
+
         Raises:
             ValueError: If normalization method is invalid
         """
@@ -355,14 +373,14 @@ class EmbeddingVector:
             if norm == 0:
                 return self.embedding
             return self.embedding / norm
-        
+
         elif method == "l1":
             # L1 normalization (sum to 1)
             norm = torch.norm(self.embedding, p=1)
             if norm == 0:
                 return self.embedding
             return self.embedding / norm
-        
+
         elif method == "min_max":
             # Min-max normalization (0 to 1)
             min_val = torch.min(self.embedding)
@@ -370,17 +388,19 @@ class EmbeddingVector:
             if max_val == min_val:
                 return self.embedding
             return (self.embedding - min_val) / (max_val - min_val)
-        
+
         else:
-            raise ValueError(f"Invalid normalization method: {method}. Must be one of ['l2', 'l1', 'min_max']")
-    
+            raise ValueError(
+                f"Invalid normalization method: {method}. Must be one of ['l2', 'l1', 'min_max']"
+            )
+
     def get_extraction_summary(self) -> Dict[str, Any]:
         """
         Get a summary of the embedding extraction process.
-        
+
         Educational Note: This summary provides a complete record of
         the feature extraction process for reproducibility and analysis.
-        
+
         Returns:
             Dict[str, Any]: Dictionary containing extraction summary
         """
@@ -394,60 +414,63 @@ class EmbeddingVector:
             "metadata": self.metadata,
             "embedding_stats": self.get_embedding_stats(),
             "created_at": self.created_at.isoformat(),
-            "validation_errors": self.validation_errors
+            "validation_errors": self.validation_errors,
         }
-    
+
     def save_embedding(self, file_path: Union[str, Path]) -> bool:
         """
         Save embedding data to file.
-        
+
         Educational Note: Embedding saving enables caching of extracted
         features to avoid reprocessing during experiments.
-        
+
         Args:
             file_path: Path where to save the embedding
-            
+
         Returns:
             bool: True if saving successful, False otherwise
         """
         try:
             file_path = Path(file_path)
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Save embedding data
-            torch.save({
-                "embedding": self.embedding,
-                "image_id": self.image_id,
-                "model_config": self.model_config,
-                "input_adapter": self.input_adapter,
-                "extraction_time": self.extraction_time,
-                "device_used": self.device_used,
-                "metadata": self.metadata,
-                "created_at": self.created_at.isoformat(),
-                "validation_errors": self.validation_errors
-            }, file_path)
-            
+            torch.save(
+                {
+                    "embedding": self.embedding,
+                    "image_id": self.image_id,
+                    "model_config": self.model_config,
+                    "input_adapter": self.input_adapter,
+                    "extraction_time": self.extraction_time,
+                    "device_used": self.device_used,
+                    "metadata": self.metadata,
+                    "created_at": self.created_at.isoformat(),
+                    "validation_errors": self.validation_errors,
+                },
+                file_path,
+            )
+
             logger.info(f"Saved EmbeddingVector to {file_path}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error saving EmbeddingVector to {file_path}: {str(e)}")
             return False
-    
+
     @classmethod
     def load_embedding(cls, file_path: Union[str, Path]) -> "EmbeddingVector":
         """
         Load embedding data from file.
-        
+
         Educational Note: This class method enables loading of previously
         saved embeddings for analysis and experimentation.
-        
+
         Args:
             file_path: Path to the saved embedding file
-            
+
         Returns:
             EmbeddingVector: Loaded instance
-            
+
         Raises:
             FileNotFoundError: If file doesn't exist
             ValueError: If file is corrupted or invalid
@@ -459,10 +482,14 @@ class EmbeddingVector:
         try:
             # Load embedding data
             data = torch.load(file_path, map_location="cpu")
-            
+
             # Parse creation timestamp
-            created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
-            
+            created_at = (
+                datetime.fromisoformat(data["created_at"])
+                if data.get("created_at")
+                else None
+            )
+
             # Create EmbeddingVector instance
             embedding_vector = cls(
                 image_id=data["image_id"],
@@ -474,17 +501,19 @@ class EmbeddingVector:
                 created_at=created_at,
                 metadata=data.get("metadata", {}),
             )
-            
+
             # Restore validation errors if any
             if data.get("validation_errors"):
                 embedding_vector.validation_errors = data["validation_errors"]
-            
+
             logger.info(f"Loaded EmbeddingVector from {file_path}")
             return embedding_vector
-            
+
         except Exception as e:
-            raise ValueError(f"Error loading EmbeddingVector from {file_path}: {str(e)}")
-    
+            raise ValueError(
+                f"Error loading EmbeddingVector from {file_path}: {str(e)}"
+            )
+
     def __repr__(self) -> str:
         """String representation for debugging and logging."""
         return (
@@ -494,7 +523,7 @@ class EmbeddingVector:
             f"adapter='{self.input_adapter}', "
             f"time={self.extraction_time:.3f}s)"
         )
-    
+
     def __str__(self) -> str:
         """Human-readable string representation."""
         return (
@@ -513,7 +542,7 @@ def create_embedding_vector_from_extraction(
     model_config: Dict[str, Any],
     input_adapter: str,
     extraction_time: float,
-    device_used: str = "cpu"
+    device_used: str = "cpu",
 ) -> EmbeddingVector:
     """
     Create an EmbeddingVector instance from feature extraction.
@@ -543,9 +572,9 @@ def create_embedding_vector_from_extraction(
         model_config=model_config,
         input_adapter=input_adapter,
         extraction_time=extraction_time,
-        device_used=device_used
+        device_used=device_used,
     )
-    
+
     return embedding_vector
 
 
@@ -555,7 +584,7 @@ def batch_create_embedding_vectors(
     model_config: Dict[str, Any],
     input_adapter: str,
     extraction_times: List[float],
-    device_used: str = "cpu"
+    device_used: str = "cpu",
 ) -> List[EmbeddingVector]:
     """
     Create multiple EmbeddingVector instances from batch extraction.
@@ -579,11 +608,15 @@ def batch_create_embedding_vectors(
         ValueError: If batch dimensions don't match
     """
     if len(image_ids) != embeddings.shape[0]:
-        raise ValueError(f"Number of image_ids ({len(image_ids)}) doesn't match batch size ({embeddings.shape[0]})")
-    
+        raise ValueError(
+            f"Number of image_ids ({len(image_ids)}) doesn't match batch size ({embeddings.shape[0]})"
+        )
+
     if len(image_ids) != len(extraction_times):
-        raise ValueError(f"Number of image_ids ({len(image_ids)}) doesn't match number of extraction_times ({len(extraction_times)})")
-    
+        raise ValueError(
+            f"Number of image_ids ({len(image_ids)}) doesn't match number of extraction_times ({len(extraction_times)})"
+        )
+
     embedding_vectors = []
     for i, image_id in enumerate(image_ids):
         embedding_vector = EmbeddingVector(
@@ -592,8 +625,8 @@ def batch_create_embedding_vectors(
             model_config=model_config,
             input_adapter=input_adapter,
             extraction_time=extraction_times[i],
-            device_used=device_used
+            device_used=device_used,
         )
         embedding_vectors.append(embedding_vector)
-    
+
     return embedding_vectors

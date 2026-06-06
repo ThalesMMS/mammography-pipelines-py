@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -20,6 +19,7 @@ from PIL import Image
 
 from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
 from mammography.data.csv_loader import load_dataset_dataframe
+from mammography.utils.security import redact_path, resolve_path
 
 try:
     import streamlit as st
@@ -86,9 +86,9 @@ class DatasetViewer:
             FileNotFoundError: If CSV file doesn't exist
             ValueError: If required columns are missing
         """
-        csv_file = Path(csv_path)
+        csv_file = resolve_path(csv_path, must_exist=True)
         if not csv_file.exists():
-            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+            raise FileNotFoundError(f"CSV file not found: {redact_path(csv_file)}")
 
         try:
             # Load metadata using the dataset loader
@@ -103,13 +103,15 @@ class DatasetViewer:
             LOGGER.info(
                 "Loaded %d records from %s",
                 len(metadata),
-                csv_path,
+                redact_path(csv_file),
             )
 
             return metadata
 
         except Exception as exc:
-            raise ValueError(f"Failed to load metadata from {csv_path}: {exc}") from exc
+            raise ValueError(
+                f"Failed to load metadata from {redact_path(csv_file)}: {exc}"
+            ) from exc
 
     def _load_image(
         self,
@@ -131,9 +133,9 @@ class DatasetViewer:
             return self._image_cache[cache_key]
 
         try:
-            path = Path(image_path)
+            path = resolve_path(image_path)
             if not path.exists():
-                LOGGER.warning("Image file not found: %s", image_path)
+                LOGGER.warning("Image file not found: %s", redact_path(path))
                 return None
 
             # Load based on file type
@@ -152,7 +154,7 @@ class DatasetViewer:
             return img
 
         except Exception as exc:
-            LOGGER.error("Failed to load image %s: %s", image_path, exc)
+            LOGGER.error("Failed to load image %s: %s", redact_path(image_path), exc)
             return None
 
     def _get_density_label(self, density_class: Any) -> str:
@@ -246,7 +248,9 @@ class DatasetViewer:
         total_pages = (total_images + max_images - 1) // max_images
 
         if total_pages > 1:
-            st.info(f"📊 Showing {min(max_images, total_images)} of {total_images} images")
+            st.info(
+                f"📊 Showing {min(max_images, total_images)} of {total_images} images"
+            )
             page = st.number_input(
                 "Page",
                 min_value=1,
@@ -304,32 +308,52 @@ class DatasetViewer:
                         metadata_items = []
 
                         # Accession number (standard column from load_dataset_dataframe)
-                        if "accession" in row_data and pd.notna(row_data['accession']):
+                        if "accession" in row_data and pd.notna(row_data["accession"]):
                             metadata_items.append(f"**ID:** {row_data['accession']}")
-                        elif "AccessionNumber" in row_data and pd.notna(row_data['AccessionNumber']):
-                            metadata_items.append(f"**ID:** {row_data['AccessionNumber']}")
+                        elif "AccessionNumber" in row_data and pd.notna(
+                            row_data["AccessionNumber"]
+                        ):
+                            metadata_items.append(
+                                f"**ID:** {row_data['AccessionNumber']}"
+                            )
 
                         # Density class (professional_label is the standard column)
-                        if "professional_label" in row_data and pd.notna(row_data["professional_label"]):
-                            label = self._get_density_label(row_data["professional_label"])
+                        if "professional_label" in row_data and pd.notna(
+                            row_data["professional_label"]
+                        ):
+                            label = self._get_density_label(
+                                row_data["professional_label"]
+                            )
                             metadata_items.append(f"**Density:** {label}")
-                        elif "density_class" in row_data and pd.notna(row_data["density_class"]):
+                        elif "density_class" in row_data and pd.notna(
+                            row_data["density_class"]
+                        ):
                             label = self._get_density_label(row_data["density_class"])
                             metadata_items.append(f"**Density:** {label}")
-                        elif "Classification" in row_data and pd.notna(row_data["Classification"]):
+                        elif "Classification" in row_data and pd.notna(
+                            row_data["Classification"]
+                        ):
                             label = self._get_density_label(row_data["Classification"])
                             metadata_items.append(f"**Density:** {label}")
 
                         # View position (standard column from load_dataset_dataframe)
-                        if "view" in row_data and pd.notna(row_data['view']):
+                        if "view" in row_data and pd.notna(row_data["view"]):
                             metadata_items.append(f"**View:** {row_data['view']}")
-                        elif "ViewPosition" in row_data and pd.notna(row_data['ViewPosition']):
-                            metadata_items.append(f"**View:** {row_data['ViewPosition']}")
+                        elif "ViewPosition" in row_data and pd.notna(
+                            row_data["ViewPosition"]
+                        ):
+                            metadata_items.append(
+                                f"**View:** {row_data['ViewPosition']}"
+                            )
 
                         # Laterality
-                        if "laterality" in row_data and pd.notna(row_data['laterality']):
+                        if "laterality" in row_data and pd.notna(
+                            row_data["laterality"]
+                        ):
                             metadata_items.append(f"**Side:** {row_data['laterality']}")
-                        elif "Laterality" in row_data and pd.notna(row_data['Laterality']):
+                        elif "Laterality" in row_data and pd.notna(
+                            row_data["Laterality"]
+                        ):
                             metadata_items.append(f"**Side:** {row_data['Laterality']}")
 
                         # Display metadata in a compact format
@@ -370,9 +394,19 @@ class DatasetViewer:
         # Select relevant columns for display
         # Standard columns from load_dataset_dataframe: image_path, professional_label, accession, view
         display_columns = []
-        for col in ["accession", "professional_label", "view", "image_path",
-                    "AccessionNumber", "density_class", "Classification",
-                    "ViewPosition", "laterality", "Laterality", "path"]:
+        for col in [
+            "accession",
+            "professional_label",
+            "view",
+            "image_path",
+            "AccessionNumber",
+            "density_class",
+            "Classification",
+            "ViewPosition",
+            "laterality",
+            "Laterality",
+            "path",
+        ]:
             if col in display_df.columns:
                 display_columns.append(col)
 
@@ -416,11 +450,15 @@ class DatasetViewer:
 
         # Density class distribution (professional_label is the standard column)
         if "professional_label" in df.columns:
-            stats["density_distribution"] = df["professional_label"].value_counts().to_dict()
+            stats["density_distribution"] = (
+                df["professional_label"].value_counts().to_dict()
+            )
         elif "density_class" in df.columns:
             stats["density_distribution"] = df["density_class"].value_counts().to_dict()
         elif "Classification" in df.columns:
-            stats["density_distribution"] = df["Classification"].value_counts().to_dict()
+            stats["density_distribution"] = (
+                df["Classification"].value_counts().to_dict()
+            )
 
         # View distribution (view is the standard column)
         if "view" in df.columns:

@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from mammography.io.dicom import create_mammography_image_from_dicom, MammographyImage
+from mammography.utils.security import fingerprint_value
 
 
 def create_test_dicom_file():
@@ -57,7 +58,7 @@ def create_test_dicom_file():
     ).tobytes()
 
     # Save to temp file
-    temp_file = tempfile.NamedTemporaryFile(suffix='.dcm', delete=False)
+    temp_file = tempfile.NamedTemporaryFile(suffix=".dcm", delete=False)
     temp_path = temp_file.name
     temp_file.close()
 
@@ -82,15 +83,17 @@ def test_create_mammography_image_without_dataset():
 
         # Verify the image was created correctly
         assert image is not None, "Image should not be None"
-        assert isinstance(image, MammographyImage), "Should return MammographyImage instance"
+        assert isinstance(
+            image, MammographyImage
+        ), "Should return MammographyImage instance"
         assert image.patient_id == "COMPAT_TEST_001", "Patient ID should be preserved"
         assert image.manufacturer == "SIEMENS", "Manufacturer should be preserved"
         assert image.projection_type == "CC", "Projection type should be preserved"
         assert image.laterality == "L", "Laterality should be preserved"
 
         print("✓ create_mammography_image_from_dicom(file_path) works correctly")
-        print(f"  - Created MammographyImage instance")
-        print(f"  - Patient ID: {image.patient_id}")
+        print("  - Created MammographyImage instance")
+        print(f"  - Patient ID: {fingerprint_value(image.patient_id, 'patient')}")
         print(f"  - Manufacturer: {image.manufacturer}")
         print(f"  - Projection: {image.projection_type}")
         print(f"  - Laterality: {image.laterality}")
@@ -153,13 +156,17 @@ def test_create_mammography_image_with_dataset():
 
         # Verify the image was created correctly
         assert image is not None, "Image should not be None"
-        assert isinstance(image, MammographyImage), "Should return MammographyImage instance"
+        assert isinstance(
+            image, MammographyImage
+        ), "Should return MammographyImage instance"
         assert image.patient_id == "COMPAT_TEST_001", "Patient ID should be preserved"
 
-        print("✓ create_mammography_image_from_dicom(file_path, dataset=dataset) works correctly")
-        print(f"  - Created MammographyImage instance using pre-loaded dataset")
-        print(f"  - Patient ID: {image.patient_id}")
-        print(f"  - This usage avoids redundant file reads (optimized)")
+        print(
+            "✓ create_mammography_image_from_dicom(file_path, dataset=dataset) works correctly"
+        )
+        print("  - Created MammographyImage instance using pre-loaded dataset")
+        print(f"  - Patient ID: {fingerprint_value(image.patient_id, 'patient')}")
+        print("  - This usage avoids redundant file reads (optimized)")
         return True
 
     except Exception as e:
@@ -182,16 +189,25 @@ def main():
     results = []
 
     # Test 1: create_mammography_image_from_dicom with only file_path
-    results.append(("create_mammography_image_from_dicom(file_path)",
-                   test_create_mammography_image_without_dataset()))
+    results.append(
+        (
+            "create_mammography_image_from_dicom(file_path)",
+            test_create_mammography_image_without_dataset(),
+        )
+    )
 
     # Test 2: validate_dicom_file without dataset parameter
-    results.append(("validate_dicom_file()",
-                   test_validate_dicom_file_without_dataset()))
+    results.append(
+        ("validate_dicom_file()", test_validate_dicom_file_without_dataset())
+    )
 
     # Test 3: create_mammography_image_from_dicom with dataset (new usage)
-    results.append(("create_mammography_image_from_dicom(file_path, dataset)",
-                   test_create_mammography_image_with_dataset()))
+    results.append(
+        (
+            "create_mammography_image_from_dicom(file_path, dataset)",
+            test_create_mammography_image_with_dataset(),
+        )
+    )
 
     # Print summary
     print("\n" + "=" * 70)

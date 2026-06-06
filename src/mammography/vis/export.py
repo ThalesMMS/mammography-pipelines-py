@@ -7,6 +7,7 @@
 # Thales Matheus Mendonça Santos - November 2025
 #
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -16,7 +17,10 @@ from pathlib import Path
 from typing import Optional, List, Union, Dict, Any
 import logging
 
+from mammography.utils.security import redact_path, resolve_path
+
 logger = logging.getLogger("mammography")
+
 
 def export_figure(
     fig: plt.Figure,
@@ -44,9 +48,9 @@ def export_figure(
         [Path('results/plot1.png'), Path('results/plot1.pdf')]
     """
     if formats is None:
-        formats = ['png', 'pdf', 'svg']
+        formats = ["png", "pdf", "svg"]
 
-    base_path = Path(base_path)
+    base_path = resolve_path(base_path)
     base_path.parent.mkdir(parents=True, exist_ok=True)
 
     if tight_layout:
@@ -61,18 +65,18 @@ def export_figure(
         out_path = base_path.with_suffix(f".{fmt_lower}")
 
         try:
-            if fmt_lower == 'png':
-                fig.savefig(out_path, dpi=dpi, bbox_inches='tight', format='png')
-            elif fmt_lower == 'pdf':
-                fig.savefig(out_path, bbox_inches='tight', format='pdf')
-            elif fmt_lower == 'svg':
-                fig.savefig(out_path, bbox_inches='tight', format='svg')
+            if fmt_lower == "png":
+                fig.savefig(out_path, dpi=dpi, bbox_inches="tight", format="png")
+            elif fmt_lower == "pdf":
+                fig.savefig(out_path, bbox_inches="tight", format="pdf")
+            elif fmt_lower == "svg":
+                fig.savefig(out_path, bbox_inches="tight", format="svg")
             else:
                 logger.warning(f"Unsupported format '{fmt}', skipping")
                 continue
 
             exported_paths.append(out_path)
-            logger.info(f"Exported figure to {out_path}")
+            logger.info(f"Exported figure to {redact_path(out_path)}")
         except Exception as e:
             logger.error(f"Failed to export figure as {fmt}: {e}")
 
@@ -115,25 +119,25 @@ def export_training_curves(
         axes = [axes]
 
     # Loss subplot
-    axes[0].plot(epochs, train_losses, 'b-', label='Train Loss', linewidth=2)
-    axes[0].plot(epochs, val_losses, 'r-', label='Val Loss', linewidth=2)
-    axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Loss')
-    axes[0].set_title('Training and Validation Loss')
+    axes[0].plot(epochs, train_losses, "b-", label="Train Loss", linewidth=2)
+    axes[0].plot(epochs, val_losses, "r-", label="Val Loss", linewidth=2)
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_title("Training and Validation Loss")
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
     # Accuracy subplot (if provided)
     if has_acc:
-        axes[1].plot(epochs, train_accs, 'b-', label='Train Accuracy', linewidth=2)
-        axes[1].plot(epochs, val_accs, 'r-', label='Val Accuracy', linewidth=2)
-        axes[1].set_xlabel('Epoch')
-        axes[1].set_ylabel('Accuracy')
-        axes[1].set_title('Training and Validation Accuracy')
+        axes[1].plot(epochs, train_accs, "b-", label="Train Accuracy", linewidth=2)
+        axes[1].plot(epochs, val_accs, "r-", label="Val Accuracy", linewidth=2)
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Accuracy")
+        axes[1].set_title("Training and Validation Accuracy")
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
 
-    fig.suptitle(title, fontsize=14, fontweight='bold')
+    fig.suptitle(title, fontsize=14, fontweight="bold")
 
     exported = export_figure(fig, base_path, formats=formats, dpi=dpi)
     plt.close(fig)
@@ -167,10 +171,10 @@ def export_confusion_matrix(
         List of exported file paths
     """
     if normalize:
-        cm = cm.astype('float') / cm.sum(axis=1, keepdims=True)
-        fmt = '.2f'
+        cm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+        fmt = ".2f"
     else:
-        fmt = 'd'
+        fmt = "d"
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
@@ -179,15 +183,15 @@ def export_confusion_matrix(
         annot=True,
         fmt=fmt,
         cmap=cmap,
-        xticklabels=class_names if class_names else 'auto',
-        yticklabels=class_names if class_names else 'auto',
-        cbar_kws={'label': 'Proportion' if normalize else 'Count'},
+        xticklabels=class_names if class_names else "auto",
+        yticklabels=class_names if class_names else "auto",
+        cbar_kws={"label": "Proportion" if normalize else "Count"},
         ax=ax,
     )
 
-    ax.set_xlabel('Predicted Label', fontsize=12)
-    ax.set_ylabel('True Label', fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_xlabel("Predicted Label", fontsize=12)
+    ax.set_ylabel("True Label", fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight="bold")
 
     exported = export_figure(fig, base_path, formats=formats, dpi=dpi)
     plt.close(fig)
@@ -237,18 +241,20 @@ def export_metrics_comparison(
 
     for idx, metric in enumerate(df.columns):
         ax = axes[idx]
-        df[metric].plot(kind='bar', ax=ax, color='steelblue', alpha=0.8)
-        ax.set_title(f'{metric.replace("_", " ").title()}', fontsize=12, fontweight='bold')
-        ax.set_xlabel('Experiment', fontsize=10)
-        ax.set_ylabel('Value', fontsize=10)
-        ax.grid(True, alpha=0.3, axis='y')
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+        df[metric].plot(kind="bar", ax=ax, color="steelblue", alpha=0.8)
+        ax.set_title(
+            f'{metric.replace("_", " ").title()}', fontsize=12, fontweight="bold"
+        )
+        ax.set_xlabel("Experiment", fontsize=10)
+        ax.set_ylabel("Value", fontsize=10)
+        ax.grid(True, alpha=0.3, axis="y")
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
 
     # Hide extra subplots if n_metrics is odd
     if n_metrics % 2 == 1 and n_metrics > 1:
-        axes[-1].axis('off')
+        axes[-1].axis("off")
 
-    fig.suptitle(title, fontsize=14, fontweight='bold')
+    fig.suptitle(title, fontsize=14, fontweight="bold")
 
     exported = export_figure(fig, base_path, formats=formats, dpi=dpi)
     plt.close(fig)

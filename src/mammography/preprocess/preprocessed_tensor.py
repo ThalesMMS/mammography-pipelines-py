@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
+from mammography.utils.security import fingerprint_value
+
 # Configure logging for educational purposes
 logger = logging.getLogger(__name__)
 
@@ -151,7 +153,9 @@ class PreprocessedTensor:
 
         # Log creation for educational purposes
         logger.info(
-            f"Created PreprocessedTensor: {self.image_id} with shape {self.tensor_data.shape}"
+            "Created PreprocessedTensor: %s with shape %s",
+            fingerprint_value(self.image_id, "image"),
+            self.tensor_data.shape,
         )
 
     @staticmethod

@@ -22,11 +22,17 @@ os.chdir(REPO_ROOT)
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from mammography.preprocess.preprocessed_tensor import PreprocessedTensor
-from mammography.models.embeddings.vit_extractor import ViTExtractor, create_vit_extractor
+from mammography.models.embeddings.vit_extractor import (
+    ViTExtractor,
+    create_vit_extractor,
+)
 from mammography.models.embeddings.embedding_vector import EmbeddingVector
+from mammography.utils.security import fingerprint_value
 
 
-def create_test_preprocessed_tensor(image_id: str, channels: int = 3, height: int = 224, width: int = 224) -> PreprocessedTensor:
+def create_test_preprocessed_tensor(
+    image_id: str, channels: int = 3, height: int = 224, width: int = 224
+) -> PreprocessedTensor:
     """
     Create a test PreprocessedTensor for verification.
 
@@ -44,10 +50,10 @@ def create_test_preprocessed_tensor(image_id: str, channels: int = 3, height: in
 
     # Create preprocessing config
     preprocessing_config = {
-        'target_size': (height, width),
-        'normalization_method': 'z_score_per_image',
-        'input_adapter': '1to3_replication',
-        'border_removed': False
+        "target_size": (height, width),
+        "normalization_method": "z_score_per_image",
+        "input_adapter": "1to3_replication",
+        "border_removed": False,
     }
 
     # Create PreprocessedTensor
@@ -55,10 +61,10 @@ def create_test_preprocessed_tensor(image_id: str, channels: int = 3, height: in
         image_id=image_id,
         tensor_data=tensor_data,
         preprocessing_config=preprocessing_config,
-        normalization_method='z_score_per_image',
+        normalization_method="z_score_per_image",
         target_size=(height, width),
-        input_adapter='1to3_replication',
-        border_removed=False
+        input_adapter="1to3_replication",
+        border_removed=False,
     )
 
     return pt
@@ -82,10 +88,10 @@ def verify_single_embedding_extraction(model_name: str, expected_dim: int) -> bo
     try:
         # Create extractor config
         config = {
-            'model_name': model_name,
-            'pretrained': False,  # Use random weights to avoid downloads
-            'input_adapter': '1to3_replication',
-            'batch_size': 4
+            "model_name": model_name,
+            "pretrained": False,  # Use random weights to avoid downloads
+            "input_adapter": "1to3_replication",
+            "batch_size": 4,
         }
 
         # Create extractor
@@ -105,13 +111,10 @@ def verify_single_embedding_extraction(model_name: str, expected_dim: int) -> bo
         # Create test PreprocessedTensor
         print(f"\n3. Creating test PreprocessedTensor...")
         test_tensor = create_test_preprocessed_tensor(
-            image_id=f"test_{model_name}_001",
-            channels=3,
-            height=224,
-            width=224
+            image_id=f"test_{model_name}_001", channels=3, height=224, width=224
         )
         print(f"   ✓ PreprocessedTensor created")
-        print(f"   - Image ID: {test_tensor.image_id}")
+        print(f"   - Image ID: {fingerprint_value(test_tensor.image_id, 'image')}")
         print(f"   - Tensor shape: {test_tensor.tensor_data.shape}")
         print(f"   - Input adapter: {test_tensor.input_adapter}")
 
@@ -147,7 +150,7 @@ def verify_single_embedding_extraction(model_name: str, expected_dim: int) -> bo
 
         # Verify embedding metadata
         print(f"\n6. Verifying embedding metadata:")
-        print(f"   - Image ID: {embedding.image_id}")
+        print(f"   - Image ID: {fingerprint_value(embedding.image_id, 'image')}")
         print(f"   - Extraction time: {embedding.extraction_time:.4f}s")
         print(f"   - Device used: {embedding.device_used}")
         print(f"   - Input adapter: {embedding.input_adapter}")
@@ -169,11 +172,14 @@ def verify_single_embedding_extraction(model_name: str, expected_dim: int) -> bo
         print(f"Error: {str(e)}")
         print(f"{'='*60}")
         import traceback
+
         traceback.print_exc()
         return False
 
 
-def verify_batch_embedding_extraction(model_name: str, expected_dim: int, batch_size: int = 4) -> bool:
+def verify_batch_embedding_extraction(
+    model_name: str, expected_dim: int, batch_size: int = 4
+) -> bool:
     """
     Verify batch embedding extraction.
 
@@ -192,10 +198,10 @@ def verify_batch_embedding_extraction(model_name: str, expected_dim: int, batch_
     try:
         # Create extractor
         config = {
-            'model_name': model_name,
-            'pretrained': False,
-            'input_adapter': '1to3_replication',
-            'batch_size': 2  # Process 2 at a time
+            "model_name": model_name,
+            "pretrained": False,
+            "input_adapter": "1to3_replication",
+            "batch_size": 2,  # Process 2 at a time
         }
 
         print(f"1. Creating ViTExtractor...")
@@ -209,7 +215,7 @@ def verify_batch_embedding_extraction(model_name: str, expected_dim: int, batch_
                 image_id=f"test_{model_name}_batch_{i:03d}",
                 channels=3,
                 height=224,
-                width=224
+                width=224,
             )
             for i in range(batch_size)
         ]
@@ -241,7 +247,9 @@ def verify_batch_embedding_extraction(model_name: str, expected_dim: int, batch_
                 continue
 
             if embedding.embedding.shape[0] != expected_dim:
-                print(f"   ✗ Embedding {i} has wrong dimension: {embedding.embedding.shape[0]}")
+                print(
+                    f"   ✗ Embedding {i} has wrong dimension: {embedding.embedding.shape[0]}"
+                )
                 continue
 
             if embedding.image_id != test_tensors[i].image_id:
@@ -269,15 +277,16 @@ def verify_batch_embedding_extraction(model_name: str, expected_dim: int, batch_
         print(f"Error: {str(e)}")
         print(f"{'='*60}")
         import traceback
+
         traceback.print_exc()
         return False
 
 
 def main():
     """Main verification function."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ViT Embedding Extraction Integration Verification")
-    print("="*60)
+    print("=" * 60)
 
     # Define models to test with their expected dimensions
     # Based on standard ViT/DeiT architectures:
@@ -286,9 +295,9 @@ def main():
     # - DeiT-Small: 384-dim
     # - DeiT-Base: 768-dim
     test_models = [
-        ('vit_b_16', 768),   # ViT-B/16
-        ('vit_b_32', 768),   # ViT-B/32
-        ('vit_l_16', 1024),  # ViT-L/16
+        ("vit_b_16", 768),  # ViT-B/16
+        ("vit_b_32", 768),  # ViT-B/32
+        ("vit_l_16", 1024),  # ViT-L/16
     ]
 
     # Note: DeiT models require timm library, tested separately
@@ -296,27 +305,29 @@ def main():
     results = []
 
     # Test single embedding extraction
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("PART 1: Single Embedding Extraction")
-    print("="*60)
+    print("=" * 60)
 
     for model_name, expected_dim in test_models:
         result = verify_single_embedding_extraction(model_name, expected_dim)
         results.append((f"{model_name} (single)", result))
 
     # Test batch embedding extraction
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("PART 2: Batch Embedding Extraction")
-    print("="*60)
+    print("=" * 60)
 
     for model_name, expected_dim in test_models:
-        result = verify_batch_embedding_extraction(model_name, expected_dim, batch_size=4)
+        result = verify_batch_embedding_extraction(
+            model_name, expected_dim, batch_size=4
+        )
         results.append((f"{model_name} (batch)", result))
 
     # Print summary
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("VERIFICATION SUMMARY")
-    print("="*60)
+    print("=" * 60)
 
     passed = sum(1 for _, result in results if result)
     total = len(results)
@@ -328,11 +339,13 @@ def main():
     print(f"\nTotal: {passed}/{total} tests passed")
 
     if passed == total:
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("✓ ALL VERIFICATIONS PASSED")
-        print("="*60)
+        print("=" * 60)
         print("\nConclusions:")
-        print("1. ViTExtractor successfully extracts embeddings from PreprocessedTensor objects")
+        print(
+            "1. ViTExtractor successfully extracts embeddings from PreprocessedTensor objects"
+        )
         print("2. Output is EmbeddingVector instances with correct metadata")
         print("3. Embedding dimensions are correct for all tested models:")
         print("   - ViT-B/16: 768 dimensions")
@@ -342,9 +355,9 @@ def main():
         print("5. Integration with existing data pipeline is successful")
         return 0
     else:
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("✗ SOME VERIFICATIONS FAILED")
-        print("="*60)
+        print("=" * 60)
         return 1
 
 

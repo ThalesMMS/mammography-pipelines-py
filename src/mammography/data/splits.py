@@ -37,7 +37,9 @@ def _train_test_split_with_optional_stratify(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Use stratification when possible, with a deterministic random fallback."""
 
-    strat = y if len(np.unique(y)) > 1 and pd.Series(y).value_counts().min() >= 2 else None
+    strat = (
+        y if len(np.unique(y)) > 1 and pd.Series(y).value_counts().min() >= 2 else None
+    )
     try:
         return train_test_split(
             indices,
@@ -94,7 +96,12 @@ def load_splits_from_csvs(
         raise FileNotFoundError(f"Arquivo de teste nao encontrado: {test_csv}")
 
     # Load CSV files
-    LOGGER.info("Carregando splits de CSVs: train=%s, val=%s, test=%s", train_csv, val_csv, test_csv or "None")
+    LOGGER.info(
+        "Carregando splits de CSVs: train=%s, val=%s, test=%s",
+        train_csv,
+        val_csv,
+        test_csv or "None",
+    )
     try:
         train_df = pd.read_csv(train_path)
         val_df = pd.read_csv(val_path)
@@ -109,12 +116,16 @@ def load_splits_from_csvs(
             continue
         missing = required_cols - set(df.columns)
         if missing:
-            raise ValueError(f"CSV de {name} esta faltando colunas obrigatorias: {missing}")
+            raise ValueError(
+                f"CSV de {name} esta faltando colunas obrigatorias: {missing}"
+            )
 
     if test_df is not None:
         missing = required_cols - set(test_df.columns)
         if missing:
-            raise ValueError(f"CSV de teste esta faltando colunas obrigatorias: {missing}")
+            raise ValueError(
+                f"CSV de teste esta faltando colunas obrigatorias: {missing}"
+            )
 
     # Check for overlaps using image_path (primary) or accession (fallback)
     def _get_identifier_set(df: pd.DataFrame) -> set:
@@ -122,7 +133,9 @@ def load_splits_from_csvs(
             return set(df["image_path"].dropna())
         if "accession" in df.columns:
             return set(df["accession"].dropna())
-        raise ValueError("DataFrame deve conter 'image_path' ou 'accession' para verificacao de sobreposicao")
+        raise ValueError(
+            "DataFrame deve conter 'image_path' ou 'accession' para verificacao de sobreposicao"
+        )
 
     train_ids = _get_identifier_set(train_df)
     val_ids = _get_identifier_set(val_df)
@@ -239,8 +252,7 @@ def create_three_way_split(
     ):
         if group_column:
             LOGGER.warning(
-                "Coluna '%s' ausente ou vazia; split sem agrupamento.",
-                group_column,
+                "Coluna de agrupamento ausente ou vazia; split sem agrupamento.",
             )
         # First split off test set
         train_val_idx, test_idx = _train_test_split_with_optional_stratify(
@@ -267,12 +279,16 @@ def create_three_way_split(
         train_df = train_val_df.loc[train_idx].copy()
         val_df = train_val_df.loc[val_idx].copy()
     else:
-        group_targets = df.groupby(group_column)["_target"].agg(lambda s: s.value_counts().idxmax())
+        group_targets = df.groupby(group_column)["_target"].agg(
+            lambda s: s.value_counts().idxmax()
+        )
         group_ids = group_targets.index.to_numpy()
         group_y = group_targets.values
 
         if len(group_ids) < 3:
-            raise RuntimeError("Grupos insuficientes para dividir train/val/test (minimo: 3).")
+            raise RuntimeError(
+                "Grupos insuficientes para dividir train/val/test (minimo: 3)."
+            )
 
         group_counts = pd.Series(group_y).value_counts().to_dict()
         required_train = [c for c, n in group_counts.items() if n >= 1]
@@ -311,7 +327,9 @@ def create_three_way_split(
 
             # Get targets for train_val groups for stratification
             train_val_targets = group_targets.loc[train_val_g].values
-            strat_train_val = train_val_targets if len(np.unique(train_val_targets)) > 1 else None
+            strat_train_val = (
+                train_val_targets if len(np.unique(train_val_targets)) > 1 else None
+            )
 
             # Then split train_val into train and val
             val_frac_adjusted = val_frac / (1 - test_frac)
@@ -326,16 +344,21 @@ def create_three_way_split(
                 if not allow_random_fallback:
                     raise
                 tr_g, va_g = train_test_split(
-                    train_val_g, test_size=val_frac_adjusted, random_state=rs, shuffle=True
+                    train_val_g,
+                    test_size=val_frac_adjusted,
+                    random_state=rs,
+                    shuffle=True,
                 )
 
             tr_df = df[df[group_column].isin(tr_g)]
             va_df = df[df[group_column].isin(va_g)]
             te_df = df[df[group_column].isin(test_g)]
 
-            if (_has_required(tr_df, required_train) and
-                _has_required(va_df, required_val) and
-                _has_required(te_df, required_test)):
+            if (
+                _has_required(tr_df, required_train)
+                and _has_required(va_df, required_val)
+                and _has_required(te_df, required_test)
+            ):
                 train_df, val_df, test_df = tr_df.copy(), va_df.copy(), te_df.copy()
                 break
 
@@ -349,9 +372,11 @@ def create_three_way_split(
             LOGGER.warning(
                 "Nao foi possivel criar split com todas as classes em %d tentativas. "
                 "Usando fallback GroupShuffleSplit.",
-                max_tries
+                max_tries,
             )
-            splitter = GroupShuffleSplit(n_splits=1, test_size=test_frac, random_state=seed)
+            splitter = GroupShuffleSplit(
+                n_splits=1, test_size=test_frac, random_state=seed
+            )
             train_val_idx, test_idx = next(
                 splitter.split(df, df["_target"], groups=df[group_column])
             )
@@ -360,7 +385,9 @@ def create_three_way_split(
 
             # Split train_val
             val_frac_adjusted = val_frac / (1 - test_frac)
-            splitter2 = GroupShuffleSplit(n_splits=1, test_size=val_frac_adjusted, random_state=seed)
+            splitter2 = GroupShuffleSplit(
+                n_splits=1, test_size=val_frac_adjusted, random_state=seed
+            )
             train_idx, val_idx = next(
                 splitter2.split(
                     train_val_df,
@@ -379,11 +406,23 @@ def create_three_way_split(
         "3-way split criado: Train=%d (groups=%s) | Val=%d (groups=%s) | Test=%d (groups=%s) | "
         "Train counts=%s | Val counts=%s | Test counts=%s",
         len(train_df),
-        train_df[group_column].nunique() if group_column and group_column in train_df.columns else "NA",
+        (
+            train_df[group_column].nunique()
+            if group_column and group_column in train_df.columns
+            else "NA"
+        ),
         len(val_df),
-        val_df[group_column].nunique() if group_column and group_column in val_df.columns else "NA",
+        (
+            val_df[group_column].nunique()
+            if group_column and group_column in val_df.columns
+            else "NA"
+        ),
         len(test_df),
-        test_df[group_column].nunique() if group_column and group_column in test_df.columns else "NA",
+        (
+            test_df[group_column].nunique()
+            if group_column and group_column in test_df.columns
+            else "NA"
+        ),
         _counts(train_df),
         _counts(val_df),
         _counts(test_df),
@@ -455,7 +494,9 @@ def create_splits(
         allow_unstratified_fallback or not ensure_val_has_all_classes
     )
 
-    def _split_without_groups(source_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def _split_without_groups(
+        source_df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         y = source_df["_target"].values
         train_idx, val_idx = _train_test_split_with_optional_stratify(
             source_df.index.to_numpy(),
@@ -478,12 +519,13 @@ def create_splits(
     ):
         if group_column:
             LOGGER.warning(
-                "Coluna '%s' ausente ou vazia; split sem agrupamento.",
-                group_column,
+                "Coluna de agrupamento ausente ou vazia; split sem agrupamento.",
             )
         train_df, val_df = _split_without_groups(df)
     else:
-        group_targets = df.groupby(group_column)["_target"].agg(lambda s: s.value_counts().idxmax())
+        group_targets = df.groupby(group_column)["_target"].agg(
+            lambda s: s.value_counts().idxmax()
+        )
         group_ids = group_targets.index.to_numpy()
         group_y = group_targets.values
 
@@ -496,7 +538,11 @@ def create_splits(
         else:
             group_counts = pd.Series(group_y).value_counts().to_dict()
             required_train = [c for c, n in group_counts.items() if n >= 1]
-            required_val = [c for c, n in group_counts.items() if n >= 2] if ensure_val_has_all_classes else []
+            required_val = (
+                [c for c, n in group_counts.items() if n >= 2]
+                if ensure_val_has_all_classes
+                else []
+            )
 
             def _has_required(sub_df: pd.DataFrame, required) -> bool:
                 counts = sub_df["_target"].value_counts().to_dict()
@@ -522,7 +568,9 @@ def create_splits(
 
                 tr_df = df[df[group_column].isin(tr_g)]
                 va_df = df[df[group_column].isin(va_g)]
-                if _has_required(tr_df, required_train) and _has_required(va_df, required_val):
+                if _has_required(tr_df, required_train) and _has_required(
+                    va_df, required_val
+                ):
                     train_df, val_df = tr_df.copy(), va_df.copy()
                     break
 
@@ -532,7 +580,9 @@ def create_splits(
                         "Nao foi possivel criar split com todas as classes em "
                         f"{max_tries} tentativas."
                     )
-                splitter = GroupShuffleSplit(n_splits=1, test_size=val_frac, random_state=seed)
+                splitter = GroupShuffleSplit(
+                    n_splits=1, test_size=val_frac, random_state=seed
+                )
                 train_idx, val_idx = next(
                     splitter.split(df, df["_target"], groups=df[group_column])
                 )
@@ -546,9 +596,17 @@ def create_splits(
     LOGGER.info(
         "Split criado: Train=%d (groups=%s) | Val=%d (groups=%s) | Train counts=%s | Val counts=%s",
         len(train_df),
-        train_df[group_column].nunique() if group_column and group_column in train_df.columns else "NA",
+        (
+            train_df[group_column].nunique()
+            if group_column and group_column in train_df.columns
+            else "NA"
+        ),
         len(val_df),
-        val_df[group_column].nunique() if group_column and group_column in val_df.columns else "NA",
+        (
+            val_df[group_column].nunique()
+            if group_column and group_column in val_df.columns
+            else "NA"
+        ),
         _counts(train_df),
         _counts(val_df),
     )
@@ -645,7 +703,9 @@ def create_kfold_splits(
             folds.append((train_df, val_df))
     else:
         # Group-aware k-fold
-        group_targets = df.groupby("accession")["_target"].agg(lambda s: s.value_counts().idxmax())
+        group_targets = df.groupby("accession")["_target"].agg(
+            lambda s: s.value_counts().idxmax()
+        )
         unique_groups = group_targets.index.to_numpy()
         group_y = group_targets.values
 
@@ -657,7 +717,9 @@ def create_kfold_splits(
 
         # Use StratifiedGroupKFold for seed-dependent, stratified splits
         sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-        for fold_idx, (train_idx, val_idx) in enumerate(sgkf.split(unique_groups, group_y, groups=unique_groups)):
+        for fold_idx, (train_idx, val_idx) in enumerate(
+            sgkf.split(unique_groups, group_y, groups=unique_groups)
+        ):
             train_groups = unique_groups[train_idx]
             val_groups = unique_groups[val_idx]
 

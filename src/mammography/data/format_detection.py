@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from ..io.dicom import DICOM_EXTS
+from ..utils.security import redact_path, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def detect_image_format(file_path: str, check_signature: bool = True) -> str:
     if not file_path:
         return "unknown"
 
-    path_obj = Path(file_path)
+    path_obj = resolve_path(file_path)
     ext_lower = path_obj.suffix.lower()
 
     # Fast extension-based detection
@@ -85,11 +86,13 @@ def detect_image_format(file_path: str, check_signature: bool = True) -> str:
 
     # Verify with signature check if file exists
     if not path_obj.exists() or not path_obj.is_file():
-        logger.warning(f"File does not exist for signature check: {file_path}")
+        logger.warning(
+            f"File does not exist for signature check: {redact_path(path_obj)}"
+        )
         return format_from_ext
 
     try:
-        with open(file_path, "rb") as f:
+        with path_obj.open("rb") as f:
             # Read enough bytes for all signatures (132 for DICOM)
             header = f.read(132)
 
@@ -110,12 +113,15 @@ def detect_image_format(file_path: str, check_signature: bool = True) -> str:
 
             # No signature matched - return extension-based guess
             logger.debug(
-                f"No matching signature found for {file_path}, using extension-based detection"
+                "No matching signature found for %s, using extension-based detection",
+                redact_path(path_obj),
             )
             return format_from_ext
 
     except Exception as exc:
-        logger.warning(f"Error reading file signature for {file_path}: {exc!r}")
+        logger.warning(
+            f"Error reading file signature for {redact_path(path_obj)}: {exc!r}"
+        )
         return format_from_ext
 
 
@@ -188,7 +194,7 @@ def _count_files_by_extension(
         Dictionary mapping extension to count
     """
     counts: Dict[str, int] = {}
-    root_path = Path(directory).resolve()
+    root_path = resolve_path(directory, must_exist=True)
 
     try:
         for ext in extensions:
@@ -207,7 +213,7 @@ def _count_files_by_extension(
                 if path.is_file():
                     counts[ext] = counts.get(ext, 0) + 1
     except Exception as exc:
-        logger.warning(f"Error counting files in {directory}: {exc!r}")
+        logger.warning(f"Error counting files in {redact_path(root_path)}: {exc!r}")
 
     return counts
 
@@ -222,7 +228,7 @@ def _find_metadata_files(directory: str) -> Dict[str, Optional[str]]:
     Returns:
         Dictionary with keys: 'csv', 'features_txt', 'classification_csv'
     """
-    root_path = Path(directory)
+    root_path = resolve_path(directory)
     result: Dict[str, Optional[str]] = {
         "csv": None,
         "features_txt": None,
@@ -299,7 +305,9 @@ def _has_dicom_accession_subdirs(path: Path) -> bool:
     if not path.is_dir():
         return False
     try:
-        subdirs = sorted((d for d in path.iterdir() if d.is_dir()), key=lambda p: p.name)
+        subdirs = sorted(
+            (d for d in path.iterdir() if d.is_dir()), key=lambda p: p.name
+        )
         for subdir in subdirs:
             dicom_files = list(subdir.glob("*.dcm")) + list(subdir.glob("*.dicom"))
             if dicom_files:
@@ -328,7 +336,7 @@ def _resolve_dicom_root(directory: str) -> Optional[str]:
         Calls ``_has_dicom_accession_subdirs()``, which may log warnings when
         filesystem inspection fails.
     """
-    root_path = Path(directory)
+    root_path = resolve_path(directory)
     candidates = [root_path, root_path / "archive"]
     for candidate in candidates:
         if _has_dicom_accession_subdirs(candidate):
@@ -346,7 +354,7 @@ def _detect_dicom_structure(directory: str) -> bool:
     Returns:
         True if DICOM structure detected, False otherwise
     """
-    root_path = Path(directory)
+    root_path = resolve_path(directory)
 
     if not root_path.exists():
         return False
@@ -366,7 +374,8 @@ def _detect_delimiter(file_path: str, sample_size: int = 5) -> str:
         Detected delimiter: 'comma', 'tab', or 'unknown'
     """
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        csv_file = resolve_path(file_path, must_exist=True)
+        with csv_file.open("r", encoding="utf-8", errors="replace") as f:
             lines = []
             for _ in range(sample_size):
                 line = f.readline()
@@ -391,7 +400,9 @@ def _detect_delimiter(file_path: str, sample_size: int = 5) -> str:
         else:
             return "unknown"
     except Exception as exc:
-        logger.warning(f"Error detecting delimiter in {file_path}: {exc!r}")
+        logger.warning(
+            f"Error detecting delimiter in {redact_path(file_path)}: {exc!r}"
+        )
         return "unknown"
 
 
@@ -486,16 +497,17 @@ def infer_csv_schema(file_path: str, max_rows: int = 100) -> CSVSchemaInfo:
         >>> print(schema.delimiter)
         'comma'
     """
-    if not os.path.exists(file_path):
-        raise ValueError(f"File does not exist: {file_path}")
+    csv_file = resolve_path(file_path, must_exist=True)
+    if not csv_file.exists():
+        raise ValueError(f"File does not exist: {redact_path(csv_file)}")
 
-    if not os.path.isfile(file_path):
-        raise ValueError(f"Path is not a file: {file_path}")
+    if not csv_file.is_file():
+        raise ValueError(f"Path is not a file: {redact_path(csv_file)}")
 
-    logger.info(f"Inferring CSV schema for: {file_path}")
+    logger.info(f"Inferring CSV schema for: {redact_path(csv_file)}")
 
     # Detect delimiter
-    delimiter_type = _detect_delimiter(file_path)
+    delimiter_type = _detect_delimiter(str(csv_file))
     delimiter_char = "," if delimiter_type == "comma" else "\t"
 
     if delimiter_type == "unknown":
@@ -508,13 +520,13 @@ def infer_csv_schema(file_path: str, max_rows: int = 100) -> CSVSchemaInfo:
     # Try to read the CSV
     try:
         # Try UTF-8 first
-        df = pd.read_csv(file_path, sep=delimiter_char, nrows=max_rows, encoding="utf-8")
+        df = pd.read_csv(csv_file, sep=delimiter_char, nrows=max_rows, encoding="utf-8")
         encoding = "utf-8"
     except UnicodeDecodeError:
         # Fallback to latin-1
         try:
             df = pd.read_csv(
-                file_path, sep=delimiter_char, nrows=max_rows, encoding="latin-1"
+                csv_file, sep=delimiter_char, nrows=max_rows, encoding="latin-1"
             )
             encoding = "latin-1"
         except Exception as exc:
@@ -588,24 +600,25 @@ def detect_dataset_format(path: str) -> DatasetFormat:
         >>> print(fmt.image_format)
         'png'
     """
-    if not os.path.exists(path):
-        raise ValueError(f"Path does not exist: {path}")
+    path_obj = resolve_path(path, must_exist=True)
+    if not path_obj.exists():
+        raise ValueError(f"Path does not exist: {redact_path(path_obj)}")
 
-    if not os.path.isdir(path):
-        raise ValueError(f"Path is not a directory: {path}")
+    if not path_obj.is_dir():
+        raise ValueError(f"Path is not a directory: {redact_path(path_obj)}")
 
-    logger.info(f"Detecting dataset format for: {path}")
+    logger.info(f"Detecting dataset format for: {redact_path(path_obj)}")
 
     # Initialize result
     fmt = DatasetFormat(dataset_type="custom", image_format="unknown")
 
     # Count image files by extension
-    format_counts = _count_files_by_extension(path, VALID_IMAGE_EXTS)
+    format_counts = _count_files_by_extension(str(path_obj), VALID_IMAGE_EXTS)
     fmt.format_counts = format_counts
     fmt.image_count = sum(format_counts.values())
 
     # Find metadata files
-    metadata = _find_metadata_files(path)
+    metadata = _find_metadata_files(str(path_obj))
 
     # Determine predominant image format
     if format_counts:
@@ -636,7 +649,7 @@ def detect_dataset_format(path: str) -> DatasetFormat:
                 )
 
     # Detect dataset type
-    path_lower = path.lower()
+    path_lower = str(path_obj).lower()
     if "mamografias" in path_lower and metadata["features_txt"]:
         fmt.dataset_type = "mamografias"
         fmt.csv_path = metadata["features_txt"]
@@ -647,7 +660,7 @@ def detect_dataset_format(path: str) -> DatasetFormat:
             fmt.csv_path = metadata["features_txt"]
             fmt.has_features_txt = True
     else:
-        dicom_root = _resolve_dicom_root(path)
+        dicom_root = _resolve_dicom_root(str(path_obj))
         if dicom_root:
             fmt.dataset_type = "archive"
             fmt.dicom_root = dicom_root
@@ -719,9 +732,7 @@ def validate_format(format_info: DatasetFormat) -> List[str]:
 
     # Check for missing metadata
     if not format_info.csv_path and not format_info.has_features_txt:
-        msg = (
-            "No metadata file found. Dataset may be missing labels or classification data."
-        )
+        msg = "No metadata file found. Dataset may be missing labels or classification data."
         warnings.append(msg)
         logger.warning("Missing metadata files for dataset")
 
@@ -740,8 +751,7 @@ def validate_format(format_info: DatasetFormat) -> List[str]:
     # Check for unknown format
     if format_info.image_format == "unknown":
         msg = (
-            "Could not determine image format. "
-            f"Expected formats: {VALID_IMAGE_EXTS}"
+            "Could not determine image format. " f"Expected formats: {VALID_IMAGE_EXTS}"
         )
         warnings.append(msg)
         logger.warning("Unknown image format detected")

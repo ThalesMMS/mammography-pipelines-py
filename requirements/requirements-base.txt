@@ -2,9 +2,9 @@ numpy==2.2.6
 pandas==2.3.3
 pandera==0.20.1
 pydantic==2.11.2
-pillow==11.3.0
+pillow==12.2.0
 matplotlib==3.10.6
-streamlit==1.41.1
+streamlit==1.54.0
 psutil==6.1.0
 pyyaml==6.0.2
 scikit-learn==1.7.2
@@ -14,8 +14,8 @@ imageio==2.37.2
 tifffile==2025.12.20
 lazy-loader==0.4
 tqdm==4.67.1
-pyarrow==21.0.0; python_version < "3.14"
-pydicom==3.0.1
+pyarrow==23.0.1; python_version < "3.14"
+pydicom==3.0.2
 pylibjpeg==2.1.0
 pylibjpeg-libjpeg==2.3.0
 pylibjpeg-openjpeg==2.5.0

@@ -31,7 +31,12 @@ from pathlib import Path
 import time
 
 from ...preprocess.preprocessed_tensor import PreprocessedTensor
-from .embedding_vector import EmbeddingVector, create_embedding_vector_from_extraction, batch_create_embedding_vectors
+from ...utils.security import fingerprint_value
+from .embedding_vector import (
+    EmbeddingVector,
+    create_embedding_vector_from_extraction,
+    batch_create_embedding_vectors,
+)
 
 # Configure logging for educational purposes
 logger = logging.getLogger(__name__)
@@ -86,10 +91,7 @@ class ViTExtractor:
     EXPECTED_EMBEDDING_DIM = 768
 
     # Supported input adapters
-    SUPPORTED_INPUT_ADAPTERS = [
-        "1to3_replication",
-        "conv1_adapted"
-    ]
+    SUPPORTED_INPUT_ADAPTERS = ["1to3_replication", "conv1_adapted"]
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -107,9 +109,9 @@ class ViTExtractor:
         self.config = self._validate_config(config)
 
         # Set random seed for reproducibility
-        if 'seed' in self.config:
-            torch.manual_seed(self.config['seed'])
-            np.random.seed(self.config['seed'])
+        if "seed" in self.config:
+            torch.manual_seed(self.config["seed"])
+            np.random.seed(self.config["seed"])
 
         # Initialize device
         self.device = self._setup_device()
@@ -122,7 +124,9 @@ class ViTExtractor:
 
         logger.info(f"Initialized ViTExtractor with device: {self.device}")
 
-    def extract_embedding(self, preprocessed_tensor: PreprocessedTensor) -> Optional[EmbeddingVector]:
+    def extract_embedding(
+        self, preprocessed_tensor: PreprocessedTensor
+    ) -> Optional[EmbeddingVector]:
         """
         Extract embedding from a single preprocessed tensor.
 
@@ -157,7 +161,10 @@ class ViTExtractor:
             # - Maintains FP32 for operations that need higher precision (e.g., loss)
             # - Only activates when enabled=True and device supports mixed precision
             with torch.no_grad():
-                with torch.autocast(device_type=self.device.type, enabled=self.config.get('use_fp16', False)):
+                with torch.autocast(
+                    device_type=self.device.type,
+                    enabled=self.config.get("use_fp16", False),
+                ):
                     features = self.model(input_tensor)
 
             # Calculate extraction time
@@ -168,19 +175,30 @@ class ViTExtractor:
                 image_id=preprocessed_tensor.image_id,
                 embedding=features.squeeze(0),  # Remove batch dimension
                 model_config=self.config,
-                input_adapter=self.config['input_adapter'],
+                input_adapter=self.config["input_adapter"],
                 extraction_time=extraction_time,
-                device_used=str(self.device)
+                device_used=str(self.device),
             )
 
-            logger.info(f"Successfully extracted embedding for {preprocessed_tensor.image_id} in {extraction_time:.3f}s")
+            image_token = fingerprint_value(preprocessed_tensor.image_id, "image")
+            logger.info(
+                "Successfully extracted embedding for %s in %.3fs",
+                image_token,
+                extraction_time,
+            )
             return embedding_vector
 
         except Exception as e:
-            logger.error(f"Error extracting embedding for {preprocessed_tensor.image_id}: {str(e)}")
+            logger.error(
+                "Error extracting embedding for %s: %s",
+                fingerprint_value(preprocessed_tensor.image_id, "image"),
+                str(e),
+            )
             return None
 
-    def extract_embeddings_batch(self, preprocessed_tensors: List[PreprocessedTensor]) -> List[Optional[EmbeddingVector]]:
+    def extract_embeddings_batch(
+        self, preprocessed_tensors: List[PreprocessedTensor]
+    ) -> List[Optional[EmbeddingVector]]:
         """
         Extract embeddings from a batch of preprocessed tensors.
 
@@ -197,18 +215,20 @@ class ViTExtractor:
             return []
 
         # Filter valid tensors
-        valid_tensors = [tensor for tensor in preprocessed_tensors if self._validate_tensor(tensor)]
+        valid_tensors = [
+            tensor for tensor in preprocessed_tensors if self._validate_tensor(tensor)
+        ]
 
         if not valid_tensors:
             logger.warning("No valid tensors found in batch")
             return [None] * len(preprocessed_tensors)
 
         # Process in batches
-        batch_size = self.config.get('batch_size', 8)
+        batch_size = self.config.get("batch_size", 8)
         all_embeddings = []
 
         for i in range(0, len(valid_tensors), batch_size):
-            batch_tensors = valid_tensors[i:i + batch_size]
+            batch_tensors = valid_tensors[i : i + batch_size]
             batch_embeddings = self._extract_batch_embeddings(batch_tensors)
             all_embeddings.extend(batch_embeddings)
 
@@ -224,7 +244,9 @@ class ViTExtractor:
                 result_embeddings.append(None)
 
         successful_count = sum(1 for emb in result_embeddings if emb is not None)
-        logger.info(f"Successfully extracted {successful_count}/{len(preprocessed_tensors)} embeddings")
+        logger.info(
+            f"Successfully extracted {successful_count}/{len(preprocessed_tensors)} embeddings"
+        )
 
         return result_embeddings
 
@@ -245,35 +267,35 @@ class ViTExtractor:
             ValueError: If configuration is invalid
         """
         # Check required parameters
-        required_params = ['model_name', 'pretrained', 'input_adapter']
+        required_params = ["model_name", "pretrained", "input_adapter"]
         for param in required_params:
             if param not in config:
                 raise ValueError(f"Missing required configuration parameter: {param}")
 
         # Validate model name
-        model_name = config['model_name']
-        if model_name not in ['vit_b_16', 'vit_b_32', 'vit_l_16', 'vit_l_32']:
+        model_name = config["model_name"]
+        if model_name not in ["vit_b_16", "vit_b_32", "vit_l_16", "vit_l_32"]:
             raise ValueError(f"Unsupported model name: {model_name}")
 
         # Validate pretrained flag
-        if not isinstance(config['pretrained'], bool):
+        if not isinstance(config["pretrained"], bool):
             raise ValueError("pretrained must be a boolean")
 
         # Validate input adapter
-        input_adapter = config['input_adapter']
+        input_adapter = config["input_adapter"]
         if input_adapter not in self.SUPPORTED_INPUT_ADAPTERS:
             raise ValueError(f"Unsupported input adapter: {input_adapter}")
 
         # Set default values for optional parameters
-        config.setdefault('feature_layer', 'final_hidden')
-        config.setdefault('batch_size', 8)
-        config.setdefault('normalize_embeddings', False)
-        config.setdefault('normalization_method', 'l2')
-        config.setdefault('seed', 42)
+        config.setdefault("feature_layer", "final_hidden")
+        config.setdefault("batch_size", 8)
+        config.setdefault("normalize_embeddings", False)
+        config.setdefault("normalization_method", "l2")
+        config.setdefault("seed", 42)
         # FP16 Configuration: Mixed-precision uses 16-bit floats instead of 32-bit
         # Benefits: ~50% memory reduction, faster inference on modern GPUs
         # Only activated on CUDA devices; defaults to FP32 on CPU/MPS
-        config.setdefault('use_fp16', False)
+        config.setdefault("use_fp16", False)
 
         return config
 
@@ -287,17 +309,17 @@ class ViTExtractor:
         Returns:
             torch.device: Selected computing device
         """
-        device_config = self.config.get('device', 'auto')
+        device_config = self.config.get("device", "auto")
 
-        if device_config == 'auto':
+        if device_config == "auto":
             if torch.cuda.is_available():
-                device = torch.device('cuda')
+                device = torch.device("cuda")
                 logger.info(f"Using CUDA device: {torch.cuda.get_device_name()}")
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                device = torch.device('mps')
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = torch.device("mps")
                 logger.info("Using MPS device (Apple Silicon)")
             else:
-                device = torch.device('cpu')
+                device = torch.device("cpu")
                 logger.info("Using CPU device")
         else:
             device = torch.device(device_config)
@@ -315,17 +337,17 @@ class ViTExtractor:
         Returns:
             nn.Module: Modified Vision Transformer model
         """
-        model_name = self.config['model_name']
-        pretrained = self.config['pretrained']
+        model_name = self.config["model_name"]
+        pretrained = self.config["pretrained"]
 
         # Load pre-trained model
-        if model_name == 'vit_b_16':
+        if model_name == "vit_b_16":
             model = models.vit_b_16(pretrained=pretrained)
-        elif model_name == 'vit_b_32':
+        elif model_name == "vit_b_32":
             model = models.vit_b_32(pretrained=pretrained)
-        elif model_name == 'vit_l_16':
+        elif model_name == "vit_l_16":
             model = models.vit_l_16(pretrained=pretrained)
-        elif model_name == 'vit_l_32':
+        elif model_name == "vit_l_32":
             model = models.vit_l_32(pretrained=pretrained)
         else:
             raise ValueError(f"Unsupported model: {model_name}")
@@ -341,7 +363,7 @@ class ViTExtractor:
         # - Only enabled on CUDA devices (not supported efficiently on CPU/MPS)
         # - Reduces model memory footprint by 50% (2 bytes vs 4 bytes per param)
         # - Works with torch.autocast for automatic mixed-precision inference
-        if self.config.get('use_fp16', False) and self.device.type == 'cuda':
+        if self.config.get("use_fp16", False) and self.device.type == "cuda":
             model = model.half()
             logger.info(f"Converted model to FP16 precision for CUDA device")
 
@@ -386,11 +408,15 @@ class ViTExtractor:
 
         # Check tensor shape (should be 3, H, W)
         if preprocessed_tensor.tensor_data.ndim != 3:
-            logger.error(f"Invalid tensor dimensions: {preprocessed_tensor.tensor_data.shape}")
+            logger.error(
+                f"Invalid tensor dimensions: {preprocessed_tensor.tensor_data.shape}"
+            )
             return False
 
         if preprocessed_tensor.tensor_data.shape[0] != 3:
-            logger.error(f"Invalid number of channels: {preprocessed_tensor.tensor_data.shape[0]}")
+            logger.error(
+                f"Invalid number of channels: {preprocessed_tensor.tensor_data.shape[0]}"
+            )
             return False
 
         # Check for NaN or infinite values
@@ -404,7 +430,9 @@ class ViTExtractor:
 
         return True
 
-    def _prepare_input_tensor(self, preprocessed_tensor: PreprocessedTensor) -> Optional[torch.Tensor]:
+    def _prepare_input_tensor(
+        self, preprocessed_tensor: PreprocessedTensor
+    ) -> Optional[torch.Tensor]:
         """
         Prepare tensor for model input.
 
@@ -425,7 +453,7 @@ class ViTExtractor:
             input_tensor = tensor_data.unsqueeze(0)  # Shape: (1, 3, H, W)
 
             # Apply ImageNet normalization if using pretrained weights
-            if self.config.get('pretrained', True):
+            if self.config.get("pretrained", True):
                 input_tensor = self._apply_imagenet_normalization(input_tensor)
 
             # Move to device
@@ -437,7 +465,7 @@ class ViTExtractor:
             # - Ensures entire forward pass runs in FP16, maximizing GPU throughput
             # - Prevents automatic dtype promotion which would negate FP16 benefits
             # - Combined with model.half() and torch.autocast for full mixed-precision
-            if self.config.get('use_fp16', False) and self.device.type == 'cuda':
+            if self.config.get("use_fp16", False) and self.device.type == "cuda":
                 input_tensor = input_tensor.half()
 
             return input_tensor
@@ -476,7 +504,9 @@ class ViTExtractor:
 
         return normalized_tensor
 
-    def _extract_batch_embeddings(self, preprocessed_tensors: List[PreprocessedTensor]) -> List[Optional[EmbeddingVector]]:
+    def _extract_batch_embeddings(
+        self, preprocessed_tensors: List[PreprocessedTensor]
+    ) -> List[Optional[EmbeddingVector]]:
         """
         Extract embeddings from a batch of tensors.
 
@@ -515,7 +545,10 @@ class ViTExtractor:
             # - torch.autocast handles automatic precision casting for all operations
             # - Larger batches improve GPU utilization and reduce per-image inference time
             with torch.no_grad():
-                with torch.autocast(device_type=self.device.type, enabled=self.config.get('use_fp16', False)):
+                with torch.autocast(
+                    device_type=self.device.type,
+                    enabled=self.config.get("use_fp16", False),
+                ):
                     batch_features = self.model(batch_input)
 
             # Calculate extraction time per image
@@ -535,9 +568,9 @@ class ViTExtractor:
                         image_id=tensor.image_id,
                         embedding=features,
                         model_config=self.config,
-                        input_adapter=self.config['input_adapter'],
+                        input_adapter=self.config["input_adapter"],
                         extraction_time=extraction_time_per_image,
-                        device_used=str(self.device)
+                        device_used=str(self.device),
                     )
                     embedding_vectors.append(embedding_vector)
                 else:
@@ -560,7 +593,9 @@ class ViTExtractor:
             Dict[str, Any]: Model information dictionary
         """
         total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        trainable_params = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
 
         # FP16 Memory Calculation: Compute actual model memory usage
         # - FP32 (float32): 4 bytes per parameter (standard precision)
@@ -568,21 +603,21 @@ class ViTExtractor:
         # - FP16 reduces model size by 50% compared to FP32
         # - Example: ViT-B/16 (~86M params): 344MB (FP32) vs 172MB (FP16)
         # - Only reflects actual FP16 usage when use_fp16=True AND device=cuda
-        use_fp16 = self.config.get('use_fp16', False)
-        bytes_per_param = 2 if (use_fp16 and self.device.type == 'cuda') else 4
+        use_fp16 = self.config.get("use_fp16", False)
+        bytes_per_param = 2 if (use_fp16 and self.device.type == "cuda") else 4
         model_size_mb = total_params * bytes_per_param / (1024 * 1024)
 
         return {
-            'model_name': self.config['model_name'],
-            'pretrained': self.config['pretrained'],
-            'feature_layer': self.config['feature_layer'],
-            'embedding_dimension': self.EXPECTED_EMBEDDING_DIM,
-            'input_adapter': self.config['input_adapter'],
-            'device': str(self.device),
-            'total_parameters': total_params,
-            'trainable_parameters': trainable_params,
-            'use_fp16': use_fp16,
-            'model_size_mb': model_size_mb
+            "model_name": self.config["model_name"],
+            "pretrained": self.config["pretrained"],
+            "feature_layer": self.config["feature_layer"],
+            "embedding_dimension": self.EXPECTED_EMBEDDING_DIM,
+            "input_adapter": self.config["input_adapter"],
+            "device": str(self.device),
+            "total_parameters": total_params,
+            "trainable_parameters": trainable_params,
+            "use_fp16": use_fp16,
+            "model_size_mb": model_size_mb,
         }
 
 
@@ -602,8 +637,9 @@ def create_vit_extractor(config: Dict[str, Any]) -> ViTExtractor:
     return ViTExtractor(config)
 
 
-def extract_single_embedding(preprocessed_tensor: PreprocessedTensor,
-                           config: Dict[str, Any]) -> Optional[EmbeddingVector]:
+def extract_single_embedding(
+    preprocessed_tensor: PreprocessedTensor, config: Dict[str, Any]
+) -> Optional[EmbeddingVector]:
     """
     Convenience function to extract embedding from a single tensor.
 
@@ -621,8 +657,9 @@ def extract_single_embedding(preprocessed_tensor: PreprocessedTensor,
     return extractor.extract_embedding(preprocessed_tensor)
 
 
-def extract_batch_embeddings(preprocessed_tensors: List[PreprocessedTensor],
-                           config: Dict[str, Any]) -> List[Optional[EmbeddingVector]]:
+def extract_batch_embeddings(
+    preprocessed_tensors: List[PreprocessedTensor], config: Dict[str, Any]
+) -> List[Optional[EmbeddingVector]]:
     """
     Convenience function to extract embeddings from a batch of tensors.
 
