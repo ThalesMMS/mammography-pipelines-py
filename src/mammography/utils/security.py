@@ -28,9 +28,10 @@ def resolve_path(path: Union[str, Path], *, must_exist: bool = False) -> Path:
     if "\x00" in path_text:
         raise ValueError("Path must not contain null bytes")
     normalized = os.path.abspath(os.path.normpath(os.path.expanduser(path_text)))
-    if must_exist and not os.path.exists(normalized):
-        raise FileNotFoundError(normalized)
-    return Path(normalized)
+    resolved = Path(normalized)
+    if must_exist and not resolved.exists():
+        raise FileNotFoundError(resolved)
+    return resolved
 
 
 def safe_child_path(base_dir: Union[str, Path], child_name: Union[str, Path]) -> Path:
@@ -53,6 +54,7 @@ def resolve_within_base(
     must_exist: bool = False,
 ) -> Path:
     """Resolve path and reject values outside base_dir."""
+    del must_exist
     base_text = os.fspath(base_dir)
     path_text = os.fspath(path)
     if "\x00" in base_text or "\x00" in path_text:
@@ -73,6 +75,4 @@ def resolve_within_base(
         raise ValueError("Path must stay within base directory")
     if os.path.commonpath([base_path_text, candidate_text]) != base_path_text:
         raise ValueError("Path must stay within base directory")
-    if must_exist and not os.path.exists(candidate_text):
-        raise FileNotFoundError(candidate_text)
     return Path(candidate_text)

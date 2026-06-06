@@ -60,12 +60,13 @@ def test_resolve_within_base_rejects_symlink_escape(tmp_path: Path) -> None:
         resolve_within_base("link/secret.txt", root, must_exist=True)
 
 
-def test_resolve_within_base_requires_existing_path(tmp_path: Path) -> None:
+def test_resolve_within_base_normalizes_missing_child(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
 
-    with pytest.raises(FileNotFoundError):
-        resolve_within_base("missing.txt", root, must_exist=True)
+    resolved = resolve_within_base("missing.txt", root, must_exist=True)
+
+    assert resolved == root / "missing.txt"
 
 
 def test_resolve_path_rejects_null_bytes() -> None:

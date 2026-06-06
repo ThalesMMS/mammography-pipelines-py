@@ -1,0 +1,17 @@
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      - ["mammography", "Member[utils].Member[security].Member[resolve_path].ReturnValue", "path-injection"]
+      - ["mammography", "Member[utils].Member[security].Member[resolve_within_base].ReturnValue", "path-injection"]
+      - ["mammography", "Member[utils].Member[security].Member[safe_child_path].ReturnValue", "path-injection"]
+      - ["mammography.utils.security", "Member[resolve_path].ReturnValue", "path-injection"]
+      - ["mammography.utils.security", "Member[resolve_within_base].ReturnValue", "path-injection"]
+      - ["mammography.utils.security", "Member[safe_child_path].ReturnValue", "path-injection"]
+      - ["mammography", "Member[apps].Member[web_ui].Member[components].Member[report_exporter].Member[_resolve_report_path].ReturnValue", "path-injection"]
+      - ["mammography", "Member[apps].Member[web_ui].Member[components].Member[report_exporter].Member[resolve_report_path].ReturnValue", "path-injection"]
+      - ["mammography", "Member[apps].Member[web_ui].Member[components].Member[dataset_viewer].Member[_resolve_dataset_path].ReturnValue", "path-injection"]
+      - ["mammography.apps.web_ui.components.report_exporter", "Member[_resolve_report_path].ReturnValue", "path-injection"]
+      - ["mammography.apps.web_ui.components.report_exporter", "Member[resolve_report_path].ReturnValue", "path-injection"]
+      - ["mammography.apps.web_ui.components.dataset_viewer", "Member[_resolve_dataset_path].ReturnValue", "path-injection"]
