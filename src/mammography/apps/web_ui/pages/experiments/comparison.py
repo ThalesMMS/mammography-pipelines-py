@@ -13,9 +13,13 @@ from mammography.apps.web_ui.components.export_buttons import export_plot_button
 from mammography.apps.web_ui.pages.experiments.formatters import format_duration as _format_duration
 
 try:
-    from mammography.apps.web_ui.components.report_exporter import ReportExporter
+    from mammography.apps.web_ui.components.report_exporter import (
+        ReportExporter,
+        resolve_report_path,
+    )
 except ImportError:
     ReportExporter = None
+    resolve_report_path = None
 
 try:
     import streamlit as st
@@ -267,8 +271,14 @@ def display_run_comparison(client: Any, runs: Any) -> None:
                                 status_text.text(f"Exporting {idx + 1}/{len(runs)}: {run_name}")
 
                                 try:
+                                    if resolve_report_path is None:
+                                        raise ImportError("ReportExporter is not available")
+
                                     # Create subdirectory for each run
-                                    run_output_dir = Path(batch_output_base) / f"run_{run.info.run_id[:8]}"
+                                    run_output_dir = (
+                                        resolve_report_path(batch_output_base)
+                                        / f"run_{run.info.run_id[:8]}"
+                                    )
 
                                     manifest = exporter.export_from_mlflow(
                                         run_id=run.info.run_id,

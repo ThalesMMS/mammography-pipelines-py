@@ -333,9 +333,7 @@ if __name__ == "__main__":
             print(
                 f"\nCurrent Folder Details ({data_manager.get_current_folder_index_display()}/{data_manager.get_total_navigable_folders()}): {accession_token}"
             )
-            print(
-                f"  Target: {current_details['target']}, Laterality: {current_details['laterality']}"
-            )
+            print("  Metadata available: target and laterality")
             print(
                 f"  DICOMs: {_redact_values(current_details['dicom_files'], 'dicom')}"
             )

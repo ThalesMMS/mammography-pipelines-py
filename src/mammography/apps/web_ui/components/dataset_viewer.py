@@ -11,15 +11,17 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from PIL import Image
 
-from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
 from mammography.data.csv_loader import load_dataset_dataframe
-from mammography.utils.security import redact_path, resolve_path
+from mammography.io.dicom import dicom_to_pil_rgb, is_dicom_path
+from mammography.utils.security import redact_path, resolve_path, resolve_within_base
 
 try:
     import streamlit as st
@@ -31,6 +33,7 @@ else:
 
 
 LOGGER = logging.getLogger("mammography")
+DATASET_BROWSER_ROOT_ENV = "MAMMOGRAPHY_DATASET_BROWSER_ROOT"
 
 
 def _require_streamlit() -> None:
@@ -39,6 +42,22 @@ def _require_streamlit() -> None:
         raise ImportError(
             "Streamlit is required to run the web UI dashboard."
         ) from _STREAMLIT_IMPORT_ERROR
+
+
+def _dataset_browser_root() -> Path:
+    """Return the base directory for dataset browser file operations."""
+    return Path(os.environ.get(DATASET_BROWSER_ROOT_ENV, ".")).expanduser().resolve()
+
+
+def _resolve_dataset_path(path: str, *, must_exist: bool = False) -> Path:
+    """Resolve a dataset browser path and reject escapes outside the dataset root."""
+    root = _dataset_browser_root()
+    try:
+        return resolve_within_base(path, root, must_exist=must_exist)
+    except ValueError as exc:
+        raise ValueError(
+            f"Dataset path must stay within {DATASET_BROWSER_ROOT_ENV} ({root})"
+        ) from exc
 
 
 class DatasetViewer:
@@ -86,15 +105,20 @@ class DatasetViewer:
             FileNotFoundError: If CSV file doesn't exist
             ValueError: If required columns are missing
         """
-        csv_file = resolve_path(csv_path, must_exist=True)
+        csv_file = _resolve_dataset_path(csv_path, must_exist=True)
         if not csv_file.exists():
             raise FileNotFoundError(f"CSV file not found: {redact_path(csv_file)}")
+        resolved_image_root = (
+            str(_resolve_dataset_path(image_root, must_exist=True))
+            if image_root
+            else None
+        )
 
         try:
             # Load metadata using the dataset loader
             metadata = load_dataset_dataframe(
                 csv_path=str(csv_file),
-                dicom_root=image_root,
+                dicom_root=resolved_image_root,
                 exclude_class_5=True,
             )
 

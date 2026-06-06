@@ -78,6 +78,11 @@ def _resolve_report_path(path: Union[str, Path], *, must_exist: bool = False) ->
         ) from exc
 
 
+def resolve_report_path(path: Union[str, Path], *, must_exist: bool = False) -> Path:
+    """Resolve a report path for callers that need to compose child paths."""
+    return _resolve_report_path(path, must_exist=must_exist)
+
+
 @dataclass
 class ExportManifest:
     """Manifest describing exported report contents.

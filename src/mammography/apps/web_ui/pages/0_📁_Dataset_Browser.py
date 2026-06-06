@@ -10,14 +10,12 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
 
-from mammography.apps.web_ui.utils import ensure_shared_session_state
 from mammography.apps.web_ui.components.dataset_viewer import DatasetViewer
+from mammography.apps.web_ui.utils import ensure_shared_session_state
 
 try:
     import streamlit as st
@@ -293,14 +291,11 @@ def main() -> None:
 
     # Load dataset when button clicked or if already loaded
     if load_button:
-        if not os.path.exists(csv_path):
-            st.error(f"❌ CSV file not found: {csv_path}")
-        else:
-            with st.spinner("Loading dataset metadata..."):
-                metadata = _load_dataset(csv_path, image_root if image_root else None)
+        with st.spinner("Loading dataset metadata..."):
+            metadata = _load_dataset(csv_path, image_root if image_root else None)
 
-                if metadata is not None:
-                    st.success(f"✅ Successfully loaded {len(metadata)} records from dataset")
+            if metadata is not None:
+                st.success(f"✅ Successfully loaded {len(metadata)} records from dataset")
 
     # Check if dataset is loaded
     if st.session_state.dataset_metadata is None:

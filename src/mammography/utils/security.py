@@ -24,7 +24,10 @@ def redact_path(path: Union[str, Path], label: str = "path") -> str:
 
 def resolve_path(path: Union[str, Path], *, must_exist: bool = False) -> Path:
     """Resolve a user-provided path without following missing final paths."""
-    return Path(path).expanduser().resolve(strict=must_exist)
+    path_text = os.fspath(path)
+    if "\x00" in path_text:
+        raise ValueError("Path must not contain null bytes")
+    return Path(path_text).expanduser().resolve(strict=must_exist)
 
 
 def safe_child_path(base_dir: Union[str, Path], child_name: Union[str, Path]) -> Path:
@@ -46,7 +49,20 @@ def resolve_within_base(
     must_exist: bool = False,
 ) -> Path:
     """Resolve path and reject values outside base_dir."""
-    base_path = resolve_path(base_dir, must_exist=False)
-    candidate = resolve_path(path, must_exist=must_exist)
+    base_text = os.fspath(base_dir)
+    path_text = os.fspath(path)
+    if "\x00" in base_text or "\x00" in path_text:
+        raise ValueError("Path must not contain null bytes")
+
+    base_path = Path(os.path.realpath(os.path.expanduser(base_text)))
+    expanded_path = os.path.expanduser(path_text)
+    if os.path.isabs(expanded_path):
+        joined_path = expanded_path
+    else:
+        joined_path = os.path.join(os.fspath(base_path), expanded_path)
+
+    candidate = Path(os.path.realpath(joined_path))
     candidate.relative_to(base_path)
+    if must_exist and not candidate.exists():
+        raise FileNotFoundError(candidate)
     return candidate

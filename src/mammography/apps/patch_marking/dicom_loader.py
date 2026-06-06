@@ -14,7 +14,6 @@ import os
 
 # Import centralized DICOM utilities
 from mammography.io.dicom import apply_windowing, extract_window_parameters
-from mammography.utils.security import redact_path
 
 
 class DicomImageLoader:
@@ -37,13 +36,12 @@ class DicomImageLoader:
              - A dictionary with visualization parameters {'wc', 'ww', 'photometric', 'source'},
                or None on failure. 'source' indicates whether WC/WW came from the 'DICOM' or were 'Calculated'.
         """
-        redacted_path = redact_path(dicom_path, "dicom")
         try:
             ds = pydicom.dcmread(dicom_path, force=True)
 
             if not hasattr(ds, "PixelData"):
                 print(
-                    f"Error: DICOM file {redacted_path} was read with force=True but does not contain PixelData."
+                    "Error: DICOM file was read with force=True but does not contain PixelData."
                 )
                 return None, None
 
@@ -60,7 +58,7 @@ class DicomImageLoader:
                     pixel_array = pixel_array * rescale_slope + rescale_intercept
                 except (ValueError, TypeError):
                     print(
-                        f"Warning: Could not convert RescaleSlope/Intercept to float for {redacted_path}. Using default 1.0/0.0."
+                        "Warning: Could not convert RescaleSlope/Intercept to float. Using default 1.0/0.0."
                     )
                     # Keep pixel_array unchanged if conversion fails
 
@@ -78,9 +76,7 @@ class DicomImageLoader:
             # Determine if values came from DICOM tags or were calculated
             source = "DICOM" if has_dicom_window else "Calculated"
             if not has_dicom_window:
-                print(
-                    f"Info: Calculating WindowCenter/WindowWidth from min/max for {redacted_path}."
-                )
+                print("Info: Calculating WindowCenter/WindowWidth from min/max.")
 
             view_params = {
                 "wc": window_center,
@@ -92,10 +88,10 @@ class DicomImageLoader:
             return pixel_array, view_params
 
         except FileNotFoundError:
-            print(f"Error: DICOM file not found at {redacted_path}")
+            print("Error: DICOM file not found.")
             return None, None
-        except Exception as e:
-            print(f"Error loading or processing DICOM file {redacted_path}: {e}")
+        except Exception:
+            print("Error loading or processing DICOM file.")
             # import traceback
             # traceback.print_exc()
             return None, None
@@ -120,9 +116,7 @@ if __name__ == "__main__":
                 test_dicom_path = os.path.join(
                     archive_folder_path, first_folder, dicoms_in_first_folder[0]
                 )
-                print(
-                    f"Using DICOM file for testing: {redact_path(test_dicom_path, 'dicom')}"
-                )
+                print("Using a DICOM file for testing.")
             else:
                 print("No DICOM files found in the test folder.")
         else:
@@ -168,9 +162,7 @@ if __name__ == "__main__":
 
                 # Pass the float array directly along with vmin, vmax, and cmap
                 plt.imshow(pixel_data_float, cmap=cmap_to_use, vmin=vmin, vmax=vmax)
-                plt.title(
-                    f"DICOM Float: {redact_path(test_dicom_path, 'dicom')} (WC/WW: {view_params['source']})"
-                )
+                plt.title(f"DICOM Float (WC/WW: {view_params['source']})")
                 plt.colorbar()  # Colorbar now shows the original float values (post-rescale)
                 plt.show()
             except ImportError:
@@ -183,8 +175,6 @@ if __name__ == "__main__":
             print("Failed to load DICOM data.")
     # Remaining error-handling block follows the same pattern as above
     elif test_dicom_path:
-        print(
-            f"Specified test path but DICOM file not found: {redact_path(test_dicom_path, 'dicom')}"
-        )
+        print("Specified test path but DICOM file not found.")
     else:
         print("Test DICOM path not defined or DataManager could not provide one.")
